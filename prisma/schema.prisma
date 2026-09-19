@@ -1,0 +1,163 @@
+// RIDGE Admin — Database Schema
+// Postgres + Prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum RegType {
+  EARLY_BIRD
+  LATE
+}
+
+enum EmailSource {
+  REGISTRATION
+  BROCHURE
+}
+
+enum EmailEventType {
+  SENT
+  DELIVERED
+  OPENED
+  BOUNCED
+  COMPLAINED
+  FAILED
+}
+
+enum EmailAudience {
+  ATTENDEE // the registration/brochure confirmation email
+  INTERNAL // the internal team notification
+}
+
+enum AdminRole {
+  OWNER
+  ADMIN
+}
+
+enum SeatStatus {
+  OPEN
+  RESERVED
+  TAKEN
+  BLOCKED
+}
+
+model Registration {
+  id           String       @id @default(cuid())
+  fullName     String
+  email        String       @unique
+  phone        String
+  country      String
+  organization String?
+  notes        String?
+  regType      RegType      @default(EARLY_BIRD)
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  emailEvents  EmailEvent[]
+  seat         Seat?
+
+  @@index([createdAt])
+}
+
+model BrochureRequest {
+  id          String       @id @default(cuid())
+  fullName    String
+  email       String
+
+  createdAt   DateTime     @default(now())
+
+  emailEvents EmailEvent[]
+
+  @@index([email])
+  @@index([createdAt])
+}
+
+// One row per lifecycle event per email sent (sent/delivered/opened/bounced/...),
+// so the admin dashboard can show live counts with a simple GROUP BY.
+model EmailEvent {
+  id                 String       @id @default(cuid())
+  source             EmailSource
+  registrationId     String?
+  registration       Registration?     @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  brochureRequestId  String?
+  brochureRequest    BrochureRequest?  @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
+
+  type               EmailEventType
+  audience           EmailAudience @default(ATTENDEE)
+  providerMessageId  String?      // Resend's email id, used to correlate webhook events
+  occurredAt         DateTime     @default(now())
+
+  @@index([registrationId])
+  @@index([brochureRequestId])
+  @@index([providerMessageId])
+}
+
+// Editable copy for the two outbound emails + two internal notifications.
+// {{first_name}}, {{full_name}}, {{email}} plus the Setting keys below (as
+// {{setting_key}}) are available as merge variables in subject/body.
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  // one of: registration_confirmation, brochure_confirmation,
+  //         internal_registration_notification, internal_brochure_notification
+  subject   String
+  body      String   @db.Text
+  replyTo   String?
+  updatedAt DateTime @updatedAt
+}
+
+// Business-config values previously hardcoded in code.gs (programme name,
+// dates, fee, bank details, WhatsApp number, brochure URL, notification inbox).
+// Edited from /admin/settings; referenced by templates as {{key}}.
+model Setting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model Admin {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         AdminRole @default(ADMIN)
+  createdAt    DateTime  @default(now())
+  lastLoginAt  DateTime?
+}
+
+// The Day 7 venue floor plan: round tables labeled A, B, C... AA, AB...
+// (spreadsheet-style once past Z), each with numbered seats (A1..A10).
+model EventTable {
+  id    String @id @default(cuid())
+  label String @unique // "A", "B", ... "AA"
+  order Int    @unique // display order, 0-based — independent of label so
+                        // tables can be reordered later without relabeling
+
+  seats Seat[]
+}
+
+model Seat {
+  id            String     @id @default(cuid())
+  tableId       String
+  table         EventTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  seatNumber    Int        // 1..10 within the table
+  label         String     @unique // "A2" — table label + seat number, shown to guests and admins
+
+  status        SeatStatus @default(OPEN)
+
+  registrationId String?   @unique
+  registration   Registration? @relation(fields: [registrationId], references: [id])
+
+  holdExpiresAt DateTime?  // for a future payment-pending hold window
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([tableId, seatNumber])
+  @@index([status])
+}
