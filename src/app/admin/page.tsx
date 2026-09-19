@@ -22,22 +22,9 @@ interface RegistrationRow {
   createdAt: string;
 }
 
-interface EmailStats {
-  delivered: number;
-  opened: number;
-  bounced: number;
-  failed: number;
-  sentOnly: number;
-  notSent: number;
-}
-
 const STATUS_STYLES: Record<string, string> = {
-  OPENED: "text-emerald-400",
-  DELIVERED: "text-emerald-400",
-  SENT: "text-goldlight",
-  BOUNCED: "text-red-400",
+  SENT: "text-emerald-400",
   FAILED: "text-red-400",
-  COMPLAINED: "text-red-400",
   NOT_SENT: "text-muted",
 };
 
@@ -48,7 +35,7 @@ function StatusDot({ status, title }: { status: string; title?: string | null })
       className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"} ${title ? "cursor-help" : ""}`}
     >
       <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />
-      {status.replace("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}
+      {status === "SENT" ? "Sent" : status === "FAILED" ? "Failed" : "Not sent"}
     </span>
   );
 }
@@ -56,7 +43,6 @@ function StatusDot({ status, title }: { status: string; title?: string | null })
 export default function RegistrationsPage() {
   const [rows, setRows] = useState<RegistrationRow[]>([]);
   const [total, setTotal] = useState(0);
-  const [stats, setStats] = useState<EmailStats | null>(null);
   const [regTypeCounts, setRegTypeCounts] = useState<{ all: number; earlyBird: number; late: number } | null>(null);
   const [search, setSearch] = useState("");
   const [regType, setRegType] = useState<string>("ALL");
@@ -82,7 +68,6 @@ export default function RegistrationsPage() {
           const data = await res.json();
           setRows(data.registrations);
           setTotal(data.total);
-          setStats(data.emailStats);
           setRegTypeCounts(data.regTypeCounts);
         }
       } catch {
@@ -171,19 +156,8 @@ export default function RegistrationsPage() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search name, email or phone"
-        className="w-full max-w-md bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm mb-4 focus:outline-none focus:border-gold"
+        className="w-full max-w-md bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm mb-6 focus:outline-none focus:border-gold"
       />
-
-      {stats && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm mb-6">
-          <span className="text-muted">Emails:</span>
-          <span className="flex items-center gap-1.5"><StatusDot status="DELIVERED" /> <span className="text-muted">{stats.delivered}</span></span>
-          <span className="flex items-center gap-1.5"><StatusDot status="OPENED" /> <span className="text-muted">{stats.opened}</span></span>
-          <span className="flex items-center gap-1.5"><StatusDot status="BOUNCED" /> <span className="text-muted">{stats.bounced}</span></span>
-          <span className="flex items-center gap-1.5"><StatusDot status="FAILED" /> <span className="text-muted">{stats.failed}</span></span>
-          <span className="flex items-center gap-1.5"><StatusDot status="NOT_SENT" /> <span className="text-muted">{stats.notSent}</span></span>
-        </div>
-      )}
 
       <div className="border border-border rounded-xl overflow-hidden">
         <div className="table-scroll overflow-x-auto">
@@ -196,7 +170,7 @@ export default function RegistrationsPage() {
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Country</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Type</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Seat</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Delivery</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap">Confirmation</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Registered</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
               </tr>

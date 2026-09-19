@@ -1,3 +1,5 @@
+import { sendViaGmail } from "./gmail";
+
 // Brand palette — matches the black-and-gold executive theme from the
 // original index.html / register.html. Change here to restyle every email.
 const BRAND = {
@@ -103,7 +105,25 @@ export function renderBrandedEmail(opts: BrandedEmailOptions): string {
   </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Sending
+// ---------------------------------------------------------------------------
+
+/**
+ * kind decides the channel:
+ *   "campaign"  -> Resend (bulk, with delivery/open/bounce tracking)
+ *   anything else -> Gmail (confirmation, payment_reminder, seat_invite, internal, brochure)
+ */
+export type EmailKind =
+  | "confirmation"
+  | "brochure"
+  | "seat_invite"
+  | "payment_reminder"
+  | "internal"
+  | "campaign";
+
 export interface SendEmailInput {
+  kind: EmailKind;
   to: string;
   subject: string;
   html: string;
@@ -140,7 +160,7 @@ function describeResendError(status: number, body: string): string {
  * Outside production it logs the email to the console instead, so local
  * development works without live email credentials.
  */
-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM || "RIDGE 2026 <onboarding@resend.dev>";
 
@@ -184,4 +204,44 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     console.error("[email] Resend request threw:", err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Sends via Google Workspace (ridge@pertinencegroup.com) and maps the result to SendEmailResult. */
+async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResult> {
+  const res = await sendViaGmail({
+    to: input.to,
+    subject: input.subject,
+    html: input.html,
+    replyTo: input.replyTo || undefined,
+  });
+  return res.ok
+    ? { success: true, providerMessageId: res.id }
+    : { success: false, error: res.error || "Gmail send failed." };
+}
+
+/**
+ * Routes one email to the right channel.
+ * - campaign -> Resend only.
+ * - everything else -> Gmail. If Gmail fails, falls back to Resend so the
+ *   person still gets the email. Set EMAIL_GMAIL_FALLBACK=false to disable.
+ */
+export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+  if (input.kind === "campaign") {
+    return sendViaResend(input);
+  }
+
+  const gmailResult = await sendViaGmailChannel(input);
+  if (gmailResult.success) return gmailResult;
+
+  const fallbackEnabled = process.env.EMAIL_GMAIL_FALLBACK !== "false";
+  if (!fallbackEnabled) return gmailResult;
+
+  console.warn(`[email] Gmail failed (${gmailResult.error}). Falling back to Resend.`);
+  const resendResult = await sendViaResend(input);
+  if (resendResult.success) return resendResult;
+
+  return {
+    success: false,
+    error: `Gmail: ${gmailResult.error} | Resend: ${resendResult.error}`,
+  };
 }

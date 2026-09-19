@@ -77,6 +77,7 @@ export async function POST(request: NextRequest) {
   const tags = payload.data.tags ?? [];
   const source = tags.find((t) => t.name === "source")?.value;
   const id = tags.find((t) => t.name === "id")?.value;
+  const campaignId = tags.find((t) => t.name === "campaign")?.value;
 
   if (!source || !id) {
     return NextResponse.json({ result: "ignored", reason: "no correlation tags" });
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
       audience: "ATTENDEE",
       registrationId: source === "registration" || source === "campaign" ? id : undefined,
       brochureRequestId: source === "brochure" ? id : undefined,
+      campaignId: campaignId || undefined,
       type: eventType,
       providerMessageId: payload.data.email_id,
     },

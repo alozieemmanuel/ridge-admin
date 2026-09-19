@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
 import { renderBrandedEmail, sendEmail, escapeHtml, isValidEmailAddress } from "@/lib/email";
-import type { SendEmailResult } from "@/lib/email";
+import type { SendEmailResult, EmailKind } from "@/lib/email";
 import type { Registration, BrochureRequest } from "@prisma/client";
 
 type Settings = Record<string, string>;
@@ -48,8 +48,10 @@ async function recordEvent(params: {
   audience: "ATTENDEE" | "INTERNAL";
   id: string;
   type: "SENT" | "FAILED";
+  kind?: EmailKind;
   providerMessageId?: string;
   errorMessage?: string;
+  campaignId?: string;
 }) {
   await prisma.emailEvent.create({
     data: {
@@ -57,6 +59,8 @@ async function recordEvent(params: {
       audience: params.audience,
       registrationId: params.source === "REGISTRATION" || params.source === "CAMPAIGN" ? params.id : undefined,
       brochureRequestId: params.source === "BROCHURE" ? params.id : undefined,
+      campaignId: params.campaignId,
+      kind: params.kind,
       type: params.type,
       providerMessageId: params.providerMessageId,
       errorMessage: params.errorMessage ? params.errorMessage.slice(0, 500) : undefined,
@@ -69,17 +73,23 @@ async function recordEvent(params: {
  * Anything that goes wrong while building it (e.g. a missing template) is
  * recorded as FAILED with the reason, so the dashboard shows "Failed" and why,
  * instead of a silent "Not sent".
+ *
+ * `kind` picks the channel: "campaign" goes through Resend, everything else
+ * goes through Gmail (see sendEmail in email.ts).
  */
 async function deliverAttendeeEmail(opts: {
   source: EventSource;
+  kind: EmailKind;
   id: string;
   to: string;
+  campaignId?: string;
   build: () => Promise<BuiltEmail>;
 }): Promise<SendEmailResult> {
   let result: SendEmailResult;
   try {
     const email = await opts.build();
     result = await sendEmail({
+      kind: opts.kind,
       to: opts.to,
       subject: email.subject,
       html: email.html,
@@ -87,6 +97,7 @@ async function deliverAttendeeEmail(opts: {
       tags: [
         { name: "source", value: opts.source === "BROCHURE" ? "brochure" : opts.source === "CAMPAIGN" ? "campaign" : "registration" },
         { name: "id", value: opts.id },
+        ...(opts.campaignId ? [{ name: "campaign", value: opts.campaignId }] : []),
       ],
     });
   } catch (err) {
@@ -98,8 +109,10 @@ async function deliverAttendeeEmail(opts: {
     audience: "ATTENDEE",
     id: opts.id,
     type: result.success ? "SENT" : "FAILED",
+    kind: opts.kind,
     providerMessageId: result.providerMessageId,
     errorMessage: result.error,
+    campaignId: opts.campaignId,
   });
   return result;
 }
@@ -144,6 +157,7 @@ async function sendInternalNotification(opts: {
   let result: SendEmailResult;
   try {
     result = await sendEmail({
+      kind: "internal",
       to,
       subject: opts.subject,
       html: renderInternalEmail(opts.subject, opts.rows),
@@ -159,6 +173,7 @@ async function sendInternalNotification(opts: {
       audience: "INTERNAL",
       id: opts.id,
       type: result.success ? "SENT" : "FAILED",
+      kind: "internal",
       providerMessageId: result.providerMessageId,
       errorMessage: result.error,
     });
@@ -301,6 +316,7 @@ export async function sendRegistrationEmails(registration: Registration): Promis
 
   await deliverAttendeeEmail({
     source: "REGISTRATION",
+    kind: "confirmation",
     id: registration.id,
     to: registration.email,
     build: () => buildRegistrationConfirmation(registration, settings),
@@ -330,6 +346,7 @@ export async function sendBrochureEmails(brochureRequest: BrochureRequest): Prom
 
   await deliverAttendeeEmail({
     source: "BROCHURE",
+    kind: "brochure",
     id: brochureRequest.id,
     to: brochureRequest.email,
     build: () => buildBrochureEmail(brochureRequest, settings),
@@ -354,6 +371,7 @@ export async function resendRegistrationConfirmation(registration: Registration)
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
+      kind: "confirmation",
       id: registration.id,
       to: registration.email,
       build: () => buildRegistrationConfirmation(registration, settings),
@@ -367,6 +385,7 @@ export async function resendBrochureConfirmation(brochureRequest: BrochureReques
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "BROCHURE",
+      kind: "brochure",
       id: brochureRequest.id,
       to: brochureRequest.email,
       build: () => buildBrochureEmail(brochureRequest, settings),
@@ -380,6 +399,7 @@ export async function sendSeatSelectionInvite(registration: Registration): Promi
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
+      kind: "seat_invite",
       id: registration.id,
       to: registration.email,
       build: () => buildSeatInvite(registration, settings),
@@ -398,6 +418,7 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
+      kind: "payment_reminder",
       id: registration.id,
       to: registration.email,
       build: () => buildPaymentReminder(registration, settings),
@@ -411,12 +432,15 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
  * support the same {{first_name}} / {{full_name}} / Settings merge vars.
  * Never throws — the outcome (sent/failed) is recorded and returned so the
  * caller can tally results across the whole audience.
+ *
+ * This is the only path that uses Resend (kind: "campaign").
  */
 export async function sendCampaignEmail(
   registration: Registration,
   subject: string,
   bodyText: string,
-  settings: Settings
+  settings: Settings,
+  campaignId?: string
 ): Promise<SendEmailResult> {
   const vars = registrationVars(registration, settings);
   const mergedSubject = mergeTemplate(subject, vars);
@@ -424,8 +448,10 @@ export async function sendCampaignEmail(
 
   return deliverAttendeeEmail({
     source: "CAMPAIGN",
+    kind: "campaign",
     id: registration.id,
     to: registration.email,
+    campaignId,
     build: async () => ({
       subject: mergedSubject,
       html: renderBrandedEmail({

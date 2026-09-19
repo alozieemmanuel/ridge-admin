@@ -1,46 +1,84 @@
 /**
- * Import existing brochure requests from a CSV file into the database.
+ * Backfills BrochureRequest rows from a CSV export (e.g. Google Sheets:
+ * File > Download > Comma Separated Values).
  *
  * Usage:
- *   npm run import:brochure-requests -- path/to/export.csv
- *   npm run import:brochure-requests -- path/to/export.csv --dry-run
+ *   npm run import:brochure -- path/to/export.csv --dry-run   (preview only)
+ *   npm run import:brochure -- path/to/export.csv             (import)
  *
- * Expected columns (case-insensitive): Full Name / Name, Email,
- * Timestamp / Requested / Date (optional). Never sends emails — this is a
- * historical backfill.
+ * Recognised headers (case-insensitive, first match wins):
+ *   name:      Full Name, Name, Fullname
+ *   email:     Email, Email Address, E-mail
+ *   timestamp: Timestamp, Date, Created, Created At, Submitted
+ *
+ * Skips rows with no valid email. Skips emails already in the database, so it
+ * is safe to re-run. It never sends any email.
  */
-
-import fs from "node:fs";
-import path from "node:path";
-import { parse } from "csv-parse/sync";
 import { PrismaClient } from "@prisma/client";
+import fs from "node:fs";
 
 const prisma = new PrismaClient();
 
-const COLUMN_ALIASES: Record<string, string[]> = {
-  fullName: ["full name", "fullname", "name"],
-  email: ["email", "email address"],
-  createdAt: ["timestamp", "requested", "requested at", "date"],
-};
+const NAME_HEADERS = ["full name", "fullname", "name"];
+const EMAIL_HEADERS = ["email address", "e-mail", "email"];
+const TIME_HEADERS = ["timestamp", "created at", "created", "submitted", "date"];
 
-function normalizeHeader(header: string): string {
-  return header.trim().toLowerCase();
-}
+/** Minimal CSV parser that handles quoted fields, commas and newlines inside quotes. */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
 
-function buildColumnMap(headers: string[]): Record<string, string> {
-  const normalized = headers.map(normalizeHeader);
-  const map: Record<string, string> = {};
-  for (const [field, aliases] of Object.entries(COLUMN_ALIASES)) {
-    const idx = normalized.findIndex((h) => aliases.includes(h));
-    if (idx !== -1) map[field] = headers[idx];
+  const src = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inQuotes) {
+      if (c === '"' && src[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        inQuotes = false;
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && src[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
   }
-  return map;
+  row.push(field);
+  if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+  return rows;
 }
 
-function parseDate(raw: string | undefined): Date {
-  if (!raw) return new Date();
-  const parsed = new Date(raw);
-  return isNaN(parsed.getTime()) ? new Date() : parsed;
+function findColumn(headers: string[], candidates: string[]): number {
+  const lowered = headers.map((h) => h.trim().toLowerCase());
+  for (const candidate of candidates) {
+    const idx = lowered.indexOf(candidate);
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function parseDate(value: string | undefined): Date | undefined {
+  if (!value || !value.trim()) return undefined;
+  const d = new Date(value.trim());
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 async function main() {
@@ -49,87 +87,89 @@ async function main() {
   const filePath = args.find((a) => !a.startsWith("--"));
 
   if (!filePath) {
-    console.error("Usage: npm run import:brochure-requests -- path/to/export.csv [--dry-run]");
+    console.error("Usage: npm run import:brochure -- path/to/export.csv [--dry-run]");
+    process.exit(1);
+  }
+  if (!fs.existsSync(filePath)) {
+    console.error(`File not found: ${filePath}`);
     process.exit(1);
   }
 
-  const absolutePath = path.resolve(filePath);
-  if (!fs.existsSync(absolutePath)) {
-    console.error(`File not found: ${absolutePath}`);
+  const rows = parseCsv(fs.readFileSync(filePath, "utf8"));
+  if (rows.length < 2) {
+    console.error("The CSV has no data rows.");
     process.exit(1);
   }
 
-  const raw = fs.readFileSync(absolutePath, "utf-8");
-  const records: Record<string, string>[] = parse(raw, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-  });
+  const headers = rows[0];
+  const nameCol = findColumn(headers, NAME_HEADERS);
+  const emailCol = findColumn(headers, EMAIL_HEADERS);
+  const timeCol = findColumn(headers, TIME_HEADERS);
 
-  if (records.length === 0) {
-    console.log("No rows found in the CSV. Nothing to do.");
+  console.log("Headers found:", headers.map((h) => h.trim()).join(" | "));
+  console.log(
+    `Matched columns -> name: ${nameCol === -1 ? "NONE" : headers[nameCol]}, ` +
+      `email: ${emailCol === -1 ? "NONE" : headers[emailCol]}, ` +
+      `timestamp: ${timeCol === -1 ? "none (will use now)" : headers[timeCol]}`
+  );
+
+  if (emailCol === -1) {
+    console.error("\nCould not find an email column. Rename it to 'Email' in the CSV and run again.");
+    process.exit(1);
+  }
+
+  const existing = new Set(
+    (await prisma.brochureRequest.findMany({ select: { email: true } })).map((r) => r.email.toLowerCase())
+  );
+
+  let toCreate = 0;
+  let skippedInvalid = 0;
+  let skippedExisting = 0;
+  let skippedDuplicateInFile = 0;
+  const seenInFile = new Set<string>();
+  const pending: { fullName: string; email: string; createdAt?: Date }[] = [];
+
+  for (const row of rows.slice(1)) {
+    const email = (row[emailCol] ?? "").trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      skippedInvalid++;
+      continue;
+    }
+    if (seenInFile.has(email)) {
+      skippedDuplicateInFile++;
+      continue;
+    }
+    seenInFile.add(email);
+    if (existing.has(email)) {
+      skippedExisting++;
+      continue;
+    }
+
+    const fullName = nameCol === -1 ? "" : (row[nameCol] ?? "").trim();
+    pending.push({
+      fullName: fullName || email.split("@")[0],
+      email,
+      createdAt: timeCol === -1 ? undefined : parseDate(row[timeCol]),
+    });
+    toCreate++;
+  }
+
+  console.log(`\nRows in file:            ${rows.length - 1}`);
+  console.log(`Will import:             ${toCreate}`);
+  console.log(`Skipped (bad email):     ${skippedInvalid}`);
+  console.log(`Skipped (already in DB): ${skippedExisting}`);
+  console.log(`Skipped (dupe in file):  ${skippedDuplicateInFile}`);
+
+  if (dryRun) {
+    console.log("\nDry run. Nothing was written.");
+    if (pending.length > 0) console.log("First rows:", pending.slice(0, 3));
     return;
   }
 
-  const columnMap = buildColumnMap(Object.keys(records[0]));
-
-  if (!columnMap.fullName || !columnMap.email) {
-    console.error(
-      "Could not find both a name column and an email column in the CSV headers.\n" +
-        `Headers found: ${Object.keys(records[0]).join(", ")}\n` +
-        "Edit COLUMN_ALIASES in this script to match your export, then re-run."
-    );
-    process.exit(1);
+  if (pending.length > 0) {
+    await prisma.brochureRequest.createMany({ data: pending });
   }
-
-  let created = 0;
-  let skipped = 0;
-  let duplicates = 0;
-
-  console.log(
-    dryRun
-      ? `Dry run — will report what WOULD happen for ${records.length} rows, without writing anything.\n`
-      : `Importing ${records.length} rows...\n`
-  );
-
-  for (const [i, row] of records.entries()) {
-    const fullName = row[columnMap.fullName]?.trim();
-    const email = row[columnMap.email]?.trim().toLowerCase();
-
-    if (!fullName || !email || !email.includes("@")) {
-      console.warn(`Row ${i + 2}: skipped — missing or invalid name/email.`);
-      skipped++;
-      continue;
-    }
-
-    const createdAt = parseDate(columnMap.createdAt ? row[columnMap.createdAt] : undefined);
-
-    if (dryRun) {
-      console.log(`Would create: ${fullName} <${email}> (requested ${createdAt.toISOString()})`);
-      continue;
-    }
-
-    // Brochure requests aren't unique-by-email in the schema (someone can
-    // legitimately request twice), but for a one-time historical import we
-    // don't want to duplicate the same row if this script is re-run.
-    const existing = await prisma.brochureRequest.findFirst({ where: { email, fullName } });
-    if (existing) {
-      duplicates++;
-      continue;
-    }
-
-    await prisma.brochureRequest.create({
-      data: { fullName, email, createdAt },
-    });
-    created++;
-  }
-
-  if (!dryRun) {
-    console.log(`\nDone. Created: ${created}, Skipped: ${skipped}, Already existed: ${duplicates}.`);
-    console.log("No emails were sent — this was a historical import only.");
-  } else {
-    console.log(`\nDry run complete. ${records.length - skipped} rows would be imported, ${skipped} skipped.`);
-  }
+  console.log(`\nDone. Imported ${pending.length} brochure requests. No emails were sent.`);
 }
 
 main()
@@ -137,6 +177,4 @@ main()
     console.error(err);
     process.exit(1);
   })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+  .finally(() => prisma.$disconnect());

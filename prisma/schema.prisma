@@ -103,15 +103,19 @@ model EmailEvent {
   registration       Registration?     @relation(fields: [registrationId], references: [id], onDelete: Cascade)
   brochureRequestId  String?
   brochureRequest    BrochureRequest?  @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
+  campaignId         String?
+  campaign           Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   type               EmailEventType
   audience           EmailAudience @default(ATTENDEE)
+  kind               String?      // "confirmation" | "seat_invite" | "payment_reminder" | "brochure" | "campaign" | "internal"; null on older rows
   providerMessageId  String?      // Resend's email id, used to correlate webhook events
   errorMessage       String?      // why a send FAILED (Resend's message), shown on hover in the dashboard
   occurredAt         DateTime     @default(now())
 
   @@index([registrationId])
   @@index([brochureRequestId])
+  @@index([campaignId])
   @@index([providerMessageId])
 }
 
@@ -167,6 +171,8 @@ model Campaign {
   failedCount  Int              @default(0)
   sentAt       DateTime         @default(now())
   sentByName   String?
+
+  emailEvents  EmailEvent[]
 
   @@index([sentAt])
 }

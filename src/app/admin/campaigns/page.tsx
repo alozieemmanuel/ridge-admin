@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
 type Audience =
   | "ALL"
@@ -33,6 +34,32 @@ interface Campaign {
   failedCount: number;
   sentAt: string;
   sentByName: string | null;
+  delivered?: number;
+  opened?: number;
+  bounced?: number;
+  complained?: number;
+}
+
+interface CampaignStats {
+  delivered: number;
+  opened: number;
+  bounced: number;
+  complained: number;
+}
+
+function percent(part: number, whole: number): string {
+  if (!whole) return "0%";
+  return `${Math.round((part / whole) * 100)}%`;
+}
+
+function StatCard({ label, value, hint, tone }: { label: string; value: number; hint?: string; tone: string }) {
+  return (
+    <div className="border border-border rounded-xl px-5 py-4">
+      <div className="text-xs uppercase tracking-wider text-muted mb-2">{label}</div>
+      <div className={`font-serif text-2xl ${tone}`}>{value}</div>
+      {hint && <div className="text-xs text-muted mt-1">{hint}</div>}
+    </div>
+  );
 }
 
 export default function CampaignsPage() {
@@ -41,27 +68,42 @@ export default function CampaignsPage() {
   const [body, setBody] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [stats, setStats] = useState<CampaignStats>({ delivered: 0, opened: 0, bounced: 0, complained: 0 });
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<"compose" | "confirm">("compose");
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
 
   const load = useCallback(async () => {
-    const [countsRes, campaignsRes] = await Promise.all([
-      fetch("/api/admin/campaigns/audience-counts"),
-      fetch("/api/admin/campaigns"),
-    ]);
-    if (countsRes.ok) setCounts((await countsRes.json()).counts);
-    if (campaignsRes.ok) setCampaigns((await campaignsRes.json()).campaigns);
-    setLoading(false);
+    try {
+      const [countsRes, campaignsRes] = await Promise.all([
+        fetch("/api/admin/campaigns/audience-counts"),
+        fetch("/api/admin/campaigns"),
+      ]);
+      if (countsRes.ok) setCounts((await countsRes.json()).counts);
+      if (campaignsRes.ok) {
+        const data = await campaignsRes.json();
+        setCampaigns(data.campaigns);
+        if (data.stats) setStats(data.stats);
+      }
+    } catch {
+      // Network hiccup — keep showing the last data; the next poll will retry.
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  // Opens and bounces arrive from Resend after the send, so refresh in the background.
+  useAutoRefresh(() => load(), 15_000);
+
   const recipientCount = counts[audience] ?? 0;
   const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
+
+  const totalSent = campaigns.reduce((sum, c) => sum + c.sentCount, 0);
 
   async function handleSend() {
     setSending(true);
@@ -182,7 +224,37 @@ export default function CampaignsPage() {
         )}
       </div>
 
-      <h3 className="font-serif text-xl mb-4">Sent campaigns</h3>
+      <h3 className="font-serif text-xl mb-4">Campaign results</h3>
+
+      {!loading && campaigns.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <StatCard
+            label="Delivered"
+            value={stats.delivered}
+            hint={`${percent(stats.delivered, totalSent)} of sent`}
+            tone="text-emerald-400"
+          />
+          <StatCard
+            label="Opened"
+            value={stats.opened}
+            hint={`${percent(stats.opened, stats.delivered)} of delivered`}
+            tone="text-emerald-400"
+          />
+          <StatCard
+            label="Bounced"
+            value={stats.bounced}
+            hint={`${percent(stats.bounced, totalSent)} of sent`}
+            tone="text-red-400"
+          />
+          <StatCard
+            label="Complained"
+            value={stats.complained}
+            hint="Marked as spam"
+            tone="text-red-400"
+          />
+        </div>
+      )}
+
       {loading && <p className="text-muted">Loading…</p>}
       {!loading && campaigns.length === 0 && <p className="text-muted text-sm">No campaigns sent yet.</p>}
       {!loading && campaigns.length > 0 && (
@@ -194,28 +266,51 @@ export default function CampaignsPage() {
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Subject</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Audience</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Sent</th>
+                  <th className="px-5 py-3 font-medium whitespace-nowrap">Delivered</th>
+                  <th className="px-5 py-3 font-medium whitespace-nowrap">Opened</th>
+                  <th className="px-5 py-3 font-medium whitespace-nowrap">Bounced</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Date</th>
                 </tr>
               </thead>
               <tbody>
-                {campaigns.map((c) => (
-                  <tr key={c.id} className="border-b border-border/50 last:border-b-0">
-                    <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">
-                      {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
-                    </td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">
-                      {c.sentCount} of {c.recipientCount}
-                      {c.failedCount > 0 && <span className="text-red-400"> ({c.failedCount} failed)</span>}
-                    </td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">
-                      {new Date(c.sentAt).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
+                {campaigns.map((c) => {
+                  const delivered = c.delivered ?? 0;
+                  const opened = c.opened ?? 0;
+                  const bounced = c.bounced ?? 0;
+                  return (
+                    <tr key={c.id} className="border-b border-border/50 last:border-b-0">
+                      <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
+                      <td className="px-5 py-4 text-muted whitespace-nowrap">
+                        {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
+                      </td>
+                      <td className="px-5 py-4 text-muted whitespace-nowrap">
+                        {c.sentCount} of {c.recipientCount}
+                        {c.failedCount > 0 && <span className="text-red-400"> ({c.failedCount} failed)</span>}
+                      </td>
+                      <td className="px-5 py-4 whitespace-nowrap text-emerald-400">
+                        {delivered}
+                        <span className="text-muted ml-1.5">{percent(delivered, c.sentCount)}</span>
+                      </td>
+                      <td className="px-5 py-4 whitespace-nowrap text-emerald-400">
+                        {opened}
+                        <span className="text-muted ml-1.5">{percent(opened, delivered)}</span>
+                      </td>
+                      <td className={`px-5 py-4 whitespace-nowrap ${bounced > 0 ? "text-red-400" : "text-muted"}`}>
+                        {bounced}
+                      </td>
+                      <td className="px-5 py-4 text-muted whitespace-nowrap">
+                        {new Date(c.sentAt).toLocaleString()}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          <p className="px-5 py-3 text-xs text-muted border-t border-border">
+            Open counts are approximate. Some mail apps block the tracking pixel, and others open every message
+            automatically. Campaigns sent before this update show zeros here.
+          </p>
         </div>
       )}
     </AdminShell>
