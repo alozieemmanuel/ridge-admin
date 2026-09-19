@@ -10,6 +10,16 @@ const FIELDS: { key: string; label: string; hint?: string }[] = [
   { key: "sender_name", label: "Email Sender Name" },
   { key: "registration_fee", label: "Early Bird Fee (display text)" },
   { key: "late_registration_fee", label: "Late Fee (display text)" },
+  {
+    key: "registration_fee_amount",
+    label: "Early Bird Fee Amount (number)",
+    hint: "Plain number, no currency symbol — used to auto-calculate paid/partial/not paid on the Payments page.",
+  },
+  {
+    key: "late_registration_fee_amount",
+    label: "Late Fee Amount (number)",
+    hint: "Plain number, no currency symbol — used to auto-calculate paid/partial/not paid on the Payments page.",
+  },
   { key: "early_bird_deadline", label: "Early Bird Deadline" },
   { key: "brochure_url", label: "Brochure PDF URL" },
   { key: "payment_account_name", label: "Payment — Account Name" },

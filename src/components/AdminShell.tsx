@@ -12,6 +12,7 @@ interface AdminSession {
 
 const TABS: { href: string; label: string }[] = [
   { href: "/admin", label: "Registrations" },
+  { href: "/admin/payments", label: "Payments" },
   { href: "/admin/brochure-requests", label: "Brochure Requests" },
   { href: "/admin/seats", label: "Day 7 Seating" },
   { href: "/admin/templates", label: "Emails & WhatsApp" },

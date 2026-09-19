@@ -26,6 +26,9 @@ export async function GET() {
     "Notes",
     "Registration Type",
     "Seat",
+    "Payment Status",
+    "Amount Paid",
+    "Payment Updated At",
     "Registered At",
   ];
 
@@ -41,6 +44,9 @@ export async function GET() {
         csvEscape(r.notes),
         csvEscape(r.regType),
         csvEscape(r.seat?.label ?? ""),
+        csvEscape(r.paymentStatus),
+        csvEscape(r.amountPaid),
+        csvEscape(r.paymentUpdatedAt ? r.paymentUpdatedAt.toISOString() : ""),
         csvEscape(r.createdAt.toISOString()),
       ].join(",")
     );

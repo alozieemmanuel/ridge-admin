@@ -21,3 +21,23 @@ textarea,
 select {
   color-scheme: dark;
 }
+
+/* Slim, gold-tinted horizontal scrollbar for wide tables (Registrations,
+   Payments) instead of the bulky default OS scrollbar. */
+.table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(201, 151, 46, 0.45) transparent;
+}
+.table-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.table-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(201, 151, 46, 0.45);
+  border-radius: 9999px;
+}
+.table-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(201, 151, 46, 0.7);
+}

@@ -39,9 +39,15 @@ export const updateSeatStatusSchema = z.object({
   status: z.enum(["OPEN", "RESERVED", "TAKEN", "BLOCKED"]),
 });
 
-export const updateRegistrationSchema = z.object({
-  paymentStatus: z.enum(["NOT_PAID", "PARTIAL", "PAID"]).optional(),
-  paymentNote: z.string().max(500).optional().or(z.literal("")),
+// Admins confirm a payment by amount only — NOT_PAID / PARTIAL / PAID is
+// derived server-side by comparing amountPaid against the registration's
+// expected fee. `note` is an optional free-text remark (e.g. a bank ref).
+export const confirmPaymentSchema = z.object({
+  amountPaid: z.coerce
+    .number({ invalid_type_error: "Enter a valid amount." })
+    .min(0, "Amount can't be negative.")
+    .max(10_000_000, "That amount looks too large — double check it."),
+  note: z.string().trim().max(500).optional().or(z.literal("")),
 });
 
 export const registrationActionSchema = z.object({

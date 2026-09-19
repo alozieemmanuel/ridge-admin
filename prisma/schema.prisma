@@ -65,6 +65,9 @@ model Registration {
 
   paymentStatus     PaymentStatus @default(NOT_PAID)
   paymentNote       String?       // free-text admin note, e.g. "$1000 of $2000 received 9/20"
+  amountPaid        Float         @default(0) // total confirmed amount received, in the programme currency;
+                                               // compared against the expected fee to derive paymentStatus
+  paymentUpdatedAt  DateTime?     // last time an admin confirmed a payment amount
   seatInviteSentAt  DateTime?     // last time the "pick your seat" email was sent
 
   createdAt    DateTime     @default(now())
