@@ -69,6 +69,7 @@ model Registration {
                                                // compared against the expected fee to derive paymentStatus
   paymentUpdatedAt  DateTime?     // last time an admin confirmed a payment amount
   seatInviteSentAt  DateTime?     // last time the "pick your seat" email was sent
+  checkedInAt       DateTime?     // when the attendee was marked as arrived on Day 7 (attendance)
 
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt

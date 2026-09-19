@@ -11,7 +11,7 @@ export async function GET() {
         orderBy: { seatNumber: "asc" },
         include: {
           registration: {
-            select: { id: true, fullName: true, email: true },
+            select: { id: true, fullName: true, email: true, checkedInAt: true },
           },
         },
       },

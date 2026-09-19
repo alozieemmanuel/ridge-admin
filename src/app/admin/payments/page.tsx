@@ -66,8 +66,8 @@ function PaymentConfirmModal({
   onConfirm: (amountPaid: number, note: string) => Promise<void>;
 }) {
   const [step, setStep] = useState<"input" | "confirm">("input");
-  const [amountText, setAmountText] = useState(row.amountPaid ? String(row.amountPaid) : "");
-  const [note, setNote] = useState(row.paymentNote ?? "");
+  const [amountText, setAmountText] = useState("");
+  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -112,11 +112,12 @@ function PaymentConfirmModal({
               inputMode="decimal"
               value={amountText}
               onChange={(e) => setAmountText(e.target.value)}
-              placeholder="0"
+              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
               className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
             />
             <p className="text-xs text-muted mb-4">
-              Total amount received to date for this registration
+              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to
+              date for this registration
               {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
             </p>
 

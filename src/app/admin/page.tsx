@@ -57,6 +57,7 @@ export default function RegistrationsPage() {
   const [rows, setRows] = useState<RegistrationRow[]>([]);
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<EmailStats | null>(null);
+  const [regTypeCounts, setRegTypeCounts] = useState<{ all: number; earlyBird: number; late: number } | null>(null);
   const [search, setSearch] = useState("");
   const [regType, setRegType] = useState<string>("ALL");
   const [loading, setLoading] = useState(true);
@@ -82,6 +83,7 @@ export default function RegistrationsPage() {
           setRows(data.registrations);
           setTotal(data.total);
           setStats(data.emailStats);
+          setRegTypeCounts(data.regTypeCounts);
         }
       } catch {
         // Network hiccup — keep showing the last data; the next poll will retry.
@@ -147,17 +149,22 @@ export default function RegistrationsPage() {
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {["ALL", "EARLY_BIRD", "LATE"].map((rt) => (
-          <button
-            key={rt}
-            onClick={() => setRegType(rt)}
-            className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
-              regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
-            }`}
-          >
-            {rt === "ALL" ? "All" : rt === "EARLY_BIRD" ? "Early Bird" : "Late"}
-          </button>
-        ))}
+        {["ALL", "EARLY_BIRD", "LATE"].map((rt) => {
+          const count =
+            rt === "ALL" ? regTypeCounts?.all : rt === "EARLY_BIRD" ? regTypeCounts?.earlyBird : regTypeCounts?.late;
+          return (
+            <button
+              key={rt}
+              onClick={() => setRegType(rt)}
+              className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
+                regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
+              }`}
+            >
+              {rt === "ALL" ? "All" : rt === "EARLY_BIRD" ? "Early Bird" : "Late"}
+              {count !== undefined && <span className="ml-1.5 opacity-70">{count}</span>}
+            </button>
+          );
+        })}
       </div>
 
       <input

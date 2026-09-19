@@ -83,7 +83,7 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
     onAction(action);
   }
 
-  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 disabled:opacity-40 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
+  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
 
   return (
     <>

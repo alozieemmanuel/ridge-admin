@@ -16,7 +16,6 @@ const TABS: { href: string; label: string }[] = [
   { href: "/admin/brochure-requests", label: "Brochure Requests" },
   { href: "/admin/seats", label: "Day 7 Seating" },
   { href: "/admin/templates", label: "Emails & WhatsApp" },
-  { href: "/admin/settings", label: "Settings" },
   { href: "/admin/admins", label: "Manage Admins" },
 ];
 

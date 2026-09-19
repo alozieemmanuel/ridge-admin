@@ -113,6 +113,12 @@ export async function GET(request: NextRequest) {
     else if (g.paymentStatus === "PAID") paymentStats.paid = g._count.paymentStatus;
   }
 
+  const [earlyBirdCount, lateCount] = await Promise.all([
+    prisma.registration.count({ where: { regType: "EARLY_BIRD" } }),
+    prisma.registration.count({ where: { regType: "LATE" } }),
+  ]);
+  const regTypeCounts = { all: totalRegistrations, earlyBird: earlyBirdCount, late: lateCount };
+
   const rows = registrations.map((r) => ({
     id: r.id,
     fullName: r.fullName,
@@ -147,5 +153,6 @@ export async function GET(request: NextRequest) {
       notSent: notSentCount,
     },
     paymentStats,
+    regTypeCounts,
   });
 }

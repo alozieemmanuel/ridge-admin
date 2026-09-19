@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import AdminShell from "@/components/AdminShell";
+import SeatsSubNav from "@/components/SeatsSubNav";
 import { SEAT_STATUS_META, type SeatStatus, TABLES_PER_ROW } from "@/lib/seating";
 
 interface SeatData {
@@ -191,6 +192,8 @@ export default function SeatsPage() {
           {savingSeatId && <span className="text-goldlight ml-2">Saving…</span>}
         </p>
       </div>
+
+      <SeatsSubNav active="/admin/seats" />
 
       {loading && <p className="text-muted">Loading…</p>}
 
