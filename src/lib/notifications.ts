@@ -5,7 +5,7 @@ import type { SendEmailResult } from "@/lib/email";
 import type { Registration, BrochureRequest } from "@prisma/client";
 
 type Settings = Record<string, string>;
-type EventSource = "REGISTRATION" | "BROCHURE";
+type EventSource = "REGISTRATION" | "BROCHURE" | "CAMPAIGN";
 
 interface BuiltEmail {
   subject: string;
@@ -55,7 +55,7 @@ async function recordEvent(params: {
     data: {
       source: params.source,
       audience: params.audience,
-      registrationId: params.source === "REGISTRATION" ? params.id : undefined,
+      registrationId: params.source === "REGISTRATION" || params.source === "CAMPAIGN" ? params.id : undefined,
       brochureRequestId: params.source === "BROCHURE" ? params.id : undefined,
       type: params.type,
       providerMessageId: params.providerMessageId,
@@ -85,7 +85,7 @@ async function deliverAttendeeEmail(opts: {
       html: email.html,
       replyTo: email.replyTo,
       tags: [
-        { name: "source", value: opts.source === "BROCHURE" ? "brochure" : "registration" },
+        { name: "source", value: opts.source === "BROCHURE" ? "brochure" : opts.source === "CAMPAIGN" ? "campaign" : "registration" },
         { name: "id", value: opts.id },
       ],
     });
@@ -403,4 +403,36 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
       build: () => buildPaymentReminder(registration, settings),
     })
   );
+}
+
+/**
+ * Sends one Campaigns-page broadcast email to a single registration. Subject
+ * and body come from the admin's compose form (not an EmailTemplate row) and
+ * support the same {{first_name}} / {{full_name}} / Settings merge vars.
+ * Never throws — the outcome (sent/failed) is recorded and returned so the
+ * caller can tally results across the whole audience.
+ */
+export async function sendCampaignEmail(
+  registration: Registration,
+  subject: string,
+  bodyText: string,
+  settings: Settings
+): Promise<SendEmailResult> {
+  const vars = registrationVars(registration, settings);
+  const mergedSubject = mergeTemplate(subject, vars);
+  const mergedBody = mergeTemplate(bodyText, vars);
+
+  return deliverAttendeeEmail({
+    source: "CAMPAIGN",
+    id: registration.id,
+    to: registration.email,
+    build: async () => ({
+      subject: mergedSubject,
+      html: renderBrandedEmail({
+        eyebrow: settings.event_caption,
+        heading: mergedSubject,
+        bodyText: mergedBody,
+      }),
+    }),
+  });
 }

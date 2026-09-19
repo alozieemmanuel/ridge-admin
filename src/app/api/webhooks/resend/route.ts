@@ -84,9 +84,9 @@ export async function POST(request: NextRequest) {
 
   await prisma.emailEvent.create({
     data: {
-      source: source === "brochure" ? "BROCHURE" : "REGISTRATION",
+      source: source === "brochure" ? "BROCHURE" : source === "campaign" ? "CAMPAIGN" : "REGISTRATION",
       audience: "ATTENDEE",
-      registrationId: source === "registration" ? id : undefined,
+      registrationId: source === "registration" || source === "campaign" ? id : undefined,
       brochureRequestId: source === "brochure" ? id : undefined,
       type: eventType,
       providerMessageId: payload.data.email_id,

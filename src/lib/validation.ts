@@ -72,3 +72,18 @@ export const clearDataSchema = z.object({
   target: z.enum(["registrations", "brochure_requests", "all"]),
   confirm: z.literal("DELETE", { errorMap: () => ({ message: "Type DELETE to confirm." }) }),
 });
+
+export const sendCampaignSchema = z.object({
+  audience: z.enum([
+    "ALL",
+    "EARLY_BIRD",
+    "LATE",
+    "NOT_PAID",
+    "PARTIAL",
+    "PAID",
+    "CHECKED_IN",
+    "NOT_CHECKED_IN",
+  ]),
+  subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
+  body: z.string().trim().min(1, "Message can't be empty.").max(20000),
+});

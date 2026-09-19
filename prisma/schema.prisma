@@ -19,6 +19,7 @@ enum RegType {
 enum EmailSource {
   REGISTRATION
   BROCHURE
+  CAMPAIGN
 }
 
 enum EmailEventType {
@@ -138,6 +139,36 @@ model Setting {
   key       String   @id
   value     String   @db.Text
   updatedAt DateTime @updatedAt
+}
+
+enum CampaignAudience {
+  ALL
+  EARLY_BIRD
+  LATE
+  NOT_PAID
+  PARTIAL
+  PAID
+  CHECKED_IN
+  NOT_CHECKED_IN
+}
+
+// One row per one-off broadcast sent from /admin/campaigns (the replacement
+// for the old per-registration "Emails & WhatsApp" template editor for
+// anything that isn't a fixed lifecycle email). Recipients are resolved at
+// send time from `audience`; each send also gets its own EmailEvent rows
+// (source: CAMPAIGN) so delivery/open tracking works the same as other mail.
+model Campaign {
+  id           String           @id @default(cuid())
+  subject      String
+  body         String           @db.Text
+  audience     CampaignAudience
+  recipientCount Int            @default(0)
+  sentCount    Int              @default(0)
+  failedCount  Int              @default(0)
+  sentAt       DateTime         @default(now())
+  sentByName   String?
+
+  @@index([sentAt])
 }
 
 model Admin {
