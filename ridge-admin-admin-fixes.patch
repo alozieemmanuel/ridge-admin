@@ -1,0 +1,1279 @@
+From 88c383f1d319e4e7f43f87dcc311f82f7d79dd85 Mon Sep 17 00:00:00 2001
+From: Alozie Emmanuel <alozie@ridge-admin.local>
+Date: Sat, 19 Sep 2026 16:57:41 +0000
+Subject: [PATCH 1/2] Fix payment field reset, action menu visibility,
+ registration counts; add Seats sub-tabs (Manage seats/Bookings/Attendance)
+ with check-in tracking; remove Settings from nav
+
+---
+ .../migration.sql                             |   2 +
+ prisma/schema.prisma                          |   1 +
+ src/app/admin/page.tsx                        |  29 +--
+ src/app/admin/payments/page.tsx               |   9 +-
+ src/app/admin/seats/attendance/page.tsx       | 187 ++++++++++++++++++
+ src/app/admin/seats/bookings/page.tsx         | 153 ++++++++++++++
+ src/app/admin/seats/page.tsx                  |   3 +
+ .../admin/registrations/[id]/checkin/route.ts |  39 ++++
+ src/app/api/admin/registrations/route.ts      |   7 +
+ src/app/api/admin/seats/route.ts              |   2 +-
+ src/components/AdminShell.tsx                 |   1 -
+ src/components/RegistrationActionsMenu.tsx    |   2 +-
+ src/components/SeatsSubNav.tsx                |  29 +++
+ 13 files changed, 446 insertions(+), 18 deletions(-)
+ create mode 100644 prisma/migrations/20260919170000_add_checked_in_at/migration.sql
+ create mode 100644 src/app/admin/seats/attendance/page.tsx
+ create mode 100644 src/app/admin/seats/bookings/page.tsx
+ create mode 100644 src/app/api/admin/registrations/[id]/checkin/route.ts
+ create mode 100644 src/components/SeatsSubNav.tsx
+
+diff --git a/prisma/migrations/20260919170000_add_checked_in_at/migration.sql b/prisma/migrations/20260919170000_add_checked_in_at/migration.sql
+new file mode 100644
+index 0000000..5dcdc6b
+--- /dev/null
++++ b/prisma/migrations/20260919170000_add_checked_in_at/migration.sql
+@@ -0,0 +1,2 @@
++-- AlterTable
++ALTER TABLE "Registration" ADD COLUMN IF NOT EXISTS "checkedInAt" TIMESTAMP(3);
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index b50f0c0..6f49fb9 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -69,6 +69,7 @@ model Registration {
+                                                // compared against the expected fee to derive paymentStatus
+   paymentUpdatedAt  DateTime?     // last time an admin confirmed a payment amount
+   seatInviteSentAt  DateTime?     // last time the "pick your seat" email was sent
++  checkedInAt       DateTime?     // when the attendee was marked as arrived on Day 7 (attendance)
+ 
+   createdAt    DateTime     @default(now())
+   updatedAt    DateTime     @updatedAt
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index 1141baa..d7722e4 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -57,6 +57,7 @@ export default function RegistrationsPage() {
+   const [rows, setRows] = useState<RegistrationRow[]>([]);
+   const [total, setTotal] = useState(0);
+   const [stats, setStats] = useState<EmailStats | null>(null);
++  const [regTypeCounts, setRegTypeCounts] = useState<{ all: number; earlyBird: number; late: number } | null>(null);
+   const [search, setSearch] = useState("");
+   const [regType, setRegType] = useState<string>("ALL");
+   const [loading, setLoading] = useState(true);
+@@ -82,6 +83,7 @@ export default function RegistrationsPage() {
+           setRows(data.registrations);
+           setTotal(data.total);
+           setStats(data.emailStats);
++          setRegTypeCounts(data.regTypeCounts);
+         }
+       } catch {
+         // Network hiccup — keep showing the last data; the next poll will retry.
+@@ -147,17 +149,22 @@ export default function RegistrationsPage() {
+       </div>
+ 
+       <div className="flex gap-2 mb-4 flex-wrap">
+-        {["ALL", "EARLY_BIRD", "LATE"].map((rt) => (
+-          <button
+-            key={rt}
+-            onClick={() => setRegType(rt)}
+-            className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
+-              regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
+-            }`}
+-          >
+-            {rt === "ALL" ? "All" : rt === "EARLY_BIRD" ? "Early Bird" : "Late"}
+-          </button>
+-        ))}
++        {["ALL", "EARLY_BIRD", "LATE"].map((rt) => {
++          const count =
++            rt === "ALL" ? regTypeCounts?.all : rt === "EARLY_BIRD" ? regTypeCounts?.earlyBird : regTypeCounts?.late;
++          return (
++            <button
++              key={rt}
++              onClick={() => setRegType(rt)}
++              className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
++                regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
++              }`}
++            >
++              {rt === "ALL" ? "All" : rt === "EARLY_BIRD" ? "Early Bird" : "Late"}
++              {count !== undefined && <span className="ml-1.5 opacity-70">{count}</span>}
++            </button>
++          );
++        })}
+       </div>
+ 
+       <input
+diff --git a/src/app/admin/payments/page.tsx b/src/app/admin/payments/page.tsx
+index 229f67d..bb0ed36 100644
+--- a/src/app/admin/payments/page.tsx
++++ b/src/app/admin/payments/page.tsx
+@@ -66,8 +66,8 @@ function PaymentConfirmModal({
+   onConfirm: (amountPaid: number, note: string) => Promise<void>;
+ }) {
+   const [step, setStep] = useState<"input" | "confirm">("input");
+-  const [amountText, setAmountText] = useState(row.amountPaid ? String(row.amountPaid) : "");
+-  const [note, setNote] = useState(row.paymentNote ?? "");
++  const [amountText, setAmountText] = useState("");
++  const [note, setNote] = useState("");
+   const [error, setError] = useState<string | null>(null);
+   const [submitting, setSubmitting] = useState(false);
+ 
+@@ -112,11 +112,12 @@ function PaymentConfirmModal({
+               inputMode="decimal"
+               value={amountText}
+               onChange={(e) => setAmountText(e.target.value)}
+-              placeholder="0"
++              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
+               className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
+             />
+             <p className="text-xs text-muted mb-4">
+-              Total amount received to date for this registration
++              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to
++              date for this registration
+               {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
+             </p>
+ 
+diff --git a/src/app/admin/seats/attendance/page.tsx b/src/app/admin/seats/attendance/page.tsx
+new file mode 100644
+index 0000000..725d06c
+--- /dev/null
++++ b/src/app/admin/seats/attendance/page.tsx
+@@ -0,0 +1,187 @@
++"use client";
++
++import { useEffect, useState, useCallback, useMemo } from "react";
++import AdminShell from "@/components/AdminShell";
++import SeatsSubNav from "@/components/SeatsSubNav";
++
++interface SeatData {
++  id: string;
++  seatNumber: number;
++  label: string;
++  status: string;
++  registration: { id: string; fullName: string; email: string; checkedInAt: string | null } | null;
++}
++
++interface TableData {
++  id: string;
++  label: string;
++  order: number;
++  seats: SeatData[];
++}
++
++interface Attendee {
++  registrationId: string;
++  fullName: string;
++  email: string;
++  seatLabel: string;
++  checkedIn: boolean;
++}
++
++function StatCard({ label, value, accent }: { label: string; value: string; accent: string }) {
++  return (
++    <div className="border border-border rounded-xl px-5 py-4 flex-1 min-w-[140px]">
++      <p className="text-xs uppercase tracking-wider text-muted mb-1.5">{label}</p>
++      <p className={`text-2xl font-serif ${accent}`}>{value}</p>
++    </div>
++  );
++}
++
++export default function AttendancePage() {
++  const [tables, setTables] = useState<TableData[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [search, setSearch] = useState("");
++  const [savingId, setSavingId] = useState<string | null>(null);
++
++  const load = useCallback(async () => {
++    const res = await fetch("/api/admin/seats");
++    if (res.ok) {
++      const data = await res.json();
++      setTables(data.tables);
++    }
++    setLoading(false);
++  }, []);
++
++  useEffect(() => {
++    load();
++  }, [load]);
++
++  const attendees: Attendee[] = useMemo(() => {
++    const list: Attendee[] = [];
++    for (const table of tables) {
++      for (const seat of table.seats) {
++        if (seat.registration) {
++          list.push({
++            registrationId: seat.registration.id,
++            fullName: seat.registration.fullName,
++            email: seat.registration.email,
++            seatLabel: seat.label,
++            checkedIn: !!seat.registration.checkedInAt,
++          });
++        }
++      }
++    }
++    return list.sort((a, b) => a.fullName.localeCompare(b.fullName));
++  }, [tables]);
++
++  const checkedInCount = attendees.filter((a) => a.checkedIn).length;
++
++  const visible = search
++    ? attendees.filter(
++        (a) =>
++          a.fullName.toLowerCase().includes(search.toLowerCase()) ||
++          a.email.toLowerCase().includes(search.toLowerCase()) ||
++          a.seatLabel.toLowerCase().includes(search.toLowerCase())
++      )
++    : attendees;
++
++  async function toggleCheckIn(a: Attendee) {
++    setSavingId(a.registrationId);
++    const res = await fetch(`/api/admin/registrations/${a.registrationId}/checkin`, {
++      method: "PATCH",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ checkedIn: !a.checkedIn }),
++    });
++    setSavingId(null);
++    if (res.ok) load();
++  }
++
++  return (
++    <AdminShell active="/admin/seats">
++      <div className="mb-6">
++        <h2 className="font-serif text-2xl">Seats</h2>
++        <p className="text-muted text-sm mt-1">Track who has arrived on Day 7.</p>
++      </div>
++
++      <SeatsSubNav active="/admin/seats/attendance" />
++
++      <div className="flex flex-wrap gap-4 mb-6">
++        <StatCard label="Checked in" value={String(checkedInCount)} accent="text-emerald-300" />
++        <StatCard label="Seats booked" value={String(attendees.length)} accent="text-goldlight" />
++        <StatCard label="Not yet in" value={String(attendees.length - checkedInCount)} accent="text-muted" />
++      </div>
++
++      <input
++        value={search}
++        onChange={(e) => setSearch(e.target.value)}
++        placeholder="Search name, email, or seat"
++        className="w-full max-w-md bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm mb-6 focus:outline-none focus:border-gold"
++      />
++
++      <div className="border border-border rounded-xl overflow-hidden">
++        <div className="table-scroll overflow-x-auto">
++          <table className="w-full text-sm">
++            <thead>
++              <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
++                <th className="sticky left-0 z-10 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Email</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Seat</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Status</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
++              </tr>
++            </thead>
++            <tbody>
++              {loading && (
++                <tr>
++                  <td colSpan={5} className="px-5 py-8 text-center text-muted">
++                    Loading…
++                  </td>
++                </tr>
++              )}
++              {!loading && visible.length === 0 && (
++                <tr>
++                  <td colSpan={5} className="px-5 py-8 text-center text-muted">
++                    No seated attendees found.
++                  </td>
++                </tr>
++              )}
++              {!loading &&
++                visible.map((a) => (
++                  <tr key={a.registrationId} className="border-b border-border/50 last:border-b-0">
++                    <td className="sticky left-0 z-10 bg-pagebg px-5 py-4 whitespace-nowrap font-medium">
++                      {a.fullName}
++                    </td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">{a.email}</td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      <span className="px-2.5 py-1 rounded-full border border-gold/40 text-goldlight text-xs font-semibold">
++                        {a.seatLabel}
++                      </span>
++                    </td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      {a.checkedIn ? (
++                        <span className="text-emerald-400 text-xs">Checked in</span>
++                      ) : (
++                        <span className="text-muted text-xs">Not yet</span>
++                      )}
++                    </td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      <button
++                        onClick={() => toggleCheckIn(a)}
++                        disabled={savingId === a.registrationId}
++                        className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap disabled:opacity-50 ${
++                          a.checkedIn
++                            ? "border-border text-muted hover:text-fg"
++                            : "border-gold/40 text-goldlight hover:bg-gold/10"
++                        }`}
++                      >
++                        {savingId === a.registrationId ? "Saving…" : a.checkedIn ? "Undo check-in" : "Check in"}
++                      </button>
++                    </td>
++                  </tr>
++                ))}
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </AdminShell>
++  );
++}
+diff --git a/src/app/admin/seats/bookings/page.tsx b/src/app/admin/seats/bookings/page.tsx
+new file mode 100644
+index 0000000..f5494c7
+--- /dev/null
++++ b/src/app/admin/seats/bookings/page.tsx
+@@ -0,0 +1,153 @@
++"use client";
++
++import { useEffect, useState, useCallback, useMemo } from "react";
++import AdminShell from "@/components/AdminShell";
++import SeatsSubNav from "@/components/SeatsSubNav";
++
++interface SeatData {
++  id: string;
++  seatNumber: number;
++  label: string;
++  status: string;
++  updatedAt?: string;
++  registration: { id: string; fullName: string; email: string; checkedInAt: string | null } | null;
++}
++
++interface TableData {
++  id: string;
++  label: string;
++  order: number;
++  seats: SeatData[];
++}
++
++interface Booking {
++  seatId: string;
++  seatLabel: string;
++  tableLabel: string;
++  registrationId: string;
++  fullName: string;
++  email: string;
++  checkedIn: boolean;
++}
++
++export default function SeatBookingsPage() {
++  const [tables, setTables] = useState<TableData[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [search, setSearch] = useState("");
++
++  const load = useCallback(async () => {
++    const res = await fetch("/api/admin/seats");
++    if (res.ok) {
++      const data = await res.json();
++      setTables(data.tables);
++    }
++    setLoading(false);
++  }, []);
++
++  useEffect(() => {
++    load();
++  }, [load]);
++
++  const bookings: Booking[] = useMemo(() => {
++    const list: Booking[] = [];
++    for (const table of tables) {
++      for (const seat of table.seats) {
++        if (seat.registration) {
++          list.push({
++            seatId: seat.id,
++            seatLabel: seat.label,
++            tableLabel: table.label,
++            registrationId: seat.registration.id,
++            fullName: seat.registration.fullName,
++            email: seat.registration.email,
++            checkedIn: !!seat.registration.checkedInAt,
++          });
++        }
++      }
++    }
++    return list.sort((a, b) => a.seatLabel.localeCompare(b.seatLabel, undefined, { numeric: true }));
++  }, [tables]);
++
++  const visible = search
++    ? bookings.filter(
++        (b) =>
++          b.fullName.toLowerCase().includes(search.toLowerCase()) ||
++          b.email.toLowerCase().includes(search.toLowerCase()) ||
++          b.seatLabel.toLowerCase().includes(search.toLowerCase())
++      )
++    : bookings;
++
++  return (
++    <AdminShell active="/admin/seats">
++      <div className="mb-6">
++        <h2 className="font-serif text-2xl">Seats</h2>
++        <p className="text-muted text-sm mt-1">
++          {bookings.length} seats booked
++        </p>
++      </div>
++
++      <SeatsSubNav active="/admin/seats/bookings" />
++
++      <input
++        value={search}
++        onChange={(e) => setSearch(e.target.value)}
++        placeholder="Search name, email, or seat"
++        className="w-full max-w-md bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm mb-6 focus:outline-none focus:border-gold"
++      />
++
++      <div className="border border-border rounded-xl overflow-hidden">
++        <div className="table-scroll overflow-x-auto">
++          <table className="w-full text-sm">
++            <thead>
++              <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
++                <th className="sticky left-0 z-10 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Email</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Seat</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Table</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Attendance</th>
++              </tr>
++            </thead>
++            <tbody>
++              {loading && (
++                <tr>
++                  <td colSpan={5} className="px-5 py-8 text-center text-muted">
++                    Loading…
++                  </td>
++                </tr>
++              )}
++              {!loading && visible.length === 0 && (
++                <tr>
++                  <td colSpan={5} className="px-5 py-8 text-center text-muted">
++                    No seat bookings found.
++                  </td>
++                </tr>
++              )}
++              {!loading &&
++                visible.map((b) => (
++                  <tr key={b.seatId} className="border-b border-border/50 last:border-b-0">
++                    <td className="sticky left-0 z-10 bg-pagebg px-5 py-4 whitespace-nowrap font-medium">
++                      {b.fullName}
++                    </td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">{b.email}</td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      <span className="px-2.5 py-1 rounded-full border border-gold/40 text-goldlight text-xs font-semibold">
++                        {b.seatLabel}
++                      </span>
++                    </td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">{b.tableLabel}</td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      {b.checkedIn ? (
++                        <span className="text-emerald-400 text-xs">Checked in</span>
++                      ) : (
++                        <span className="text-muted text-xs">Not yet</span>
++                      )}
++                    </td>
++                  </tr>
++                ))}
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </AdminShell>
++  );
++}
+diff --git a/src/app/admin/seats/page.tsx b/src/app/admin/seats/page.tsx
+index 64f691b..b465f06 100644
+--- a/src/app/admin/seats/page.tsx
++++ b/src/app/admin/seats/page.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { useEffect, useState, useCallback } from "react";
+ import AdminShell from "@/components/AdminShell";
++import SeatsSubNav from "@/components/SeatsSubNav";
+ import { SEAT_STATUS_META, type SeatStatus, TABLES_PER_ROW } from "@/lib/seating";
+ 
+ interface SeatData {
+@@ -192,6 +193,8 @@ export default function SeatsPage() {
+         </p>
+       </div>
+ 
++      <SeatsSubNav active="/admin/seats" />
++
+       {loading && <p className="text-muted">Loading…</p>}
+ 
+       {!loading && tables.length === 0 && (
+diff --git a/src/app/api/admin/registrations/[id]/checkin/route.ts b/src/app/api/admin/registrations/[id]/checkin/route.ts
+new file mode 100644
+index 0000000..847f5b0
+--- /dev/null
++++ b/src/app/api/admin/registrations/[id]/checkin/route.ts
+@@ -0,0 +1,39 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++
++export const runtime = "nodejs";
++
++/**
++ * Marks a registration as checked in (arrived on Day 7) or reverses that,
++ * for the Seats → Attendance tab. Body: { checkedIn: boolean }.
++ */
++export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++
++  let raw: unknown;
++  try {
++    raw = await request.json();
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }
++
++  const checkedIn = (raw as { checkedIn?: unknown })?.checkedIn;
++  if (typeof checkedIn !== "boolean") {
++    return NextResponse.json({ error: "checkedIn must be a boolean." }, { status: 400 });
++  }
++
++  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true } });
++  if (!existing) {
++    return NextResponse.json({ error: "Registration not found." }, { status: 404 });
++  }
++
++  const registration = await prisma.registration.update({
++    where: { id },
++    data: { checkedInAt: checkedIn ? new Date() : null },
++  });
++
++  return NextResponse.json({
++    result: "success",
++    checkedInAt: registration.checkedInAt ? registration.checkedInAt.toISOString() : null,
++  });
++}
+diff --git a/src/app/api/admin/registrations/route.ts b/src/app/api/admin/registrations/route.ts
+index b842d20..3554824 100644
+--- a/src/app/api/admin/registrations/route.ts
++++ b/src/app/api/admin/registrations/route.ts
+@@ -113,6 +113,12 @@ export async function GET(request: NextRequest) {
+     else if (g.paymentStatus === "PAID") paymentStats.paid = g._count.paymentStatus;
+   }
+ 
++  const [earlyBirdCount, lateCount] = await Promise.all([
++    prisma.registration.count({ where: { regType: "EARLY_BIRD" } }),
++    prisma.registration.count({ where: { regType: "LATE" } }),
++  ]);
++  const regTypeCounts = { all: totalRegistrations, earlyBird: earlyBirdCount, late: lateCount };
++
+   const rows = registrations.map((r) => ({
+     id: r.id,
+     fullName: r.fullName,
+@@ -147,5 +153,6 @@ export async function GET(request: NextRequest) {
+       notSent: notSentCount,
+     },
+     paymentStats,
++    regTypeCounts,
+   });
+ }
+diff --git a/src/app/api/admin/seats/route.ts b/src/app/api/admin/seats/route.ts
+index 3edba6b..515078d 100644
+--- a/src/app/api/admin/seats/route.ts
++++ b/src/app/api/admin/seats/route.ts
+@@ -11,7 +11,7 @@ export async function GET() {
+         orderBy: { seatNumber: "asc" },
+         include: {
+           registration: {
+-            select: { id: true, fullName: true, email: true },
++            select: { id: true, fullName: true, email: true, checkedInAt: true },
+           },
+         },
+       },
+diff --git a/src/components/AdminShell.tsx b/src/components/AdminShell.tsx
+index 19ead75..e83fed9 100644
+--- a/src/components/AdminShell.tsx
++++ b/src/components/AdminShell.tsx
+@@ -16,7 +16,6 @@ const TABS: { href: string; label: string }[] = [
+   { href: "/admin/brochure-requests", label: "Brochure Requests" },
+   { href: "/admin/seats", label: "Day 7 Seating" },
+   { href: "/admin/templates", label: "Emails & WhatsApp" },
+-  { href: "/admin/settings", label: "Settings" },
+   { href: "/admin/admins", label: "Manage Admins" },
+ ];
+ 
+diff --git a/src/components/RegistrationActionsMenu.tsx b/src/components/RegistrationActionsMenu.tsx
+index c871d4b..efcdb13 100644
+--- a/src/components/RegistrationActionsMenu.tsx
++++ b/src/components/RegistrationActionsMenu.tsx
+@@ -83,7 +83,7 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
+     onAction(action);
+   }
+ 
+-  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 disabled:opacity-40 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
++  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
+ 
+   return (
+     <>
+diff --git a/src/components/SeatsSubNav.tsx b/src/components/SeatsSubNav.tsx
+new file mode 100644
+index 0000000..1c2d44b
+--- /dev/null
++++ b/src/components/SeatsSubNav.tsx
+@@ -0,0 +1,29 @@
++"use client";
++
++import Link from "next/link";
++
++const SUB_TABS: { href: string; label: string }[] = [
++  { href: "/admin/seats", label: "Manage seats" },
++  { href: "/admin/seats/bookings", label: "Bookings" },
++  { href: "/admin/seats/attendance", label: "Attendance" },
++];
++
++export default function SeatsSubNav({ active }: { active: string }) {
++  return (
++    <div className="flex gap-2 mb-6 flex-wrap">
++      {SUB_TABS.map((tab) => (
++        <Link
++          key={tab.href}
++          href={tab.href}
++          className={`text-sm px-4 py-2 rounded-full border transition-colors ${
++            active === tab.href
++              ? "border-gold text-goldlight bg-gold/10"
++              : "border-border text-muted hover:text-fg"
++          }`}
++        >
++          {tab.label}
++        </Link>
++      ))}
++    </div>
++  );
++}
+-- 
+2.43.0
+
+
+From 7bec83f625cb16705352145771340a8b77a2a52f Mon Sep 17 00:00:00 2001
+From: Alozie Emmanuel <alozie@ridge-admin.local>
+Date: Sat, 19 Sep 2026 17:04:05 +0000
+Subject: [PATCH 2/2] Add Campaigns page (segment broadcast) replacing Emails &
+ WhatsApp in nav
+
+---
+ .../migration.sql                             |  27 +++
+ prisma/schema.prisma                          |  31 +++
+ src/app/admin/campaigns/page.tsx              | 223 ++++++++++++++++++
+ .../admin/campaigns/audience-counts/route.ts  |  26 ++
+ src/app/api/admin/campaigns/route.ts          |  94 ++++++++
+ src/app/api/webhooks/resend/route.ts          |   4 +-
+ src/components/AdminShell.tsx                 |   2 +-
+ src/lib/campaigns.ts                          |  33 +++
+ src/lib/notifications.ts                      |  38 ++-
+ src/lib/validation.ts                         |  15 ++
+ 10 files changed, 487 insertions(+), 6 deletions(-)
+ create mode 100644 prisma/migrations/20260919180000_add_campaigns/migration.sql
+ create mode 100644 src/app/admin/campaigns/page.tsx
+ create mode 100644 src/app/api/admin/campaigns/audience-counts/route.ts
+ create mode 100644 src/app/api/admin/campaigns/route.ts
+ create mode 100644 src/lib/campaigns.ts
+
+diff --git a/prisma/migrations/20260919180000_add_campaigns/migration.sql b/prisma/migrations/20260919180000_add_campaigns/migration.sql
+new file mode 100644
+index 0000000..75e3dcb
+--- /dev/null
++++ b/prisma/migrations/20260919180000_add_campaigns/migration.sql
+@@ -0,0 +1,27 @@
++-- AlterEnum
++ALTER TYPE "EmailSource" ADD VALUE IF NOT EXISTS 'CAMPAIGN';
++
++-- CreateEnum
++DO $$ BEGIN
++  CREATE TYPE "CampaignAudience" AS ENUM ('ALL', 'EARLY_BIRD', 'LATE', 'NOT_PAID', 'PARTIAL', 'PAID', 'CHECKED_IN', 'NOT_CHECKED_IN');
++EXCEPTION
++  WHEN duplicate_object THEN NULL;
++END $$;
++
++-- CreateTable
++CREATE TABLE IF NOT EXISTS "Campaign" (
++    "id" TEXT NOT NULL,
++    "subject" TEXT NOT NULL,
++    "body" TEXT NOT NULL,
++    "audience" "CampaignAudience" NOT NULL,
++    "recipientCount" INTEGER NOT NULL DEFAULT 0,
++    "sentCount" INTEGER NOT NULL DEFAULT 0,
++    "failedCount" INTEGER NOT NULL DEFAULT 0,
++    "sentAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "sentByName" TEXT,
++
++    CONSTRAINT "Campaign_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE INDEX IF NOT EXISTS "Campaign_sentAt_idx" ON "Campaign"("sentAt");
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 6f49fb9..db7c6a6 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -19,6 +19,7 @@ enum RegType {
+ enum EmailSource {
+   REGISTRATION
+   BROCHURE
++  CAMPAIGN
+ }
+ 
+ enum EmailEventType {
+@@ -140,6 +141,36 @@ model Setting {
+   updatedAt DateTime @updatedAt
+ }
+ 
++enum CampaignAudience {
++  ALL
++  EARLY_BIRD
++  LATE
++  NOT_PAID
++  PARTIAL
++  PAID
++  CHECKED_IN
++  NOT_CHECKED_IN
++}
++
++// One row per one-off broadcast sent from /admin/campaigns (the replacement
++// for the old per-registration "Emails & WhatsApp" template editor for
++// anything that isn't a fixed lifecycle email). Recipients are resolved at
++// send time from `audience`; each send also gets its own EmailEvent rows
++// (source: CAMPAIGN) so delivery/open tracking works the same as other mail.
++model Campaign {
++  id           String           @id @default(cuid())
++  subject      String
++  body         String           @db.Text
++  audience     CampaignAudience
++  recipientCount Int            @default(0)
++  sentCount    Int              @default(0)
++  failedCount  Int              @default(0)
++  sentAt       DateTime         @default(now())
++  sentByName   String?
++
++  @@index([sentAt])
++}
++
+ model Admin {
+   id           String    @id @default(cuid())
+   name         String
+diff --git a/src/app/admin/campaigns/page.tsx b/src/app/admin/campaigns/page.tsx
+new file mode 100644
+index 0000000..89d3062
+--- /dev/null
++++ b/src/app/admin/campaigns/page.tsx
+@@ -0,0 +1,223 @@
++"use client";
++
++import { useEffect, useState, useCallback } from "react";
++import AdminShell from "@/components/AdminShell";
++
++type Audience =
++  | "ALL"
++  | "EARLY_BIRD"
++  | "LATE"
++  | "NOT_PAID"
++  | "PARTIAL"
++  | "PAID"
++  | "CHECKED_IN"
++  | "NOT_CHECKED_IN";
++
++const AUDIENCE_OPTIONS: { value: Audience; label: string }[] = [
++  { value: "ALL", label: "All registrants" },
++  { value: "EARLY_BIRD", label: "Early Bird" },
++  { value: "LATE", label: "Late" },
++  { value: "NOT_PAID", label: "Not paid" },
++  { value: "PARTIAL", label: "Partially paid" },
++  { value: "PAID", label: "Fully paid" },
++  { value: "CHECKED_IN", label: "Checked in (Day 7)" },
++  { value: "NOT_CHECKED_IN", label: "Not checked in (Day 7)" },
++];
++
++interface Campaign {
++  id: string;
++  subject: string;
++  audience: Audience;
++  recipientCount: number;
++  sentCount: number;
++  failedCount: number;
++  sentAt: string;
++  sentByName: string | null;
++}
++
++export default function CampaignsPage() {
++  const [audience, setAudience] = useState<Audience>("ALL");
++  const [subject, setSubject] = useState("");
++  const [body, setBody] = useState("");
++  const [counts, setCounts] = useState<Record<string, number>>({});
++  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [step, setStep] = useState<"compose" | "confirm">("compose");
++  const [sending, setSending] = useState(false);
++  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
++
++  const load = useCallback(async () => {
++    const [countsRes, campaignsRes] = await Promise.all([
++      fetch("/api/admin/campaigns/audience-counts"),
++      fetch("/api/admin/campaigns"),
++    ]);
++    if (countsRes.ok) setCounts((await countsRes.json()).counts);
++    if (campaignsRes.ok) setCampaigns((await campaignsRes.json()).campaigns);
++    setLoading(false);
++  }, []);
++
++  useEffect(() => {
++    load();
++  }, [load]);
++
++  const recipientCount = counts[audience] ?? 0;
++  const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
++
++  async function handleSend() {
++    setSending(true);
++    setMessage(null);
++    try {
++      const res = await fetch("/api/admin/campaigns", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ audience, subject, body }),
++      });
++      const data = await res.json();
++      if (res.ok) {
++        setMessage({
++          text: `Sent to ${data.campaign.sentCount} of ${data.campaign.recipientCount}${
++            data.campaign.failedCount ? ` (${data.campaign.failedCount} failed)` : ""
++          }.`,
++          ok: true,
++        });
++        setSubject("");
++        setBody("");
++        setStep("compose");
++        load();
++      } else {
++        setMessage({ text: data.error || "Failed to send.", ok: false });
++      }
++    } catch {
++      setMessage({ text: "Couldn't reach the server. Check your connection and try again.", ok: false });
++    } finally {
++      setSending(false);
++    }
++  }
++
++  return (
++    <AdminShell active="/admin/campaigns">
++      <div className="mb-6">
++        <h2 className="font-serif text-2xl">Campaigns</h2>
++        <p className="text-muted text-sm mt-1">
++          Send a one-off email to a segment of registrants. Confirmation, brochure, seat-invite and
++          payment-reminder emails are separate — those still go out automatically or from the ⋯ menu on
++          Registrations/Payments.
++        </p>
++      </div>
++
++      <div className="border border-border rounded-xl p-6 mb-8">
++        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Send to</label>
++        <div className="flex gap-2 mb-5 flex-wrap">
++          {AUDIENCE_OPTIONS.map((opt) => (
++            <button
++              key={opt.value}
++              onClick={() => setAudience(opt.value)}
++              className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
++                audience === opt.value ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
++              }`}
++            >
++              {opt.label}
++              {counts[opt.value] !== undefined && <span className="ml-1.5 opacity-70">{counts[opt.value]}</span>}
++            </button>
++          ))}
++        </div>
++
++        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Subject</label>
++        <input
++          value={subject}
++          onChange={(e) => setSubject(e.target.value)}
++          placeholder="e.g. A quick update ahead of Day 7"
++          className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-4 focus:outline-none focus:border-gold"
++        />
++
++        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Message</label>
++        <textarea
++          value={body}
++          onChange={(e) => setBody(e.target.value)}
++          rows={7}
++          placeholder="Type the message everyone in this segment will get. A blank line starts a new paragraph."
++          className="w-full bg-black/30 border border-border rounded-lg px-4 py-3 text-sm mb-2 focus:outline-none focus:border-gold font-mono"
++        />
++        <p className="text-xs text-muted mb-5">
++          Use {"{{first_name}}"} or {"{{full_name}}"} to personalize.
++        </p>
++
++        {message && (
++          <p className={`text-sm mb-4 ${message.ok ? "text-goldlight" : "text-red-400"}`}>{message.text}</p>
++        )}
++
++        {step === "compose" && (
++          <button
++            onClick={() => setStep("confirm")}
++            disabled={!canSend}
++            className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-50"
++          >
++            Continue
++          </button>
++        )}
++
++        {step === "confirm" && (
++          <div className="border border-gold/30 rounded-xl p-4">
++            <p className="text-sm mb-4">
++              This will send to <span className="text-goldlight">{recipientCount}</span>{" "}
++              {AUDIENCE_OPTIONS.find((o) => o.value === audience)?.label.toLowerCase()}. Continue?
++            </p>
++            <div className="flex items-center gap-3">
++              <button
++                onClick={() => setStep("compose")}
++                disabled={sending}
++                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg disabled:opacity-60"
++              >
++                Back
++              </button>
++              <button
++                onClick={handleSend}
++                disabled={sending}
++                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
++              >
++                {sending ? "Sending…" : `Send to ${recipientCount}`}
++              </button>
++            </div>
++          </div>
++        )}
++      </div>
++
++      <h3 className="font-serif text-xl mb-4">Sent campaigns</h3>
++      {loading && <p className="text-muted">Loading…</p>}
++      {!loading && campaigns.length === 0 && <p className="text-muted text-sm">No campaigns sent yet.</p>}
++      {!loading && campaigns.length > 0 && (
++        <div className="border border-border rounded-xl overflow-hidden">
++          <div className="table-scroll overflow-x-auto">
++            <table className="w-full text-sm">
++              <thead>
++                <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
++                  <th className="px-5 py-3 font-medium whitespace-nowrap">Subject</th>
++                  <th className="px-5 py-3 font-medium whitespace-nowrap">Audience</th>
++                  <th className="px-5 py-3 font-medium whitespace-nowrap">Sent</th>
++                  <th className="px-5 py-3 font-medium whitespace-nowrap">Date</th>
++                </tr>
++              </thead>
++              <tbody>
++                {campaigns.map((c) => (
++                  <tr key={c.id} className="border-b border-border/50 last:border-b-0">
++                    <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">
++                      {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
++                    </td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">
++                      {c.sentCount} of {c.recipientCount}
++                      {c.failedCount > 0 && <span className="text-red-400"> ({c.failedCount} failed)</span>}
++                    </td>
++                    <td className="px-5 py-4 text-muted whitespace-nowrap">
++                      {new Date(c.sentAt).toLocaleString()}
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        </div>
++      )}
++    </AdminShell>
++  );
++}
+diff --git a/src/app/api/admin/campaigns/audience-counts/route.ts b/src/app/api/admin/campaigns/audience-counts/route.ts
+new file mode 100644
+index 0000000..8c26f61
+--- /dev/null
++++ b/src/app/api/admin/campaigns/audience-counts/route.ts
+@@ -0,0 +1,26 @@
++import { NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { audienceWhere } from "@/lib/campaigns";
++import type { CampaignAudience } from "@prisma/client";
++
++export const runtime = "nodejs";
++
++const AUDIENCES: CampaignAudience[] = [
++  "ALL",
++  "EARLY_BIRD",
++  "LATE",
++  "NOT_PAID",
++  "PARTIAL",
++  "PAID",
++  "CHECKED_IN",
++  "NOT_CHECKED_IN",
++];
++
++export async function GET() {
++  const counts = await Promise.all(
++    AUDIENCES.map((a) => prisma.registration.count({ where: audienceWhere(a) }))
++  );
++  const result: Record<string, number> = {};
++  AUDIENCES.forEach((a, i) => (result[a] = counts[i]));
++  return NextResponse.json({ counts: result });
++}
+diff --git a/src/app/api/admin/campaigns/route.ts b/src/app/api/admin/campaigns/route.ts
+new file mode 100644
+index 0000000..1ed9cdb
+--- /dev/null
++++ b/src/app/api/admin/campaigns/route.ts
+@@ -0,0 +1,94 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { sendCampaignSchema } from "@/lib/validation";
++import { audienceWhere } from "@/lib/campaigns";
++import { getSettingsMap } from "@/lib/settings";
++import { sendCampaignEmail } from "@/lib/notifications";
++import { getSession } from "@/lib/auth";
++import type { Campaign, Registration } from "@prisma/client";
++
++export const runtime = "nodejs";
++export const maxDuration = 300;
++
++export async function GET() {
++  const campaigns = await prisma.campaign.findMany({ orderBy: { sentAt: "desc" }, take: 50 });
++  return NextResponse.json({
++    campaigns: campaigns.map((c: Campaign) => ({
++      id: c.id,
++      subject: c.subject,
++      audience: c.audience,
++      recipientCount: c.recipientCount,
++      sentCount: c.sentCount,
++      failedCount: c.failedCount,
++      sentAt: c.sentAt.toISOString(),
++      sentByName: c.sentByName,
++    })),
++  });
++}
++
++/**
++ * Sends a one-off broadcast (subject + plain-text body) to every registration
++ * matching the chosen audience segment. Sends are batched with a small
++ * concurrency limit rather than all at once, since a large audience (500+)
++ * could otherwise trip Resend's rate limit. Each recipient's outcome is
++ * recorded as its own EmailEvent (source: CAMPAIGN), and a Campaign row
++ * summarizes the whole run for the history list.
++ */
++export async function POST(request: NextRequest) {
++  const session = await getSession();
++
++  let raw: unknown;
++  try {
++    raw = await request.json();
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }
++
++  const parsed = sendCampaignSchema.safeParse(raw);
++  if (!parsed.success) {
++    return NextResponse.json(
++      { error: parsed.error.issues[0]?.message || "Invalid payload." },
++      { status: 400 }
++    );
++  }
++
++  const { audience, subject, body } = parsed.data;
++
++  const recipients = await prisma.registration.findMany({ where: audienceWhere(audience) });
++  if (recipients.length === 0) {
++    return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
++  }
++
++  const settings = await getSettingsMap();
++
++  let sentCount = 0;
++  let failedCount = 0;
++  const CONCURRENCY = 5;
++  for (let i = 0; i < recipients.length; i += CONCURRENCY) {
++    const batch = recipients.slice(i, i + CONCURRENCY);
++    const results = await Promise.all(
++      batch.map((r: Registration) => sendCampaignEmail(r, subject, body, settings))
++    );
++    for (const r of results) {
++      if (r.success) sentCount++;
++      else failedCount++;
++    }
++  }
++
++  const campaign = await prisma.campaign.create({
++    data: {
++      subject,
++      body,
++      audience,
++      recipientCount: recipients.length,
++      sentCount,
++      failedCount,
++      sentByName: session?.name,
++    },
++  });
++
++  return NextResponse.json({
++    result: "success",
++    campaign: { id: campaign.id, recipientCount: recipients.length, sentCount, failedCount },
++  });
++}
+diff --git a/src/app/api/webhooks/resend/route.ts b/src/app/api/webhooks/resend/route.ts
+index 8e6f137..c0dd3cd 100644
+--- a/src/app/api/webhooks/resend/route.ts
++++ b/src/app/api/webhooks/resend/route.ts
+@@ -84,9 +84,9 @@ export async function POST(request: NextRequest) {
+ 
+   await prisma.emailEvent.create({
+     data: {
+-      source: source === "brochure" ? "BROCHURE" : "REGISTRATION",
++      source: source === "brochure" ? "BROCHURE" : source === "campaign" ? "CAMPAIGN" : "REGISTRATION",
+       audience: "ATTENDEE",
+-      registrationId: source === "registration" ? id : undefined,
++      registrationId: source === "registration" || source === "campaign" ? id : undefined,
+       brochureRequestId: source === "brochure" ? id : undefined,
+       type: eventType,
+       providerMessageId: payload.data.email_id,
+diff --git a/src/components/AdminShell.tsx b/src/components/AdminShell.tsx
+index e83fed9..45209c6 100644
+--- a/src/components/AdminShell.tsx
++++ b/src/components/AdminShell.tsx
+@@ -15,7 +15,7 @@ const TABS: { href: string; label: string }[] = [
+   { href: "/admin/payments", label: "Payments" },
+   { href: "/admin/brochure-requests", label: "Brochure Requests" },
+   { href: "/admin/seats", label: "Day 7 Seating" },
+-  { href: "/admin/templates", label: "Emails & WhatsApp" },
++  { href: "/admin/campaigns", label: "Campaigns" },
+   { href: "/admin/admins", label: "Manage Admins" },
+ ];
+ 
+diff --git a/src/lib/campaigns.ts b/src/lib/campaigns.ts
+new file mode 100644
+index 0000000..6903447
+--- /dev/null
++++ b/src/lib/campaigns.ts
+@@ -0,0 +1,33 @@
++import type { Prisma, CampaignAudience } from "@prisma/client";
++
++export const AUDIENCE_LABELS: Record<CampaignAudience, string> = {
++  ALL: "All registrants",
++  EARLY_BIRD: "Early Bird",
++  LATE: "Late",
++  NOT_PAID: "Not paid",
++  PARTIAL: "Partially paid",
++  PAID: "Fully paid",
++  CHECKED_IN: "Checked in (Day 7)",
++  NOT_CHECKED_IN: "Not checked in (Day 7)",
++};
++
++export function audienceWhere(audience: CampaignAudience): Prisma.RegistrationWhereInput {
++  switch (audience) {
++    case "ALL":
++      return {};
++    case "EARLY_BIRD":
++      return { regType: "EARLY_BIRD" };
++    case "LATE":
++      return { regType: "LATE" };
++    case "NOT_PAID":
++      return { paymentStatus: "NOT_PAID" };
++    case "PARTIAL":
++      return { paymentStatus: "PARTIAL" };
++    case "PAID":
++      return { paymentStatus: "PAID" };
++    case "CHECKED_IN":
++      return { checkedInAt: { not: null } };
++    case "NOT_CHECKED_IN":
++      return { checkedInAt: null };
++  }
++}
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index 59b9202..2d73a70 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -5,7 +5,7 @@ import type { SendEmailResult } from "@/lib/email";
+ import type { Registration, BrochureRequest } from "@prisma/client";
+ 
+ type Settings = Record<string, string>;
+-type EventSource = "REGISTRATION" | "BROCHURE";
++type EventSource = "REGISTRATION" | "BROCHURE" | "CAMPAIGN";
+ 
+ interface BuiltEmail {
+   subject: string;
+@@ -55,7 +55,7 @@ async function recordEvent(params: {
+     data: {
+       source: params.source,
+       audience: params.audience,
+-      registrationId: params.source === "REGISTRATION" ? params.id : undefined,
++      registrationId: params.source === "REGISTRATION" || params.source === "CAMPAIGN" ? params.id : undefined,
+       brochureRequestId: params.source === "BROCHURE" ? params.id : undefined,
+       type: params.type,
+       providerMessageId: params.providerMessageId,
+@@ -85,7 +85,7 @@ async function deliverAttendeeEmail(opts: {
+       html: email.html,
+       replyTo: email.replyTo,
+       tags: [
+-        { name: "source", value: opts.source === "BROCHURE" ? "brochure" : "registration" },
++        { name: "source", value: opts.source === "BROCHURE" ? "brochure" : opts.source === "CAMPAIGN" ? "campaign" : "registration" },
+         { name: "id", value: opts.id },
+       ],
+     });
+@@ -404,3 +404,35 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
+     })
+   );
+ }
++
++/**
++ * Sends one Campaigns-page broadcast email to a single registration. Subject
++ * and body come from the admin's compose form (not an EmailTemplate row) and
++ * support the same {{first_name}} / {{full_name}} / Settings merge vars.
++ * Never throws — the outcome (sent/failed) is recorded and returned so the
++ * caller can tally results across the whole audience.
++ */
++export async function sendCampaignEmail(
++  registration: Registration,
++  subject: string,
++  bodyText: string,
++  settings: Settings
++): Promise<SendEmailResult> {
++  const vars = registrationVars(registration, settings);
++  const mergedSubject = mergeTemplate(subject, vars);
++  const mergedBody = mergeTemplate(bodyText, vars);
++
++  return deliverAttendeeEmail({
++    source: "CAMPAIGN",
++    id: registration.id,
++    to: registration.email,
++    build: async () => ({
++      subject: mergedSubject,
++      html: renderBrandedEmail({
++        eyebrow: settings.event_caption,
++        heading: mergedSubject,
++        bodyText: mergedBody,
++      }),
++    }),
++  });
++}
+diff --git a/src/lib/validation.ts b/src/lib/validation.ts
+index 3ca9587..267992e 100644
+--- a/src/lib/validation.ts
++++ b/src/lib/validation.ts
+@@ -72,3 +72,18 @@ export const clearDataSchema = z.object({
+   target: z.enum(["registrations", "brochure_requests", "all"]),
+   confirm: z.literal("DELETE", { errorMap: () => ({ message: "Type DELETE to confirm." }) }),
+ });
++
++export const sendCampaignSchema = z.object({
++  audience: z.enum([
++    "ALL",
++    "EARLY_BIRD",
++    "LATE",
++    "NOT_PAID",
++    "PARTIAL",
++    "PAID",
++    "CHECKED_IN",
++    "NOT_CHECKED_IN",
++  ]),
++  subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
++  body: z.string().trim().min(1, "Message can't be empty.").max(20000),
++});
+-- 
+2.43.0
+
