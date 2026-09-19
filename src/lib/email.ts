@@ -117,17 +117,38 @@ export interface SendEmailResult {
   error?: string;
 }
 
+/** True for "a@b.co" or "Name <a@b.co>" — the two shapes Resend accepts for from / reply_to. */
+export function isValidEmailAddress(value: string): boolean {
+  const v = value.trim();
+  return /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(v) || /^[^<>]*<[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+>$/.test(v);
+}
+
+/** Resend errors arrive as JSON like {"name":"validation_error","message":"..."} — pull out the readable part. */
+function describeResendError(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { message?: string; name?: string };
+    if (parsed.message) return `Resend ${status}${parsed.name ? ` (${parsed.name})` : ""}: ${parsed.message}`;
+  } catch {
+    // not JSON — fall through to the raw body
+  }
+  return `Resend ${status}: ${body.slice(0, 300)}`;
+}
+
 /**
- * Sends via Resend if RESEND_API_KEY is set. Otherwise logs the email to the
- * console instead of throwing — so local development and first-time setup
- * work without live email credentials, and a misconfigured deploy fails
- * loudly in logs rather than crashing registration for real attendees.
+ * Sends via Resend. In production a missing RESEND_API_KEY is a hard failure
+ * (so the dashboard shows "Failed" with the reason, rather than a fake "Sent").
+ * Outside production it logs the email to the console instead, so local
+ * development works without live email credentials.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM || "RIDGE 2026 <onboarding@resend.dev>";
 
   if (!apiKey) {
+    if (process.env.NODE_ENV === "production") {
+      console.error("[email] RESEND_API_KEY is not set in this deployment — email not sent.");
+      return { success: false, error: "RESEND_API_KEY is not set on the server." };
+    }
     console.warn(
       `[email:dev-mode] RESEND_API_KEY not set — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
     );
@@ -154,7 +175,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     if (!response.ok) {
       const errText = await response.text();
       console.error("[email] Resend send failed:", response.status, errText);
-      return { success: false, error: `Resend responded ${response.status}: ${errText}` };
+      return { success: false, error: describeResendError(response.status, errText) };
     }
 
     const data = (await response.json()) as { id?: string };

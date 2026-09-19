@@ -105,6 +105,7 @@ model EmailEvent {
   type               EmailEventType
   audience           EmailAudience @default(ATTENDEE)
   providerMessageId  String?      // Resend's email id, used to correlate webhook events
+  errorMessage       String?      // why a send FAILED (Resend's message), shown on hover in the dashboard
   occurredAt         DateTime     @default(now())
 
   @@index([registrationId])
@@ -112,14 +113,17 @@ model EmailEvent {
   @@index([providerMessageId])
 }
 
-// Editable copy for the two outbound emails + two internal notifications.
+// Editable copy for the attendee-facing emails: registration_confirmation,
+// brochure_confirmation, seat_selection_invite, payment_reminder.
 // {{first_name}}, {{full_name}}, {{email}} plus the Setting keys below (as
-// {{setting_key}}) are available as merge variables in subject/body.
+// {{setting_key}}) are available as merge variables in subject/body/replyTo.
+// (The internal_* rows from older seeds are unused — internal team alerts are
+// now built into src/lib/notifications.ts and are not editable.)
 model EmailTemplate {
   id        String   @id @default(cuid())
   key       String   @unique
   // one of: registration_confirmation, brochure_confirmation,
-  //         internal_registration_notification, internal_brochure_notification
+  //         seat_selection_invite, payment_reminder
   subject   String
   body      String   @db.Text
   replyTo   String?

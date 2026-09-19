@@ -21,6 +21,14 @@ function latestStatus(events: { type: EmailEventType; occurredAt: Date }[]): str
     .type;
 }
 
+/** The most recent failure reason among a row's attendee emails (shown on hover in the dashboard). */
+function latestError(events: { type: EmailEventType; occurredAt: Date; errorMessage: string | null }[]): string | null {
+  const failed = events
+    .filter((e) => e.type === "FAILED" && e.errorMessage)
+    .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return failed[0]?.errorMessage ?? null;
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() || "";
@@ -53,7 +61,7 @@ export async function GET(request: NextRequest) {
       include: {
         emailEvents: {
           where: { audience: "ATTENDEE" },
-          select: { type: true, occurredAt: true },
+          select: { type: true, occurredAt: true, errorMessage: true },
         },
         seat: { select: { label: true } },
       },
@@ -115,6 +123,7 @@ export async function GET(request: NextRequest) {
     notes: r.notes,
     regType: r.regType,
     deliveryStatus: latestStatus(r.emailEvents ?? []),
+    deliveryError: latestStatus(r.emailEvents ?? []) === "FAILED" ? latestError(r.emailEvents ?? []) : null,
     seatLabel: r.seat?.label ?? null,
     paymentStatus: r.paymentStatus,
     paymentNote: r.paymentNote,

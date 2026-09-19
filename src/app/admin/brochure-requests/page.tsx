@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { useIsOwner } from "@/lib/useIsOwner";
 
 interface BrochureRow {
   id: string;
   fullName: string;
   email: string;
   deliveryStatus: string;
+  deliveryError: string | null;
   createdAt: string;
 }
 
@@ -21,9 +24,12 @@ const STATUS_STYLES: Record<string, string> = {
   NOT_SENT: "text-muted",
 };
 
-function StatusDot({ status }: { status: string }) {
+function StatusDot({ status, title }: { status: string; title?: string | null }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"}`}>
+    <span
+      title={title || undefined}
+      className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"} ${title ? "cursor-help" : ""}`}
+    >
       <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />
       {status.replace("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}
     </span>
@@ -36,25 +42,47 @@ export default function BrochureRequestsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [sendingId, setSendingId] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const isOwner = useIsOwner();
+  const requestId = useRef(0);
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (search) params.set("search", search);
-    const res = await fetch(`/api/admin/brochure-requests?${params.toString()}`);
-    if (res.ok) {
-      const data = await res.json();
-      setRows(data.requests);
-      setTotal(data.total);
-    }
-    setLoading(false);
-  }, [search]);
+  // `silent` refreshes (the auto-refresh poll) update rows in place without the
+  // "Loading…" flash; stale responses are dropped.
+  const load = useCallback(
+    async (silent = false) => {
+      const myRequest = ++requestId.current;
+      if (!silent) setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (search) params.set("search", search);
+        const res = await fetch(`/api/admin/brochure-requests?${params.toString()}`);
+        if (res.ok && myRequest === requestId.current) {
+          const data = await res.json();
+          setRows(data.requests);
+          setTotal(data.total);
+        }
+      } catch {
+        // Network hiccup — keep showing the last data; the next poll will retry.
+      } finally {
+        if (myRequest === requestId.current) setLoading(false);
+      }
+    },
+    [search]
+  );
 
   useEffect(() => {
-    const t = setTimeout(load, 250);
+    const t = setTimeout(() => load(), 250);
     return () => clearTimeout(t);
   }, [load]);
+
+  useAutoRefresh(() => load(true), 10_000);
+
+  function flash(text: string, ok: boolean) {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage({ text, ok });
+    messageTimer.current = setTimeout(() => setMessage(null), ok ? 4000 : 10000);
+  }
 
   async function handleResend(id: string) {
     setSendingId(id);
@@ -62,13 +90,26 @@ export default function BrochureRequestsPage() {
     const res = await fetch(`/api/admin/brochure-requests/${id}/resend`, { method: "POST" });
     setSendingId(null);
     if (res.ok) {
-      setMessage("Sent.");
-      load();
+      flash("Sent.", true);
     } else {
       const data = await res.json().catch(() => ({}));
-      setMessage(data.error || "Failed to send.");
+      flash(data.error || "Failed to send.", false);
     }
-    setTimeout(() => setMessage(null), 4000);
+    load(true);
+  }
+
+  async function handleDelete(row: BrochureRow) {
+    if (!window.confirm(`Permanently delete the brochure request from ${row.fullName} (${row.email})? This cannot be undone.`)) {
+      return;
+    }
+    const res = await fetch(`/api/admin/brochure-requests/${row.id}`, { method: "DELETE" });
+    if (res.ok) {
+      flash("Brochure request deleted.", true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      flash(data.error || "Failed to delete.", false);
+    }
+    load(true);
   }
 
   return (
@@ -77,7 +118,9 @@ export default function BrochureRequestsPage() {
         <h2 className="font-serif text-2xl">Brochure Requests</h2>
         <p className="text-muted text-sm mt-1">
           {total} total
-          {message && <span className="text-goldlight ml-3">{message}</span>}
+          {message && (
+            <span className={`ml-3 ${message.ok ? "text-goldlight" : "text-red-400"}`}>{message.text}</span>
+          )}
         </p>
       </div>
 
@@ -120,19 +163,29 @@ export default function BrochureRequestsPage() {
                   <td className="px-5 py-4 whitespace-nowrap">{r.fullName}</td>
                   <td className="px-5 py-4 text-muted whitespace-nowrap">{r.email}</td>
                   <td className="px-5 py-4 whitespace-nowrap">
-                    <StatusDot status={r.deliveryStatus} />
+                    <StatusDot status={r.deliveryStatus} title={r.deliveryError} />
                   </td>
                   <td className="px-5 py-4 text-muted whitespace-nowrap">
                     {new Date(r.createdAt).toLocaleString()}
                   </td>
                   <td className="px-5 py-4 whitespace-nowrap text-right">
-                    <button
-                      onClick={() => handleResend(r.id)}
-                      disabled={sendingId === r.id}
-                      className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-gold text-muted hover:text-fg disabled:opacity-60 whitespace-nowrap"
-                    >
-                      {sendingId === r.id ? "Sending…" : "Resend email"}
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => handleResend(r.id)}
+                        disabled={sendingId === r.id}
+                        className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-gold text-muted hover:text-fg disabled:opacity-60 whitespace-nowrap"
+                      >
+                        {sendingId === r.id ? "Sending…" : "Resend email"}
+                      </button>
+                      {isOwner && (
+                        <button
+                          onClick={() => handleDelete(r)}
+                          className="text-xs px-3 py-1.5 rounded-full border border-red-400/40 text-red-400 hover:bg-red-500/10 whitespace-nowrap"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

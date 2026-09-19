@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidEmailAddress } from "@/lib/email";
 
 export const registrationSchema = z.object({
   fullName: z.string().trim().min(2, "Full name is required.").max(200),
@@ -27,10 +28,22 @@ export const createAdminSchema = z.object({
   role: z.enum(["OWNER", "ADMIN"]).default("ADMIN"),
 });
 
+// Reply-To may be a real address, a single {{token}} such as {{contact_email}}
+// (the seeded default — merged at send time), or empty.
+const SINGLE_TOKEN = /^\{\{\s*[a-zA-Z0-9_]+\s*\}\}$/;
+
 export const updateTemplateSchema = z.object({
-  subject: z.string().trim().min(1).max(300),
-  body: z.string().trim().min(1).max(20000),
-  replyTo: z.string().trim().email().optional().or(z.literal("")),
+  subject: z.string().trim().min(1, "Subject can't be empty.").max(300, "Subject is too long (max 300 characters)."),
+  body: z.string().trim().min(1, "Body can't be empty.").max(20000, "Body is too long (max 20,000 characters)."),
+  replyTo: z
+    .string()
+    .trim()
+    .refine(
+      (v) => v === "" || SINGLE_TOKEN.test(v) || isValidEmailAddress(v),
+      "Reply-To must be an email address like ridge@example.com (or the {{contact_email}} token), or left empty."
+    )
+    .nullable()
+    .optional(),
 });
 
 export const updateSettingsSchema = z.record(z.string(), z.string().max(2000));
@@ -52,4 +65,10 @@ export const confirmPaymentSchema = z.object({
 
 export const registrationActionSchema = z.object({
   action: z.enum(["resend_confirmation", "send_seat_invite", "send_payment_reminder"]),
+});
+
+// Bulk-delete for clearing test data. The literal confirmation guards against a stray click.
+export const clearDataSchema = z.object({
+  target: z.enum(["registrations", "brochure_requests", "all"]),
+  confirm: z.literal("DELETE", { errorMap: () => ({ message: "Type DELETE to confirm." }) }),
 });

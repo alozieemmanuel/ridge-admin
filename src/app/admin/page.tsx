@@ -2,6 +2,9 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import AdminShell from "@/components/AdminShell";
+import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { useIsOwner } from "@/lib/useIsOwner";
 
 interface RegistrationRow {
   id: string;
@@ -12,6 +15,8 @@ interface RegistrationRow {
   organization: string | null;
   regType: "EARLY_BIRD" | "LATE";
   deliveryStatus: string;
+  deliveryError: string | null;
+  paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
   seatLabel: string | null;
   seatInviteSentAt: string | null;
   createdAt: string;
@@ -36,74 +41,15 @@ const STATUS_STYLES: Record<string, string> = {
   NOT_SENT: "text-muted",
 };
 
-function StatusDot({ status }: { status: string }) {
+function StatusDot({ status, title }: { status: string; title?: string | null }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"}`}>
+    <span
+      title={title || undefined}
+      className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"} ${title ? "cursor-help" : ""}`}
+    >
       <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />
       {status.replace("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}
     </span>
-  );
-}
-
-function RowActionsMenu({
-  row,
-  onAction,
-}: {
-  row: RegistrationRow;
-  onAction: (action: "resend_confirmation" | "send_seat_invite" | "send_payment_reminder") => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-8 h-8 rounded-full border border-border text-muted hover:text-fg hover:border-gold flex items-center justify-center"
-        aria-label="Row actions"
-      >
-        ⋯
-      </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-56 bg-cardbg border border-border rounded-xl shadow-xl z-20 overflow-hidden">
-          <button
-            onClick={() => {
-              onAction("resend_confirmation");
-              setOpen(false);
-            }}
-            className="w-full text-left px-4 py-3 text-sm hover:bg-gold/10 border-b border-border/50"
-          >
-            Resend confirmation email
-          </button>
-          <button
-            onClick={() => {
-              onAction("send_seat_invite");
-              setOpen(false);
-            }}
-            className="w-full text-left px-4 py-3 text-sm hover:bg-gold/10 border-b border-border/50"
-          >
-            {row.seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
-          </button>
-          <button
-            onClick={() => {
-              onAction("send_payment_reminder");
-              setOpen(false);
-            }}
-            className="w-full text-left px-4 py-3 text-sm hover:bg-gold/10"
-          >
-            Send payment reminder
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -114,46 +60,70 @@ export default function RegistrationsPage() {
   const [search, setSearch] = useState("");
   const [regType, setRegType] = useState<string>("ALL");
   const [loading, setLoading] = useState(true);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const isOwner = useIsOwner();
+  const requestId = useRef(0);
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (search) params.set("search", search);
-    if (regType !== "ALL") params.set("regType", regType);
-    const res = await fetch(`/api/admin/registrations?${params.toString()}`);
-    if (res.ok) {
-      const data = await res.json();
-      setRows(data.registrations);
-      setTotal(data.total);
-      setStats(data.emailStats);
-    }
-    setLoading(false);
-  }, [search, regType]);
+  // `silent` refreshes (the auto-refresh poll) update the rows in place without
+  // flashing the "Loading…" state. The counter drops stale responses so a slow
+  // background refresh can never overwrite newer search/filter results.
+  const load = useCallback(
+    async (silent = false) => {
+      const myRequest = ++requestId.current;
+      if (!silent) setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (search) params.set("search", search);
+        if (regType !== "ALL") params.set("regType", regType);
+        const res = await fetch(`/api/admin/registrations?${params.toString()}`);
+        if (res.ok && myRequest === requestId.current) {
+          const data = await res.json();
+          setRows(data.registrations);
+          setTotal(data.total);
+          setStats(data.emailStats);
+        }
+      } catch {
+        // Network hiccup — keep showing the last data; the next poll will retry.
+      } finally {
+        if (myRequest === requestId.current) setLoading(false);
+      }
+    },
+    [search, regType]
+  );
 
   useEffect(() => {
-    const t = setTimeout(load, 250);
+    const t = setTimeout(() => load(), 250);
     return () => clearTimeout(t);
   }, [load]);
 
-  async function handleAction(
-    id: string,
-    action: "resend_confirmation" | "send_seat_invite" | "send_payment_reminder"
-  ) {
-    setActionMessage("Sending…");
-    const res = await fetch(`/api/admin/registrations/${id}/actions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
+  useAutoRefresh(() => load(true), 10_000);
+
+  function flash(text: string, ok: boolean) {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setActionMessage({ text, ok });
+    messageTimer.current = setTimeout(() => setActionMessage(null), ok ? 4000 : 10000);
+  }
+
+  async function handleAction(id: string, action: RegistrationAction) {
+    flash("Sending…", true);
+    const result = await runRegistrationAction(id, action);
+    flash(result.message, result.ok);
+    load(true);
+  }
+
+  async function handleDelete(row: RegistrationRow) {
+    if (!window.confirm(`Permanently delete the registration for ${row.fullName} (${row.email})? This cannot be undone.`)) {
+      return;
+    }
+    const res = await fetch(`/api/admin/registrations/${row.id}`, { method: "DELETE" });
     if (res.ok) {
-      setActionMessage("Sent.");
-      load();
+      flash("Registration deleted.", true);
+      load(true);
     } else {
       const data = await res.json().catch(() => ({}));
-      setActionMessage(data.error || "Failed to send.");
+      flash(data.error || "Failed to delete.", false);
     }
-    setTimeout(() => setActionMessage(null), 4000);
   }
 
   return (
@@ -163,7 +133,9 @@ export default function RegistrationsPage() {
           <h2 className="font-serif text-2xl">Registrations</h2>
           <p className="text-muted text-sm mt-1">
             {total} total
-            {actionMessage && <span className="text-goldlight ml-3">{actionMessage}</span>}
+            {actionMessage && (
+              <span className={`ml-3 ${actionMessage.ok ? "text-goldlight" : "text-red-400"}`}>{actionMessage.text}</span>
+            )}
           </p>
         </div>
         <a
@@ -261,13 +233,18 @@ export default function RegistrationsPage() {
                       )}
                     </td>
                     <td className="px-5 py-4 whitespace-nowrap">
-                      <StatusDot status={r.deliveryStatus} />
+                      <StatusDot status={r.deliveryStatus} title={r.deliveryError} />
                     </td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
                     <td className="px-5 py-4 whitespace-nowrap">
-                      <RowActionsMenu row={r} onAction={(action) => handleAction(r.id, action)} />
+                      <RegistrationActionsMenu
+                        paymentStatus={r.paymentStatus}
+                        seatInviteSentAt={r.seatInviteSentAt}
+                        onAction={(action) => handleAction(r.id, action)}
+                        onDelete={isOwner ? () => handleDelete(r) : undefined}
+                      />
                     </td>
                   </tr>
                 ))}

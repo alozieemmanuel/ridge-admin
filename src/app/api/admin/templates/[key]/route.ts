@@ -26,7 +26,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   const parsed = updateTemplateSchema.safeParse(raw);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed.", details: parsed.error.flatten().fieldErrors },
+      { error: parsed.error.issues[0]?.message || "Validation failed.", details: parsed.error.flatten().fieldErrors },
       { status: 400 }
     );
   }

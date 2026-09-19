@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import AdminShell from "@/components/AdminShell";
+import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
 type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
 
@@ -15,6 +17,7 @@ interface RegistrationRow {
   paymentNote: string | null;
   amountPaid: number;
   paymentUpdatedAt: string | null;
+  seatInviteSentAt: string | null;
 }
 
 interface PaymentStats {
@@ -211,40 +214,69 @@ export default function PaymentsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [loading, setLoading] = useState(true);
   const [activeRow, setActiveRow] = useState<RegistrationRow | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const requestId = useRef(0);
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (search) params.set("search", search);
-    params.set("pageSize", "200");
-    const [regRes, settingsRes] = await Promise.all([
-      fetch(`/api/admin/registrations?${params.toString()}`),
-      fetch("/api/admin/settings"),
-    ]);
-    if (regRes.ok) {
-      const data = await regRes.json();
-      setRows(data.registrations);
-      setTotal(data.total);
-      setStats(data.paymentStats);
-    }
-    if (settingsRes.ok) {
-      const data = await settingsRes.json();
-      setCurrency(data.settings.currency || "USD");
-      const early = parseFloat(data.settings.registration_fee_amount);
-      const late = parseFloat(data.settings.late_registration_fee_amount);
-      setFeeAmounts({
-        early: Number.isFinite(early) ? early : null,
-        late: Number.isFinite(late) ? late : null,
-      });
-    }
-    setLoading(false);
-  }, [search]);
+  // `silent` refreshes (the auto-refresh poll) update rows in place without the
+  // "Loading…" flash and skip re-fetching settings; stale responses are dropped.
+  const load = useCallback(
+    async (silent = false) => {
+      const myRequest = ++requestId.current;
+      if (!silent) setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (search) params.set("search", search);
+        params.set("pageSize", "200");
+        const [regRes, settingsRes] = await Promise.all([
+          fetch(`/api/admin/registrations?${params.toString()}`),
+          silent ? Promise.resolve(null) : fetch("/api/admin/settings"),
+        ]);
+        if (myRequest !== requestId.current) return;
+        if (regRes.ok) {
+          const data = await regRes.json();
+          setRows(data.registrations);
+          setTotal(data.total);
+          setStats(data.paymentStats);
+        }
+        if (settingsRes && settingsRes.ok) {
+          const data = await settingsRes.json();
+          setCurrency(data.settings.currency || "USD");
+          const early = parseFloat(data.settings.registration_fee_amount);
+          const late = parseFloat(data.settings.late_registration_fee_amount);
+          setFeeAmounts({
+            early: Number.isFinite(early) ? early : null,
+            late: Number.isFinite(late) ? late : null,
+          });
+        }
+      } catch {
+        // Network hiccup — keep showing the last data; the next poll will retry.
+      } finally {
+        if (myRequest === requestId.current) setLoading(false);
+      }
+    },
+    [search]
+  );
 
   useEffect(() => {
-    const t = setTimeout(load, 250);
+    const t = setTimeout(() => load(), 250);
     return () => clearTimeout(t);
   }, [load]);
+
+  useAutoRefresh(() => load(true), 10_000);
+
+  function flash(text: string, ok: boolean) {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage({ text, ok });
+    messageTimer.current = setTimeout(() => setMessage(null), ok ? 4000 : 10000);
+  }
+
+  async function handleEmailAction(id: string, action: RegistrationAction) {
+    flash("Sending…", true);
+    const result = await runRegistrationAction(id, action);
+    flash(result.message, result.ok);
+    load(true);
+  }
 
   const visibleRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.paymentStatus === statusFilter);
 
@@ -263,9 +295,8 @@ export default function PaymentsPage() {
       throw new Error(data.error || "Failed to update payment.");
     }
     setActiveRow(null);
-    setMessage("Payment updated.");
-    setTimeout(() => setMessage(null), 4000);
-    load();
+    flash("Payment updated.", true);
+    load(true);
   }
 
   return (
@@ -274,7 +305,9 @@ export default function PaymentsPage() {
         <h2 className="font-serif text-2xl">Payments</h2>
         <p className="text-muted text-sm mt-1">
           {total} registrations
-          {message && <span className="text-goldlight ml-3">{message}</span>}
+          {message && (
+            <span className={`ml-3 ${message.ok ? "text-goldlight" : "text-red-400"}`}>{message.text}</span>
+          )}
         </p>
       </div>
 
@@ -371,12 +404,19 @@ export default function PaymentsPage() {
                         {r.paymentUpdatedAt ? new Date(r.paymentUpdatedAt).toLocaleString() : "—"}
                       </td>
                       <td className="px-5 py-4 whitespace-nowrap">
-                        <button
-                          onClick={() => setActiveRow(r)}
-                          className="text-xs px-3.5 py-2 rounded-full border border-gold/40 text-goldlight hover:bg-gold/10 whitespace-nowrap"
-                        >
-                          Update payment
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setActiveRow(r)}
+                            className="text-xs px-3.5 py-2 rounded-full border border-gold/40 text-goldlight hover:bg-gold/10 whitespace-nowrap"
+                          >
+                            Update payment
+                          </button>
+                          <RegistrationActionsMenu
+                            paymentStatus={r.paymentStatus}
+                            seatInviteSentAt={r.seatInviteSentAt}
+                            onAction={(action) => handleEmailAction(r.id, action)}
+                          />
+                        </div>
                       </td>
                     </tr>
                   );

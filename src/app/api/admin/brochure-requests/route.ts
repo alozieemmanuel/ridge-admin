@@ -19,6 +19,13 @@ function latestStatus(events: { type: EmailEventType }[]): string {
     .type;
 }
 
+function latestError(events: { type: EmailEventType; occurredAt: Date; errorMessage: string | null }[]): string | null {
+  const failed = events
+    .filter((e) => e.type === "FAILED" && e.errorMessage)
+    .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return failed[0]?.errorMessage ?? null;
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() || "";
@@ -42,7 +49,7 @@ export async function GET(request: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
       include: {
-        emailEvents: { where: { audience: "ATTENDEE" }, select: { type: true } },
+        emailEvents: { where: { audience: "ATTENDEE" }, select: { type: true, occurredAt: true, errorMessage: true } },
       },
     }),
   ]);
@@ -52,6 +59,7 @@ export async function GET(request: NextRequest) {
     fullName: r.fullName,
     email: r.email,
     deliveryStatus: latestStatus(r.emailEvents ?? []),
+    deliveryError: latestStatus(r.emailEvents ?? []) === "FAILED" ? latestError(r.emailEvents ?? []) : null,
     createdAt: r.createdAt.toISOString(),
   }));
 

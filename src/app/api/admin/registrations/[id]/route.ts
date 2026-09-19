@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { confirmPaymentSchema } from "@/lib/validation";
 import { getSettingsMap } from "@/lib/settings";
+import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -55,4 +56,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   });
 
   return NextResponse.json({ result: "success", registration, expectedFee });
+}
+
+/**
+ * Permanently deletes one registration (owner only). Its email history goes
+ * with it, and any seat it held is released back to OPEN.
+ */
+export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession();
+  if (!session || session.role !== "OWNER") {
+    return NextResponse.json({ error: "Only an owner can delete records." }, { status: 403 });
+  }
+
+  const { id } = await params;
+  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) {
+    return NextResponse.json({ error: "Registration not found." }, { status: 404 });
+  }
+
+  await prisma.$transaction([
+    prisma.seat.updateMany({
+      where: { registrationId: id },
+      data: { status: "OPEN", registrationId: null, holdExpiresAt: null },
+    }),
+    prisma.registration.delete({ where: { id } }),
+  ]);
+
+  return NextResponse.json({ result: "success" });
 }

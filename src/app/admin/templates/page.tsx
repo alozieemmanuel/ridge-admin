@@ -13,8 +13,16 @@ interface Template {
 const LABELS: Record<string, string> = {
   registration_confirmation: "Registration confirmation email",
   brochure_confirmation: "Brochure email",
-  internal_registration_notification: "Internal notification — new registration",
-  internal_brochure_notification: "Internal notification — new brochure request",
+  payment_reminder: "Payment reminder email",
+  seat_selection_invite: "Seat-selection invite email",
+};
+
+// Where each email is sent from, so admins know where to find the send button.
+const WHEN_SENT: Record<string, string> = {
+  registration_confirmation: "Sent automatically when someone registers. Resend from Registrations → ⋯.",
+  brochure_confirmation: "Sent automatically on a brochure request. Resend from Brochure Requests.",
+  payment_reminder: "Sent manually from Registrations or Payments → ⋯ → Send payment reminder.",
+  seat_selection_invite: "Sent manually from Registrations or Payments → ⋯ → Send seat-selection invite (once fully paid).",
 };
 
 function TemplateEditor({ template, onSaved }: { template: Template; onSaved: () => void }) {
@@ -44,19 +52,21 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
 
   return (
     <div className="border border-border rounded-xl p-6 mb-6">
-      <h3 className="text-gold text-sm font-semibold mb-4">{LABELS[template.key] ?? template.key}</h3>
+      <h3 className="text-gold text-sm font-semibold mb-1">{LABELS[template.key] ?? template.key}</h3>
+      {WHEN_SENT[template.key] && <p className="text-xs text-muted mb-4">{WHEN_SENT[template.key]}</p>}
 
-      {template.key.startsWith("registration_") || template.key.startsWith("brochure_") ? (
-        <div className="mb-4">
-          <label className="block text-xs uppercase tracking-wider text-muted mb-2">Reply-To Address</label>
-          <input
-            value={replyTo}
-            onChange={(e) => setReplyTo(e.target.value)}
-            placeholder="Leave empty to reply to the sending address"
-            className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
-          />
-        </div>
-      ) : null}
+      <div className="mb-4">
+        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Reply-To Address</label>
+        <input
+          value={replyTo}
+          onChange={(e) => setReplyTo(e.target.value)}
+          placeholder="Leave empty to reply to the sending address"
+          className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
+        />
+        <p className="text-xs text-muted mt-2">
+          An email address, or {"{{contact_email}}"} to use the Contact Email from Settings. Replies to this email go here.
+        </p>
+      </div>
 
       <div className="mb-4">
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Subject</label>
@@ -77,9 +87,11 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
         />
         <p className="text-xs text-muted mt-2">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize. A blank line starts a new
-          paragraph. Other available tokens: {"{{email}}"}, {"{{phone}}"}, {"{{country}}"},{" "}
-          {"{{organization}}"}, {"{{reg_type_label}}"}, {"{{programme_name}}"}, {"{{cohort_dates}}"},{" "}
-          {"{{registration_fee}}"}, {"{{early_bird_deadline}}"}, {"{{brochure_url}}"}.
+          paragraph. Any value from Settings also works as {"{{setting_key}}"} — for example{" "}
+          {"{{programme_name}}"}, {"{{cohort_dates}}"}, {"{{registration_fee}}"}, {"{{early_bird_deadline}}"},{" "}
+          {"{{payment_account_number}}"}, {"{{brochure_url}}"}. Registration emails can also use{" "}
+          {"{{email}}"}, {"{{phone}}"}, {"{{country}}"}, {"{{organization}}"}, {"{{reg_type_label}}"} and{" "}
+          {"{{registration_id}}"}.
         </p>
       </div>
 
@@ -120,8 +132,8 @@ export default function TemplatesPage() {
       <div className="mb-6">
         <h2 className="font-serif text-2xl">Emails & WhatsApp</h2>
         <p className="text-muted text-sm mt-1">
-          Edit the confirmation emails sent on register / volunteer, and the internal notifications your
-          team receives.
+          Edit the emails your attendees receive. Internal team alerts are built into the system and
+          are configured by the Internal Notification Email in Settings.
         </p>
       </div>
 

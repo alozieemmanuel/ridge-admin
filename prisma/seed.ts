@@ -25,25 +25,6 @@ Early Bird pricing is valid until {{early_bird_deadline}}. Use your full name as
 Here's the brochure for {{programme_name}}. A member of our team will also reach out shortly with more details and to answer any questions.`,
   },
   {
-    key: "internal_registration_notification",
-    subject: "New RIDGE registration: {{full_name}}",
-    replyTo: "",
-    body: `Name: {{full_name}}
-Email: {{email}}
-Phone: {{phone}}
-Country: {{country}}
-Organization: {{organization}}
-Registration type: {{reg_type_label}}
-Notes: {{notes}}`,
-  },
-  {
-    key: "internal_brochure_notification",
-    subject: "New RIDGE brochure request: {{full_name}}",
-    replyTo: "",
-    body: `Name: {{full_name}}
-Email: {{email}}`,
-  },
-  {
     key: "seat_selection_invite",
     subject: "Pick your seat for RIDGE Day 7",
     replyTo: "{{contact_email}}",
