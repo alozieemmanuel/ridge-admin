@@ -23,8 +23,8 @@ const STATUS_STYLES: Record<string, string> = {
 
 function StatusDot({ status }: { status: string }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 text-sm ${STATUS_STYLES[status] ?? "text-muted"}`}>
-      <span className="w-1.5 h-1.5 rounded-full bg-current" />
+    <span className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"}`}>
+      <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />
       {status.replace("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}
     </span>
   );
@@ -35,6 +35,8 @@ export default function BrochureRequestsPage() {
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,11 +56,29 @@ export default function BrochureRequestsPage() {
     return () => clearTimeout(t);
   }, [load]);
 
+  async function handleResend(id: string) {
+    setSendingId(id);
+    setMessage(null);
+    const res = await fetch(`/api/admin/brochure-requests/${id}/resend`, { method: "POST" });
+    setSendingId(null);
+    if (res.ok) {
+      setMessage("Sent.");
+      load();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setMessage(data.error || "Failed to send.");
+    }
+    setTimeout(() => setMessage(null), 4000);
+  }
+
   return (
     <AdminShell active="/admin/brochure-requests">
       <div className="mb-6">
         <h2 className="font-serif text-2xl">Brochure Requests</h2>
-        <p className="text-muted text-sm mt-1">{total} total</p>
+        <p className="text-muted text-sm mt-1">
+          {total} total
+          {message && <span className="text-goldlight ml-3">{message}</span>}
+        </p>
       </div>
 
       <input
@@ -72,23 +92,24 @@ export default function BrochureRequestsPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-              <th className="px-5 py-3 font-medium">Name</th>
-              <th className="px-5 py-3 font-medium">Email</th>
-              <th className="px-5 py-3 font-medium">Delivery</th>
-              <th className="px-5 py-3 font-medium">Requested</th>
+              <th className="px-5 py-3 font-medium whitespace-nowrap">Name</th>
+              <th className="px-5 py-3 font-medium whitespace-nowrap">Email</th>
+              <th className="px-5 py-3 font-medium whitespace-nowrap">Delivery</th>
+              <th className="px-5 py-3 font-medium whitespace-nowrap">Requested</th>
+              <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={4} className="px-5 py-8 text-center text-muted">
+                <td colSpan={5} className="px-5 py-8 text-center text-muted">
                   Loading…
                 </td>
               </tr>
             )}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-5 py-8 text-center text-muted">
+                <td colSpan={5} className="px-5 py-8 text-center text-muted">
                   No brochure requests found.
                 </td>
               </tr>
@@ -96,13 +117,22 @@ export default function BrochureRequestsPage() {
             {!loading &&
               rows.map((r) => (
                 <tr key={r.id} className="border-b border-border/50 last:border-b-0">
-                  <td className="px-5 py-4">{r.fullName}</td>
-                  <td className="px-5 py-4 text-muted">{r.email}</td>
-                  <td className="px-5 py-4">
+                  <td className="px-5 py-4 whitespace-nowrap">{r.fullName}</td>
+                  <td className="px-5 py-4 text-muted whitespace-nowrap">{r.email}</td>
+                  <td className="px-5 py-4 whitespace-nowrap">
                     <StatusDot status={r.deliveryStatus} />
                   </td>
                   <td className="px-5 py-4 text-muted whitespace-nowrap">
                     {new Date(r.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-4 whitespace-nowrap text-right">
+                    <button
+                      onClick={() => handleResend(r.id)}
+                      disabled={sendingId === r.id}
+                      className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-gold text-muted hover:text-fg disabled:opacity-60 whitespace-nowrap"
+                    >
+                      {sendingId === r.id ? "Sending…" : "Resend email"}
+                    </button>
                   </td>
                 </tr>
               ))}

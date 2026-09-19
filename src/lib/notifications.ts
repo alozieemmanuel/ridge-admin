@@ -198,3 +198,240 @@ export async function sendBrochureEmails(brochureRequest: BrochureRequest): Prom
     });
   }
 }
+
+/** Re-sends just the attendee confirmation email (no internal notification) — for the admin "resend" action. */
+export async function resendRegistrationConfirmation(registration: Registration): Promise<void> {
+  const settings = await getSettingsMap();
+  const vars: Record<string, string> = {
+    first_name: firstNameOf(registration.fullName),
+    full_name: registration.fullName,
+    email: registration.email,
+    phone: registration.phone,
+    country: registration.country,
+    organization: registration.organization || "-",
+    notes: registration.notes || "-",
+    reg_type_label: registration.regType === "LATE" ? "Late Registration" : "Early Bird",
+    fee_label: registration.regType === "LATE" ? settings.late_registration_fee : settings.registration_fee,
+    ...settings,
+  };
+
+  const template = await getTemplate("registration_confirmation");
+  const subject = mergeTemplate(template.subject, vars);
+  const bodyText = mergeTemplate(template.body, vars);
+  const whatsappUrl = buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message);
+
+  const html = renderBrandedEmail({
+    eyebrow: settings.event_caption,
+    heading: subject,
+    bodyText,
+    summaryBlocks: [
+      {
+        heading: "Registration Summary",
+        rows: [
+          ["Name", registration.fullName],
+          ["Email", registration.email],
+          ["Registration Fee", vars.fee_label],
+          ["Cohort", settings.cohort_dates],
+        ],
+      },
+      {
+        heading: "Payment / Account Details",
+        rows: [
+          ["Account Name", settings.payment_account_name],
+          ["Bank", settings.payment_bank_name],
+          ["Account Number", settings.payment_account_number],
+          ["Currency", settings.currency],
+        ],
+      },
+    ],
+    ctaLabel: "Contact The RIDGE Team",
+    ctaUrl: whatsappUrl,
+  });
+
+  const result = await sendEmail({
+    to: registration.email,
+    subject,
+    html,
+    replyTo: template.replyTo,
+    tags: [
+      { name: "source", value: "registration" },
+      { name: "id", value: registration.id },
+    ],
+  });
+
+  await recordEvent({
+    source: "REGISTRATION",
+    audience: "ATTENDEE",
+    registrationId: registration.id,
+    type: result.success ? "SENT" : "FAILED",
+    providerMessageId: result.providerMessageId,
+  });
+
+  if (!result.success) {
+    throw new Error(result.error || "Failed to send email.");
+  }
+}
+
+/** Re-sends just the brochure email (no internal notification) — for the admin "resend" action. */
+export async function resendBrochureConfirmation(brochureRequest: BrochureRequest): Promise<void> {
+  const settings = await getSettingsMap();
+  const vars: Record<string, string> = {
+    first_name: firstNameOf(brochureRequest.fullName),
+    full_name: brochureRequest.fullName,
+    email: brochureRequest.email,
+    ...settings,
+  };
+
+  const template = await getTemplate("brochure_confirmation");
+  const subject = mergeTemplate(template.subject, vars);
+  const bodyText = mergeTemplate(template.body, vars);
+
+  const html = renderBrandedEmail({
+    eyebrow: settings.cohort_dates,
+    heading: subject,
+    bodyText,
+    summaryBlocks: [
+      {
+        heading: "At A Glance",
+        rows: [
+          ["Registration Fee", settings.registration_fee],
+          ["Early Bird Closes", settings.early_bird_deadline],
+          ["Cohort", settings.cohort_dates],
+        ],
+      },
+    ],
+    ctaLabel: "Download The Brochure",
+    ctaUrl: settings.brochure_url,
+  });
+
+  const result = await sendEmail({
+    to: brochureRequest.email,
+    subject,
+    html,
+    replyTo: template.replyTo,
+    tags: [
+      { name: "source", value: "brochure" },
+      { name: "id", value: brochureRequest.id },
+    ],
+  });
+
+  await recordEvent({
+    source: "BROCHURE",
+    audience: "ATTENDEE",
+    brochureRequestId: brochureRequest.id,
+    type: result.success ? "SENT" : "FAILED",
+    providerMessageId: result.providerMessageId,
+  });
+
+  if (!result.success) {
+    throw new Error(result.error || "Failed to send email.");
+  }
+}
+
+/** Sends the "pick your seat" invite — triggered manually by an admin once payment is confirmed. */
+export async function sendSeatSelectionInvite(registration: Registration): Promise<void> {
+  const settings = await getSettingsMap();
+  const vars: Record<string, string> = {
+    first_name: firstNameOf(registration.fullName),
+    full_name: registration.fullName,
+    email: registration.email,
+    registration_id: registration.id,
+    ...settings,
+  };
+
+  const template = await getTemplate("seat_selection_invite");
+  const subject = mergeTemplate(template.subject, vars);
+  const bodyText = mergeTemplate(template.body, vars);
+  const seatUrl = `${settings.seat_selection_url}?rid=${registration.id}`;
+
+  const html = renderBrandedEmail({
+    eyebrow: settings.event_caption,
+    heading: subject,
+    bodyText,
+    ctaLabel: "Choose Your Seat",
+    ctaUrl: seatUrl,
+  });
+
+  const result = await sendEmail({
+    to: registration.email,
+    subject,
+    html,
+    replyTo: template.replyTo,
+    tags: [
+      { name: "source", value: "registration" },
+      { name: "id", value: registration.id },
+    ],
+  });
+
+  await recordEvent({
+    source: "REGISTRATION",
+    audience: "ATTENDEE",
+    registrationId: registration.id,
+    type: result.success ? "SENT" : "FAILED",
+    providerMessageId: result.providerMessageId,
+  });
+
+  if (!result.success) {
+    throw new Error(result.error || "Failed to send email.");
+  }
+
+  await prisma.registration.update({
+    where: { id: registration.id },
+    data: { seatInviteSentAt: new Date() },
+  });
+}
+
+/** Sends a payment reminder — triggered manually by an admin for anyone not fully paid. */
+export async function sendPaymentReminder(registration: Registration): Promise<void> {
+  const settings = await getSettingsMap();
+  const vars: Record<string, string> = {
+    first_name: firstNameOf(registration.fullName),
+    full_name: registration.fullName,
+    email: registration.email,
+    ...settings,
+  };
+
+  const template = await getTemplate("payment_reminder");
+  const subject = mergeTemplate(template.subject, vars);
+  const bodyText = mergeTemplate(template.body, vars);
+
+  const html = renderBrandedEmail({
+    eyebrow: settings.event_caption,
+    heading: subject,
+    bodyText,
+    summaryBlocks: [
+      {
+        heading: "Payment / Account Details",
+        rows: [
+          ["Account Name", settings.payment_account_name],
+          ["Bank", settings.payment_bank_name],
+          ["Account Number", settings.payment_account_number],
+          ["Currency", settings.currency],
+        ],
+      },
+    ],
+  });
+
+  const result = await sendEmail({
+    to: registration.email,
+    subject,
+    html,
+    replyTo: template.replyTo,
+    tags: [
+      { name: "source", value: "registration" },
+      { name: "id", value: registration.id },
+    ],
+  });
+
+  await recordEvent({
+    source: "REGISTRATION",
+    audience: "ATTENDEE",
+    registrationId: registration.id,
+    type: result.success ? "SENT" : "FAILED",
+    providerMessageId: result.providerMessageId,
+  });
+
+  if (!result.success) {
+    throw new Error(result.error || "Failed to send email.");
+  }
+}

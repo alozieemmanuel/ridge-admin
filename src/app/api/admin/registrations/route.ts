@@ -89,6 +89,19 @@ export async function GET(request: NextRequest) {
     if (status in statusCounts) statusCounts[status] += 1;
   }
 
+  // Payment stats are also computed across ALL registrations, independent
+  // of the current page/filter, for the summary line above the table.
+  const paymentGroups = await prisma.registration.groupBy({
+    by: ["paymentStatus"],
+    _count: { paymentStatus: true },
+  });
+  const paymentStats = { notPaid: 0, partial: 0, paid: 0 };
+  for (const g of paymentGroups) {
+    if (g.paymentStatus === "NOT_PAID") paymentStats.notPaid = g._count.paymentStatus;
+    else if (g.paymentStatus === "PARTIAL") paymentStats.partial = g._count.paymentStatus;
+    else if (g.paymentStatus === "PAID") paymentStats.paid = g._count.paymentStatus;
+  }
+
   const rows = registrations.map((r) => ({
     id: r.id,
     fullName: r.fullName,
@@ -100,6 +113,9 @@ export async function GET(request: NextRequest) {
     regType: r.regType,
     deliveryStatus: latestStatus(r.emailEvents ?? []),
     seatLabel: r.seat?.label ?? null,
+    paymentStatus: r.paymentStatus,
+    paymentNote: r.paymentNote,
+    seatInviteSentAt: r.seatInviteSentAt ? r.seatInviteSentAt.toISOString() : null,
     createdAt: r.createdAt.toISOString(),
   }));
 
@@ -116,5 +132,6 @@ export async function GET(request: NextRequest) {
       sentOnly: statusCounts.SENT,
       notSent: notSentCount,
     },
+    paymentStats,
   });
 }

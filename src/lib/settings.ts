@@ -21,6 +21,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   notification_email: "ridge@pertinencegroup.com",
   contact_whatsapp_number: "2348149774237",
   contact_whatsapp_message: "Hi RIDGE team, I'd like some help with my registration.",
+  // Placeholder until the public seat-picker page exists — the registration
+  // id is appended as a query param when the invite email is sent.
+  seat_selection_url: "https://theridgecircle.com/select-seat",
 };
 
 export async function getSettingsMap(): Promise<Record<string, string>> {

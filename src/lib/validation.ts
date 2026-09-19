@@ -38,3 +38,12 @@ export const updateSettingsSchema = z.record(z.string(), z.string().max(2000));
 export const updateSeatStatusSchema = z.object({
   status: z.enum(["OPEN", "RESERVED", "TAKEN", "BLOCKED"]),
 });
+
+export const updateRegistrationSchema = z.object({
+  paymentStatus: z.enum(["NOT_PAID", "PARTIAL", "PAID"]).optional(),
+  paymentNote: z.string().max(500).optional().or(z.literal("")),
+});
+
+export const registrationActionSchema = z.object({
+  action: z.enum(["resend_confirmation", "send_seat_invite", "send_payment_reminder"]),
+});

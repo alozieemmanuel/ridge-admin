@@ -43,6 +43,33 @@ Notes: {{notes}}`,
     body: `Name: {{full_name}}
 Email: {{email}}`,
   },
+  {
+    key: "seat_selection_invite",
+    subject: "Pick your seat for RIDGE Day 7",
+    replyTo: "{{contact_email}}",
+    body: `Hi {{first_name}},
+
+Your payment has been confirmed — thank you. You can now choose your seat for the Day 7 Graduation & Investor's Dinner.
+
+Pick your seat here: {{seat_selection_url}}?rid={{registration_id}}
+
+If you won't be able to make it to the venue in person, you'll be able to select "Attending Online" instead on that page.`,
+  },
+  {
+    key: "payment_reminder",
+    subject: "Reminder: complete your payment for {{programme_name}}",
+    replyTo: "{{contact_email}}",
+    body: `Hi {{first_name}},
+
+This is a friendly reminder that we haven't yet received your full payment for {{programme_name}}.
+
+Account Name: {{payment_account_name}}
+Bank: {{payment_bank_name}}
+Account Number: {{payment_account_number}}
+Currency: {{currency}}
+
+Once you've made your payment, please send your receipt to {{contact_email}} so we can confirm it and unlock your seat selection.`,
+  },
 ];
 
 async function main() {
