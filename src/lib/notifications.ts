@@ -240,7 +240,6 @@ async function buildRegistrationConfirmation(registration: Registration, setting
           ["Cohort", settings.cohort_dates],
         ],
       },
-      PAYMENT_DETAILS_BLOCK(settings),
     ],
     ctaLabel: "Contact The RIDGE Team",
     ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
@@ -523,4 +522,87 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
       }),
     })
   );
+}
+
+function formatLongDate(date: Date): string {
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Africa/Lagos" });
+}
+
+/**
+ * Sent right after a participant picks "I'll pay later" and chooses a
+ * reminder date. Thanks them for registering and confirms the date.
+ * Throws (with the reason) if the send fails.
+ */
+export async function sendPayLaterAcknowledgement(registration: Registration): Promise<void> {
+  if (!registration.payLaterDate) return;
+  const settings = await getSettingsMap();
+  const first = firstNameOf(registration.fullName);
+  const when = formatLongDate(registration.payLaterDate);
+  const subject = "Thank you for registering for RIDGE 2026";
+  const bodyText = `Hi ${first},\n\nThank you for registering for RIDGE 2026.\n\nYou chose to pay later, so we will send you a reminder on ${when}. Your seat is confirmed once payment is received, so please keep that date in mind.\n\nIf you need to change the date or have any questions, reply to this email or reach us on WhatsApp.`;
+
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "pay_later_ack",
+      id: registration.id,
+      to: registration.email,
+      build: async () => ({
+        subject,
+        html: renderBrandedEmail({
+          eyebrow: settings.event_caption,
+          heading: subject,
+          bodyText,
+          summaryBlocks: [
+            {
+              heading: "Your Reminder",
+              rows: [
+                ["Name", registration.fullName],
+                ["Registration Fee", registration.regType === "LATE" ? settings.late_registration_fee : settings.registration_fee],
+                ["Reminder date", when],
+              ],
+            },
+          ],
+          ctaLabel: "Contact The RIDGE Team",
+          ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
+        }),
+      }),
+    })
+  );
+}
+
+/**
+ * The reminder itself, sent on the date the participant chose. Includes the
+ * payment details. Throws (with the reason) if the send fails.
+ */
+export async function sendPayLaterReminder(registration: Registration): Promise<void> {
+  const settings = await getSettingsMap();
+  const first = firstNameOf(registration.fullName);
+  const subject = "Your RIDGE 2026 payment reminder";
+  const bodyText = `Hi ${first},\n\nYou asked us to remind you about your payment for RIDGE 2026, so here it is.\n\nYour seat is secured once payment is received. Use the details below, and upload your proof of payment on the registration page or send the receipt to us on WhatsApp.`;
+
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "pay_later_reminder",
+      id: registration.id,
+      to: registration.email,
+      build: async () => ({
+        subject,
+        html: renderBrandedEmail({
+          eyebrow: settings.event_caption,
+          heading: subject,
+          bodyText,
+          summaryBlocks: [PAYMENT_DETAILS_BLOCK(settings)],
+          ctaLabel: "Contact The RIDGE Team",
+          ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
+        }),
+      }),
+    })
+  );
+
+  await prisma.registration.update({
+    where: { id: registration.id },
+    data: { payLaterReminderAt: new Date() },
+  });
 }

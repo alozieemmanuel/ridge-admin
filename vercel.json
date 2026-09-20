@@ -1,0 +1,5 @@
+{
+    "crons": [
+      { "path": "/api/cron/pay-later-reminders", "schedule": "0 8 * * *" }
+    ]
+  }

@@ -80,6 +80,8 @@ model Registration {
   amountPaid       Float         @default(0) // total confirmed amount received, in the programme currency;
   // compared against the expected fee to derive paymentStatus
   paymentUpdatedAt DateTime? // last time an admin confirmed a payment amount
+  payLaterDate       DateTime? // date the participant asked to be reminded to pay
+  payLaterReminderAt DateTime? // when the scheduled reminder was actually sent
   seatInviteSentAt DateTime? // last time the "pick your seat" email was sent
   checkedInAt      DateTime? // when the attendee was marked as arrived on Day 7 (attendance)
 

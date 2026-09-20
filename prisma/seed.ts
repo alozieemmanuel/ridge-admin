@@ -8,13 +8,15 @@ const prisma = new PrismaClient();
 const DEFAULT_TEMPLATES = [
   {
     key: "registration_confirmation",
-    subject: "You're registered: {{programme_name}}",
+    subject: "You're registered for RIDGE 2026",
     replyTo: "{{contact_email}}",
     body: `Hi {{first_name}},
 
-Thank you for registering for {{programme_name}}. We've received your details, and a member of the RIDGE team will follow up within 48 hours to confirm your seat.
+    Thank you for registering for RIDGE 2026: Executive Wealth Creation Programme. We have received your details and we are glad you are joining us.
 
-Early Bird pricing is valid until {{early_bird_deadline}}. Use your full name as the payment reference, and send your payment receipt to {{contact_email}} once complete.`,
+    The programme promises to give you the training, mentorship, platforms and inventory you need to build wealth on purpose. It runs {{cohort_dates}}, and every day is built to move you closer to that goal.
+
+    One of our team members will be in touch shortly with your next steps.`,
   },
   {
     key: "brochure_confirmation",

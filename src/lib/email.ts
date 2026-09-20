@@ -120,6 +120,8 @@ export type EmailKind =
   | "seat_invite"
   | "payment_reminder"
   | "payment_confirmation"
+  | "pay_later_ack"
+  | "pay_later_reminder"
   | "internal"
   | "campaign";
 
