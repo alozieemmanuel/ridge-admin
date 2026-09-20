@@ -1,0 +1,4200 @@
+From 7bde20785248f77c3c27e4587309be2df828cd9c Mon Sep 17 00:00:00 2001
+From: Alozie Emmanuel <alozie@ridge-admin.local>
+Date: Sun, 20 Sep 2026 08:27:56 +0000
+Subject: [PATCH] Gmail for transactional mail (Resend for campaigns), Replies
+ inbox, audit log, seat-invite guard, payment reset/delete, payment proof
+ uploads
+
+---
+ .env.example                                  |  30 ++
+ README.md                                     |  65 ++++
+ .../migration.sql                             | 107 ++++++
+ prisma/schema.prisma                          | 194 +++++++---
+ src/app/admin/audit/page.tsx                  | 273 ++++++++++++++
+ src/app/admin/page.tsx                        |  69 +++-
+ src/app/admin/payments/page.tsx               | 242 ++++--------
+ src/app/admin/replies/page.tsx                | 353 ++++++++++++++++++
+ src/app/api/admin/admins/[id]/route.ts        |   8 +-
+ src/app/api/admin/admins/route.ts             |   7 +
+ src/app/api/admin/audit-logs/route.ts         |  72 ++++
+ .../api/admin/brochure-requests/[id]/route.ts |  10 +-
+ src/app/api/admin/campaigns/route.ts          |  13 +
+ src/app/api/admin/data/clear/route.ts         |   7 +
+ src/app/api/admin/login/route.ts              |  25 +-
+ src/app/api/admin/logout/route.ts             |  11 +-
+ .../api/admin/payment-proofs/[id]/route.ts    |  21 ++
+ .../admin/registrations/[id]/actions/route.ts |  54 ++-
+ .../admin/registrations/[id]/checkin/route.ts |  16 +-
+ .../admin/registrations/[id]/payment/route.ts |  43 +++
+ src/app/api/admin/registrations/[id]/route.ts |  38 +-
+ .../api/admin/registrations/export/route.ts   |  10 +-
+ src/app/api/admin/registrations/route.ts      |  11 +
+ src/app/api/admin/replies/[threadId]/route.ts | 117 ++++++
+ src/app/api/admin/replies/route.ts            |  87 +++++
+ src/app/api/admin/replies/sync/route.ts       |  16 +
+ .../api/admin/replies/unread-count/route.ts   |  11 +
+ src/app/api/admin/seats/[seatId]/route.ts     |  14 +
+ src/app/api/admin/settings/route.ts           |  11 +
+ src/app/api/admin/templates/[key]/route.ts    |   8 +
+ src/app/api/public/payment-proofs/route.ts    |  82 ++++
+ src/app/api/public/registrations/route.ts     |   5 +-
+ src/components/AdminShell.tsx                 |  30 +-
+ src/components/PaymentUpdateModal.tsx         | 199 ++++++++++
+ src/components/RegistrationActionsMenu.tsx    |  73 +++-
+ src/lib/audit.ts                              |  85 +++++
+ src/lib/email.ts                              |  79 +++-
+ src/lib/gmail.ts                              | 340 +++++++++++++++++
+ src/lib/inbox.ts                              | 241 ++++++++++++
+ src/lib/notifications.ts                      |  53 ++-
+ src/lib/proof-token.ts                        |  27 ++
+ src/lib/validation.ts                         |   4 +
+ 42 files changed, 2885 insertions(+), 276 deletions(-)
+ create mode 100644 .env.example
+ create mode 100644 prisma/migrations/20260919200000_gmail_audit_inbox/migration.sql
+ create mode 100644 src/app/admin/audit/page.tsx
+ create mode 100644 src/app/admin/replies/page.tsx
+ create mode 100644 src/app/api/admin/audit-logs/route.ts
+ create mode 100644 src/app/api/admin/payment-proofs/[id]/route.ts
+ create mode 100644 src/app/api/admin/registrations/[id]/payment/route.ts
+ create mode 100644 src/app/api/admin/replies/[threadId]/route.ts
+ create mode 100644 src/app/api/admin/replies/route.ts
+ create mode 100644 src/app/api/admin/replies/sync/route.ts
+ create mode 100644 src/app/api/admin/replies/unread-count/route.ts
+ create mode 100644 src/app/api/public/payment-proofs/route.ts
+ create mode 100644 src/components/PaymentUpdateModal.tsx
+ create mode 100644 src/lib/audit.ts
+ create mode 100644 src/lib/gmail.ts
+ create mode 100644 src/lib/inbox.ts
+ create mode 100644 src/lib/proof-token.ts
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..7529d6f
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,30 @@
++# --- Database (Postgres) ---
++DATABASE_URL=
++DIRECT_URL=
++
++# --- Sessions: any random string, 32+ characters (openssl rand -base64 32) ---
++SESSION_SECRET=
++
++# --- First admin, created by `npm run seed` ---
++SEED_ADMIN_EMAIL=
++SEED_ADMIN_PASSWORD=
++SEED_ADMIN_NAME=
++
++# --- Public site(s) allowed to call /api/public/* (comma-separated; optional) ---
++PUBLIC_SITE_ORIGINS=
++
++# --- Gmail: confirmations, payment reminders, seat invites, internal alerts,
++#     and the Replies inbox. See "Email: Gmail + Resend" in the README. ---
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++GMAIL_REFRESH_TOKEN=
++GMAIL_SENDER=            # the Gmail / Workspace address emails are sent from and replies arrive at
++EMAIL_FROM_NAME=RIDGE 2026
++# Set to "resend" to send transactional mail through Resend instead of Gmail
++# (a temporary fallback while Gmail is being set up). Default: gmail.
++TRANSACTIONAL_EMAIL_PROVIDER=
++
++# --- Resend: campaigns only ---
++RESEND_API_KEY=
++EMAIL_FROM=RIDGE 2026 <ridge@contact.pertinencegroup.com>
++RESEND_WEBHOOK_SECRET=
+diff --git a/README.md b/README.md
+index 72b2a1d..7b259e4 100644
+--- a/README.md
++++ b/README.md
+@@ -81,6 +81,71 @@ Two changes worth making at the same time, now that you own the backend:
+ For the brochure modal in `index.html`, same idea against
+ `/api/public/brochure-requests`.
+ 
++## Email: Gmail + Resend
++
++Two services, split by purpose:
++
++| Email | Sent through |
++|---|---|
++| Registration confirmation, brochure email, payment reminder, seat-selection invite, internal team alerts, admin replies | **Gmail** |
++| Campaigns (bulk sends from `/admin/campaigns`) | **Resend** |
++
++Why the split: Gmail caps daily sending (about 500 recipients on a free account,
++2,000 on Google Workspace), which is plenty for one-to-one emails but not for
++blasting a whole audience; Resend is built for that and reports delivery/opens.
++Gmail is also the mailbox replies arrive in, which is what powers the **Replies**
++tab. Campaigns are sent with Reply-To set to the Gmail address, so replies to a
++campaign land in the same inbox.
++
++Things that change because of this:
++
++- Gmail-sent emails record **Sent / Failed** (and **Bounced**, detected from
++  Gmail's bounce notices) but not Delivered/Opened — Gmail doesn't report those.
++  Campaign emails still get the full Resend tracking.
++- A template's own Reply-To is not used for attendee emails; replies go to the
++  Gmail address so they can be read in the admin.
++
++### Connecting Gmail (one time)
++
++1. In Google Cloud Console create a project, enable the **Gmail API**, and create
++   an **OAuth client ID** (type: Web application; add `https://developers.google.com/oauthplayground`
++   as an authorized redirect URI).
++2. If the mailbox is a **Google Workspace** account, set the OAuth consent
++   screen's user type to **Internal** — refresh tokens then don't expire. On a
++   personal Gmail account, an app left in *Testing* mode has refresh tokens that
++   **expire after 7 days**; you'd need to publish the app instead.
++3. Open the [OAuth Playground](https://developers.google.com/oauthplayground), click the gear,
++   tick *Use your own OAuth credentials*, enter the client ID/secret, then authorize
++   these two scopes while signed in as the sending mailbox:
++   `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/gmail.readonly`.
++   Exchange the code and copy the **refresh token**.
++4. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` and
++   `GMAIL_SENDER` (the mailbox address) in Vercel, then redeploy.
++
++Until Gmail is connected, set `TRANSACTIONAL_EMAIL_PROVIDER=resend` to keep
++sending through Resend as before.
++
++## Replies
++
++`/admin/replies` lists conversations where a participant replied to an email,
++lets any admin read and answer them (the answer is sent from the Gmail address,
++in the same thread), and shows an unread count on the tab. New replies are pulled
++from Gmail automatically while anyone has the dashboard open (throttled to about
++once a minute), or on demand with **Check for new replies**. Only mail from
++registrants and brochure requesters is imported — the rest of the mailbox is ignored.
++
++WhatsApp is not connected. The inbox is built channel-agnostic (`InboxMessage.channel`),
++so adding WhatsApp later means receiving Meta's webhook into that table and sending
++through the WhatsApp Cloud API; see the note at the top of `src/lib/inbox.ts`.
++
++## Audit log
++
++`/admin/audit` (owners only) records who did what and when: sign-ins (including
++failed attempts), payment updates and resets, every email sent or blocked,
++check-ins, deletions, exports, campaigns, replies, seat changes, template and
++settings edits, and admin changes. Entries are append-only — no page or API edits
++or deletes them, and clearing test data doesn't touch them.
++
+ ## Deploying
+ 
+ 1. Push this repo, connect it to **Vercel**.
+diff --git a/prisma/migrations/20260919200000_gmail_audit_inbox/migration.sql b/prisma/migrations/20260919200000_gmail_audit_inbox/migration.sql
+new file mode 100644
+index 0000000..cd9b5f7
+--- /dev/null
++++ b/prisma/migrations/20260919200000_gmail_audit_inbox/migration.sql
+@@ -0,0 +1,107 @@
++-- CreateEnum
++CREATE TYPE "EmailProvider" AS ENUM ('GMAIL', 'RESEND');
++
++-- CreateEnum
++CREATE TYPE "MessageChannel" AS ENUM ('EMAIL', 'WHATSAPP');
++
++-- CreateEnum
++CREATE TYPE "MessageDirection" AS ENUM ('INBOUND', 'OUTBOUND');
++
++-- AlterTable
++ALTER TABLE "EmailEvent" ADD COLUMN     "kind" TEXT,
++ADD COLUMN     "provider" "EmailProvider",
++ADD COLUMN     "subject" TEXT,
++ADD COLUMN     "threadId" TEXT;
++
++-- CreateTable
++CREATE TABLE "InboxMessage" (
++    "id" TEXT NOT NULL,
++    "channel" "MessageChannel" NOT NULL DEFAULT 'EMAIL',
++    "direction" "MessageDirection" NOT NULL,
++    "providerMessageId" TEXT NOT NULL,
++    "threadId" TEXT NOT NULL,
++    "rfcMessageId" TEXT,
++    "registrationId" TEXT,
++    "brochureRequestId" TEXT,
++    "counterpartAddress" TEXT NOT NULL,
++    "counterpartName" TEXT,
++    "subject" TEXT NOT NULL,
++    "bodyText" TEXT NOT NULL,
++    "occurredAt" TIMESTAMP(3) NOT NULL,
++    "readAt" TIMESTAMP(3),
++    "sentByName" TEXT,
++    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++
++    CONSTRAINT "InboxMessage_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateTable
++CREATE TABLE "AuditLog" (
++    "id" TEXT NOT NULL,
++    "adminId" TEXT,
++    "adminName" TEXT NOT NULL,
++    "adminEmail" TEXT,
++    "action" TEXT NOT NULL,
++    "entityType" TEXT,
++    "entityId" TEXT,
++    "entityLabel" TEXT,
++    "details" JSONB,
++    "ipAddress" TEXT,
++    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++
++    CONSTRAINT "AuditLog_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE UNIQUE INDEX "InboxMessage_providerMessageId_key" ON "InboxMessage"("providerMessageId");
++
++-- CreateIndex
++CREATE INDEX "InboxMessage_threadId_idx" ON "InboxMessage"("threadId");
++
++-- CreateIndex
++CREATE INDEX "InboxMessage_registrationId_idx" ON "InboxMessage"("registrationId");
++
++-- CreateIndex
++CREATE INDEX "InboxMessage_brochureRequestId_idx" ON "InboxMessage"("brochureRequestId");
++
++-- CreateIndex
++CREATE INDEX "InboxMessage_occurredAt_idx" ON "InboxMessage"("occurredAt");
++
++-- CreateIndex
++CREATE INDEX "AuditLog_createdAt_idx" ON "AuditLog"("createdAt");
++
++-- CreateIndex
++CREATE INDEX "AuditLog_adminId_idx" ON "AuditLog"("adminId");
++
++-- CreateIndex
++CREATE INDEX "AuditLog_action_idx" ON "AuditLog"("action");
++
++-- CreateIndex
++CREATE INDEX "EmailEvent_threadId_idx" ON "EmailEvent"("threadId");
++
++-- AddForeignKey
++ALTER TABLE "InboxMessage" ADD CONSTRAINT "InboxMessage_registrationId_fkey" FOREIGN KEY ("registrationId") REFERENCES "Registration"("id") ON DELETE CASCADE ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "InboxMessage" ADD CONSTRAINT "InboxMessage_brochureRequestId_fkey" FOREIGN KEY ("brochureRequestId") REFERENCES "BrochureRequest"("id") ON DELETE CASCADE ON UPDATE CASCADE;
++
++-- CreateTable
++CREATE TABLE "PaymentProof" (
++    "id" TEXT NOT NULL,
++    "registrationId" TEXT NOT NULL,
++    "currency" TEXT NOT NULL,
++    "method" TEXT,
++    "fileName" TEXT NOT NULL,
++    "mimeType" TEXT NOT NULL,
++    "size" INTEGER NOT NULL,
++    "data" BYTEA NOT NULL,
++    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++
++    CONSTRAINT "PaymentProof_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE INDEX "PaymentProof_registrationId_idx" ON "PaymentProof"("registrationId");
++
++-- AddForeignKey
++ALTER TABLE "PaymentProof" ADD CONSTRAINT "PaymentProof_registrationId_fkey" FOREIGN KEY ("registrationId") REFERENCES "Registration"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index db7c6a6..92297da 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -31,6 +31,21 @@ enum EmailEventType {
+   FAILED
+ }
+ 
++enum EmailProvider {
++  GMAIL // transactional mail: confirmations, reminders, seat invites, internal alerts
++  RESEND // campaigns (bulk sends)
++}
++
++enum MessageChannel {
++  EMAIL
++  WHATSAPP // reserved: WhatsApp Business isn't connected yet (see src/lib/inbox.ts)
++}
++
++enum MessageDirection {
++  INBOUND // a participant replied
++  OUTBOUND // an admin replied from the Replies inbox
++}
++
+ enum EmailAudience {
+   ATTENDEE // the registration/brochure confirmation email
+   INTERNAL // the internal team notification
+@@ -55,40 +70,43 @@ enum PaymentStatus {
+ }
+ 
+ model Registration {
+-  id           String       @id @default(cuid())
++  id           String  @id @default(cuid())
+   fullName     String
+-  email        String       @unique
++  email        String  @unique
+   phone        String
+   country      String
+   organization String?
+   notes        String?
+-  regType      RegType      @default(EARLY_BIRD)
++  regType      RegType @default(EARLY_BIRD)
+ 
+-  paymentStatus     PaymentStatus @default(NOT_PAID)
+-  paymentNote       String?       // free-text admin note, e.g. "$1000 of $2000 received 9/20"
+-  amountPaid        Float         @default(0) // total confirmed amount received, in the programme currency;
+-                                               // compared against the expected fee to derive paymentStatus
+-  paymentUpdatedAt  DateTime?     // last time an admin confirmed a payment amount
+-  seatInviteSentAt  DateTime?     // last time the "pick your seat" email was sent
+-  checkedInAt       DateTime?     // when the attendee was marked as arrived on Day 7 (attendance)
++  paymentStatus    PaymentStatus @default(NOT_PAID)
++  paymentNote      String? // free-text admin note, e.g. "$1000 of $2000 received 9/20"
++  amountPaid       Float         @default(0) // total confirmed amount received, in the programme currency;
++  // compared against the expected fee to derive paymentStatus
++  paymentUpdatedAt DateTime? // last time an admin confirmed a payment amount
++  seatInviteSentAt DateTime? // last time the "pick your seat" email was sent
++  checkedInAt      DateTime? // when the attendee was marked as arrived on Day 7 (attendance)
+ 
+-  createdAt    DateTime     @default(now())
+-  updatedAt    DateTime     @updatedAt
++  createdAt DateTime @default(now())
++  updatedAt DateTime @updatedAt
+ 
+-  emailEvents  EmailEvent[]
+-  seat         Seat?
++  emailEvents   EmailEvent[]
++  seat          Seat?
++  inboxMessages InboxMessage[]
++  paymentProofs PaymentProof[]
+ 
+   @@index([createdAt])
+ }
+ 
+ model BrochureRequest {
+-  id          String       @id @default(cuid())
+-  fullName    String
+-  email       String
++  id       String @id @default(cuid())
++  fullName String
++  email    String
+ 
+-  createdAt   DateTime     @default(now())
++  createdAt DateTime @default(now())
+ 
+-  emailEvents EmailEvent[]
++  emailEvents   EmailEvent[]
++  inboxMessages InboxMessage[]
+ 
+   @@index([email])
+   @@index([createdAt])
+@@ -97,22 +115,80 @@ model BrochureRequest {
+ // One row per lifecycle event per email sent (sent/delivered/opened/bounced/...),
+ // so the admin dashboard can show live counts with a simple GROUP BY.
+ model EmailEvent {
+-  id                 String       @id @default(cuid())
+-  source             EmailSource
+-  registrationId     String?
+-  registration       Registration?     @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+-  brochureRequestId  String?
+-  brochureRequest    BrochureRequest?  @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
+-
+-  type               EmailEventType
+-  audience           EmailAudience @default(ATTENDEE)
+-  providerMessageId  String?      // Resend's email id, used to correlate webhook events
+-  errorMessage       String?      // why a send FAILED (Resend's message), shown on hover in the dashboard
+-  occurredAt         DateTime     @default(now())
++  id                String           @id @default(cuid())
++  source            EmailSource
++  registrationId    String?
++  registration      Registration?    @relation(fields: [registrationId], references: [id], onDelete: Cascade)
++  brochureRequestId String?
++  brochureRequest   BrochureRequest? @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
++
++  type              EmailEventType
++  audience          EmailAudience  @default(ATTENDEE)
++  providerMessageId String? // Resend's email id, used to correlate webhook events
++  errorMessage      String? // why a send FAILED (provider's message), shown on hover in the dashboard
++  occurredAt        DateTime       @default(now())
++
++  provider EmailProvider? // which service sent it (null on rows from before Gmail was added = Resend)
++  threadId String? // Gmail thread id — how replies are matched back to the email we sent
++  subject  String? // the subject as sent, shown in the Replies inbox
++  kind     String? // registration_confirmation | brochure_confirmation | seat_selection_invite | payment_reminder | campaign
+ 
+   @@index([registrationId])
+   @@index([brochureRequestId])
+   @@index([providerMessageId])
++  @@index([threadId])
++}
++
++// One row per message in a conversation with a participant: replies they send
++// (INBOUND, pulled from the connected Gmail mailbox) and replies an admin sends
++// back from /admin/replies (OUTBOUND). `channel` exists so WhatsApp messages can
++// land in the same inbox later without another migration.
++model InboxMessage {
++  id                String           @id @default(cuid())
++  channel           MessageChannel   @default(EMAIL)
++  direction         MessageDirection
++  providerMessageId String           @unique // Gmail message id (a WhatsApp message id later)
++  threadId          String
++  rfcMessageId      String? // the Message-ID header, used to thread our replies
++
++  registrationId    String?
++  registration      Registration?    @relation(fields: [registrationId], references: [id], onDelete: Cascade)
++  brochureRequestId String?
++  brochureRequest   BrochureRequest? @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
++
++  counterpartAddress String // the participant's email (a phone number for WhatsApp)
++  counterpartName    String?
++  subject            String
++  bodyText           String    @db.Text
++  occurredAt         DateTime
++  readAt             DateTime? // inbound only: null = unread
++  sentByName         String? // outbound only: which admin replied
++  createdAt          DateTime  @default(now())
++
++  @@index([threadId])
++  @@index([registrationId])
++  @@index([brochureRequestId])
++  @@index([occurredAt])
++}
++
++// Append-only record of what each admin did. No foreign key to Admin on
++// purpose, so the trail survives an admin being removed.
++model AuditLog {
++  id          String   @id @default(cuid())
++  adminId     String?
++  adminName   String
++  adminEmail  String?
++  action      String // e.g. "auth.login", "registration.payment_update"
++  entityType  String? // "registration" | "brochure_request" | "admin" | ...
++  entityId    String?
++  entityLabel String? // human-readable, e.g. the participant's name
++  details     Json?
++  ipAddress   String?
++  createdAt   DateTime @default(now())
++
++  @@index([createdAt])
++  @@index([adminId])
++  @@index([action])
+ }
+ 
+ // Editable copy for the attendee-facing emails: registration_confirmation,
+@@ -158,15 +234,15 @@ enum CampaignAudience {
+ // send time from `audience`; each send also gets its own EmailEvent rows
+ // (source: CAMPAIGN) so delivery/open tracking works the same as other mail.
+ model Campaign {
+-  id           String           @id @default(cuid())
+-  subject      String
+-  body         String           @db.Text
+-  audience     CampaignAudience
+-  recipientCount Int            @default(0)
+-  sentCount    Int              @default(0)
+-  failedCount  Int              @default(0)
+-  sentAt       DateTime         @default(now())
+-  sentByName   String?
++  id             String           @id @default(cuid())
++  subject        String
++  body           String           @db.Text
++  audience       CampaignAudience
++  recipientCount Int              @default(0)
++  sentCount      Int              @default(0)
++  failedCount    Int              @default(0)
++  sentAt         DateTime         @default(now())
++  sentByName     String?
+ 
+   @@index([sentAt])
+ }
+@@ -187,26 +263,44 @@ model EventTable {
+   id    String @id @default(cuid())
+   label String @unique // "A", "B", ... "AA"
+   order Int    @unique // display order, 0-based — independent of label so
+-                        // tables can be reordered later without relabeling
++  // tables can be reordered later without relabeling
+ 
+   seats Seat[]
+ }
+ 
+ model Seat {
+-  id            String     @id @default(cuid())
+-  tableId       String
+-  table         EventTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+-  seatNumber    Int        // 1..10 within the table
+-  label         String     @unique // "A2" — table label + seat number, shown to guests and admins
++  id         String     @id @default(cuid())
++  tableId    String
++  table      EventTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
++  seatNumber Int // 1..10 within the table
++  label      String     @unique // "A2" — table label + seat number, shown to guests and admins
+ 
+-  status        SeatStatus @default(OPEN)
++  status SeatStatus @default(OPEN)
+ 
+-  registrationId String?   @unique
++  registrationId String?       @unique
+   registration   Registration? @relation(fields: [registrationId], references: [id])
+ 
+-  holdExpiresAt DateTime?  // for a future payment-pending hold window
+-  updatedAt     DateTime   @updatedAt
++  holdExpiresAt DateTime? // for a future payment-pending hold window
++  updatedAt     DateTime  @updatedAt
+ 
+   @@unique([tableId, seatNumber])
+   @@index([status])
+ }
++
++// Proof-of-payment files uploaded by participants from the public payment
++// screen. Stored in the database (small images/PDFs, max 4 MB) so no separate
++// file storage service is needed.
++model PaymentProof {
++  id             String       @id @default(cuid())
++  registrationId String
++  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
++  currency       String       // USD | CAD | NGN | USD_NG
++  method         String?      // e.g. "bank_transfer" | "interac"
++  fileName       String
++  mimeType       String
++  size           Int
++  data           Bytes
++  createdAt      DateTime     @default(now())
++
++  @@index([registrationId])
++}
+diff --git a/src/app/admin/audit/page.tsx b/src/app/admin/audit/page.tsx
+new file mode 100644
+index 0000000..ebead20
+--- /dev/null
++++ b/src/app/admin/audit/page.tsx
+@@ -0,0 +1,273 @@
++"use client";
++
++import { useCallback, useEffect, useRef, useState } from "react";
++import AdminShell from "@/components/AdminShell";
++import { useAutoRefresh } from "@/lib/useAutoRefresh";
++
++interface LogRow {
++  id: string;
++  adminId: string | null;
++  adminName: string;
++  adminEmail: string | null;
++  action: string;
++  entityType: string | null;
++  entityId: string | null;
++  entityLabel: string | null;
++  details: Record<string, unknown> | null;
++  ipAddress: string | null;
++  createdAt: string;
++}
++
++const ACTION_LABELS: Record<string, string> = {
++  "auth.login": "Signed in",
++  "auth.login_failed": "Failed sign-in attempt",
++  "auth.logout": "Signed out",
++  "registration.payment_update": "Updated payment",
++  "registration.payment_reset": "Reset payment",
++  "registration.resend_confirmation": "Confirmation email",
++  "registration.send_seat_invite": "Seat-selection email",
++  "registration.send_payment_reminder": "Payment reminder",
++  "registration.checkin": "Attendance",
++  "registration.delete": "Deleted registration",
++  "registration.export": "Exported registrations",
++  "brochure.delete": "Deleted brochure request",
++  "campaign.send": "Sent campaign",
++  "reply.send": "Replied to participant",
++  "seat.update": "Changed seat",
++  "template.update": "Edited email template",
++  "settings.update": "Changed settings",
++  "admin.create": "Added admin",
++  "admin.delete": "Removed admin",
++  "data.clear": "Cleared data",
++};
++
++const CATEGORIES: { value: string; label: string }[] = [
++  { value: "", label: "All activity" },
++  { value: "auth", label: "Sign-ins" },
++  { value: "registration", label: "Registrations & payments" },
++  { value: "brochure", label: "Brochure requests" },
++  { value: "campaign", label: "Campaigns" },
++  { value: "reply", label: "Replies" },
++  { value: "seat", label: "Seats" },
++  { value: "template", label: "Templates" },
++  { value: "settings", label: "Settings" },
++  { value: "admin", label: "Admins" },
++  { value: "data", label: "Data clearing" },
++];
++
++/** One readable sentence about what changed, built from the stored details. */
++function summarize(row: LogRow): string {
++  const d = (row.details ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
++  switch (row.action) {
++    case "registration.payment_update":
++      return `${d.before?.amountPaid ?? 0} → ${d.after?.amountPaid ?? 0} (${String(d.before?.status ?? "").replace("_", " ").toLowerCase()} → ${String(d.after?.status ?? "").replace("_", " ").toLowerCase()})${d.note ? ` · “${d.note}”` : ""}`;
++    case "registration.payment_reset":
++      return `Cleared ${d.before?.amountPaid ?? 0} (was ${String(d.before?.status ?? "").replace("_", " ").toLowerCase()})`;
++    case "registration.resend_confirmation":
++    case "registration.send_seat_invite":
++    case "registration.send_payment_reminder": {
++      const outcome = d.outcome as string | undefined;
++      if (outcome === "blocked") return `Blocked — ${d.reason ?? "not allowed"}`;
++      if (outcome === "failed") return `Failed — ${d.error ?? "unknown error"}`;
++      return `Sent to ${d.to ?? "participant"}`;
++    }
++    case "registration.checkin":
++      return d.checkedIn ? "Marked as arrived" : "Check-in undone";
++    case "registration.delete":
++      return `${d.email ?? ""}${d.amountPaid ? ` · had paid ${d.amountPaid}` : ""}`;
++    case "campaign.send":
++      return `${d.audience ?? ""}: ${d.sentCount ?? 0} sent, ${d.failedCount ?? 0} failed of ${d.recipientCount ?? 0}`;
++    case "reply.send":
++      return `To ${d.to ?? ""}`;
++    case "seat.update":
++      return `${d.from ?? ""} → ${d.to ?? ""}`;
++    case "settings.update":
++      return `Changed: ${Array.isArray(d.changedKeys) ? d.changedKeys.join(", ") : ""}`;
++    case "admin.create":
++    case "admin.delete":
++      return `${d.email ?? ""} (${String(d.role ?? "").toLowerCase()})`;
++    case "data.clear":
++      return `${d.registrations ?? 0} registrations, ${d.brochureRequests ?? 0} brochure requests`;
++    case "auth.login_failed":
++      return String(d.reason ?? "");
++    default:
++      return "";
++  }
++}
++
++const OUTCOME_STYLE = (row: LogRow): string => {
++  const outcome = (row.details as { outcome?: string } | null)?.outcome;
++  if (row.action === "auth.login_failed" || outcome === "failed" || row.action === "data.clear") return "text-red-400";
++  if (outcome === "blocked") return "text-amber-300";
++  return "text-fg";
++};
++
++export default function AuditLogPage() {
++  const [logs, setLogs] = useState<LogRow[]>([]);
++  const [total, setTotal] = useState(0);
++  const [admins, setAdmins] = useState<{ id: string; name: string }[]>([]);
++  const [adminFilter, setAdminFilter] = useState("");
++  const [category, setCategory] = useState("");
++  const [search, setSearch] = useState("");
++  const [page, setPage] = useState(1);
++  const [loading, setLoading] = useState(true);
++  const [forbidden, setForbidden] = useState(false);
++  const requestId = useRef(0);
++
++  const load = useCallback(
++    async (silent = false) => {
++      const mine = ++requestId.current;
++      if (!silent) setLoading(true);
++      try {
++        const params = new URLSearchParams({ page: String(page), pageSize: "50" });
++        if (adminFilter) params.set("admin", adminFilter);
++        if (category) params.set("category", category);
++        if (search) params.set("search", search);
++        const res = await fetch(`/api/admin/audit-logs?${params.toString()}`);
++        if (res.status === 403) {
++          setForbidden(true);
++          return;
++        }
++        if (res.ok && mine === requestId.current) {
++          const data = await res.json();
++          setLogs(data.logs);
++          setTotal(data.total);
++          setAdmins(data.admins);
++        }
++      } catch {
++        // keep the last data; the next poll retries
++      } finally {
++        if (mine === requestId.current) setLoading(false);
++      }
++    },
++    [adminFilter, category, search, page]
++  );
++
++  useEffect(() => {
++    const t = setTimeout(() => load(), 250);
++    return () => clearTimeout(t);
++  }, [load]);
++
++  useAutoRefresh(() => load(true), 15_000);
++
++  // Any filter change goes back to the first page.
++  useEffect(() => {
++    setPage(1);
++  }, [adminFilter, category, search]);
++
++  const pages = Math.max(1, Math.ceil(total / 50));
++  const selectClass =
++    "bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold";
++
++  return (
++    <AdminShell active="/admin/audit">
++      <div className="mb-6">
++        <h2 className="font-serif text-2xl">Audit Log</h2>
++        <p className="text-muted text-sm mt-1">
++          {total} entr{total === 1 ? "y" : "ies"} · a permanent record of what each admin did. Entries can&apos;t be edited or deleted.
++        </p>
++      </div>
++
++      {forbidden && <p className="text-muted text-sm">Only an owner can view the audit log.</p>}
++
++      {!forbidden && (
++        <>
++          <div className="flex gap-3 mb-6 flex-wrap">
++            <select value={adminFilter} onChange={(e) => setAdminFilter(e.target.value)} className={selectClass}>
++              <option value="">All admins</option>
++              {admins.map((a) => (
++                <option key={a.id} value={a.id}>
++                  {a.name}
++                </option>
++              ))}
++            </select>
++            <select value={category} onChange={(e) => setCategory(e.target.value)} className={selectClass}>
++              {CATEGORIES.map((c) => (
++                <option key={c.value} value={c.value}>
++                  {c.label}
++                </option>
++              ))}
++            </select>
++            <input
++              value={search}
++              onChange={(e) => setSearch(e.target.value)}
++              placeholder="Search admin or person"
++              className={`${selectClass} w-full max-w-xs`}
++            />
++          </div>
++
++          <div className="border border-border rounded-xl overflow-hidden">
++            <div className="table-scroll overflow-x-auto">
++              <table className="w-full text-sm">
++                <thead>
++                  <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
++                    <th className="px-5 py-3 font-medium whitespace-nowrap">When</th>
++                    <th className="px-5 py-3 font-medium whitespace-nowrap">Admin</th>
++                    <th className="px-5 py-3 font-medium whitespace-nowrap">Action</th>
++                    <th className="px-5 py-3 font-medium whitespace-nowrap">Who / what</th>
++                    <th className="px-5 py-3 font-medium">Details</th>
++                    <th className="px-5 py-3 font-medium whitespace-nowrap">IP</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {loading && (
++                    <tr>
++                      <td colSpan={6} className="px-5 py-8 text-center text-muted">
++                        Loading…
++                      </td>
++                    </tr>
++                  )}
++                  {!loading && logs.length === 0 && (
++                    <tr>
++                      <td colSpan={6} className="px-5 py-8 text-center text-muted">
++                        Nothing recorded yet.
++                      </td>
++                    </tr>
++                  )}
++                  {!loading &&
++                    logs.map((row) => (
++                      <tr key={row.id} className="border-b border-border/50 last:border-b-0 align-top">
++                        <td className="px-5 py-4 text-muted whitespace-nowrap">{new Date(row.createdAt).toLocaleString()}</td>
++                        <td className="px-5 py-4 whitespace-nowrap">
++                          {row.adminName}
++                          {row.adminEmail && <span className="block text-xs text-muted">{row.adminEmail}</span>}
++                        </td>
++                        <td className={`px-5 py-4 whitespace-nowrap ${OUTCOME_STYLE(row)}`}>
++                          {ACTION_LABELS[row.action] ?? row.action}
++                        </td>
++                        <td className="px-5 py-4 whitespace-nowrap">{row.entityLabel ?? "—"}</td>
++                        <td className="px-5 py-4 text-muted">{summarize(row)}</td>
++                        <td className="px-5 py-4 text-muted whitespace-nowrap">{row.ipAddress ?? "—"}</td>
++                      </tr>
++                    ))}
++                </tbody>
++              </table>
++            </div>
++          </div>
++
++          {pages > 1 && (
++            <div className="flex items-center justify-between mt-4 text-sm">
++              <button
++                onClick={() => setPage((p) => Math.max(1, p - 1))}
++                disabled={page === 1}
++                className="px-4 py-2 rounded-full border border-border text-muted hover:text-fg disabled:opacity-50"
++              >
++                Newer
++              </button>
++              <span className="text-muted">
++                Page {page} of {pages}
++              </span>
++              <button
++                onClick={() => setPage((p) => Math.min(pages, p + 1))}
++                disabled={page === pages}
++                className="px-4 py-2 rounded-full border border-border text-muted hover:text-fg disabled:opacity-50"
++              >
++                Older
++              </button>
++            </div>
++          )}
++        </>
++      )}
++    </AdminShell>
++  );
++}
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index d7722e4..de624a3 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -5,6 +5,12 @@ import AdminShell from "@/components/AdminShell";
+ import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+ import { useAutoRefresh } from "@/lib/useAutoRefresh";
+ import { useIsOwner } from "@/lib/useIsOwner";
++import {
++  PaymentUpdateModal,
++  PAYMENT_META,
++  formatMoney,
++  usePaymentSettings,
++} from "@/components/PaymentUpdateModal";
+ 
+ interface RegistrationRow {
+   id: string;
+@@ -17,6 +23,8 @@ interface RegistrationRow {
+   deliveryStatus: string;
+   deliveryError: string | null;
+   paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
++  paymentNote: string | null;
++  amountPaid: number;
+   seatLabel: string | null;
+   seatInviteSentAt: string | null;
+   createdAt: string;
+@@ -63,6 +71,8 @@ export default function RegistrationsPage() {
+   const [loading, setLoading] = useState(true);
+   const [actionMessage, setActionMessage] = useState<{ text: string; ok: boolean } | null>(null);
+   const isOwner = useIsOwner();
++  const { currency, feeAmounts } = usePaymentSettings();
++  const [paymentRow, setPaymentRow] = useState<RegistrationRow | null>(null);
+   const requestId = useRef(0);
+   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+@@ -114,6 +124,39 @@ export default function RegistrationsPage() {
+     load(true);
+   }
+ 
++  async function handleConfirmPayment(id: string, amountPaid: number, note: string) {
++    const res = await fetch(`/api/admin/registrations/${id}`, {
++      method: "PATCH",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ amountPaid, note }),
++    });
++    if (!res.ok) {
++      const data = await res.json().catch(() => ({}));
++      throw new Error(data.error || "Failed to update payment.");
++    }
++    setPaymentRow(null);
++    flash("Payment updated.", true);
++    load(true);
++  }
++
++  async function handleReset(row: RegistrationRow) {
++    if (
++      !window.confirm(
++        `Reset ${row.fullName}'s payment? This clears the recorded amount (${formatMoney(row.amountPaid, currency)}), note and date and marks them as not paid.`
++      )
++    ) {
++      return;
++    }
++    const res = await fetch(`/api/admin/registrations/${row.id}/payment`, { method: "DELETE" });
++    if (res.ok) {
++      flash("Payment reset.", true);
++      load(true);
++    } else {
++      const data = await res.json().catch(() => ({}));
++      flash(data.error || "Failed to reset payment.", false);
++    }
++  }
++
+   async function handleDelete(row: RegistrationRow) {
+     if (!window.confirm(`Permanently delete the registration for ${row.fullName} (${row.email})? This cannot be undone.`)) {
+       return;
+@@ -195,6 +238,7 @@ export default function RegistrationsPage() {
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Phone</th>
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Country</th>
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Type</th>
++                <th className="px-5 py-3 font-medium whitespace-nowrap">Payment</th>
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Seat</th>
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Delivery</th>
+                 <th className="px-5 py-3 font-medium whitespace-nowrap">Registered</th>
+@@ -204,14 +248,14 @@ export default function RegistrationsPage() {
+             <tbody>
+               {loading && (
+                 <tr>
+-                  <td colSpan={9} className="px-5 py-8 text-center text-muted">
++                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
+                     Loading…
+                   </td>
+                 </tr>
+               )}
+               {!loading && rows.length === 0 && (
+                 <tr>
+-                  <td colSpan={9} className="px-5 py-8 text-center text-muted">
++                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
+                     No registrations found.
+                   </td>
+                 </tr>
+@@ -230,6 +274,14 @@ export default function RegistrationsPage() {
+                         {r.regType === "LATE" ? "Late" : "Early Bird"}
+                       </span>
+                     </td>
++                    <td className="px-5 py-4 whitespace-nowrap">
++                      <span
++                        title={r.paymentNote || undefined}
++                        className={`text-xs rounded-full border px-2.5 py-1 ${PAYMENT_META[r.paymentStatus].className}`}
++                      >
++                        {PAYMENT_META[r.paymentStatus].label}
++                      </span>
++                    </td>
+                     <td className="px-5 py-4 whitespace-nowrap">
+                       {r.seatLabel ? (
+                         <span className="px-2.5 py-1 rounded-full border border-gold/40 text-goldlight text-xs font-semibold whitespace-nowrap">
+@@ -250,6 +302,9 @@ export default function RegistrationsPage() {
+                         paymentStatus={r.paymentStatus}
+                         seatInviteSentAt={r.seatInviteSentAt}
+                         onAction={(action) => handleAction(r.id, action)}
++                        onUpdatePayment={() => setPaymentRow(r)}
++                        onResetPayment={() => handleReset(r)}
++                        repliesHref={`/admin/replies?registrationId=${r.id}`}
+                         onDelete={isOwner ? () => handleDelete(r) : undefined}
+                       />
+                     </td>
+@@ -259,6 +314,16 @@ export default function RegistrationsPage() {
+           </table>
+         </div>
+       </div>
++
++      {paymentRow && (
++        <PaymentUpdateModal
++          row={paymentRow}
++          currency={currency}
++          expectedFee={paymentRow.regType === "LATE" ? feeAmounts.late : feeAmounts.early}
++          onClose={() => setPaymentRow(null)}
++          onConfirm={(amountPaid, note) => handleConfirmPayment(paymentRow.id, amountPaid, note)}
++        />
++      )}
+     </AdminShell>
+   );
+ }
+diff --git a/src/app/admin/payments/page.tsx b/src/app/admin/payments/page.tsx
+index bb0ed36..048a97e 100644
+--- a/src/app/admin/payments/page.tsx
++++ b/src/app/admin/payments/page.tsx
+@@ -4,8 +4,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
+ import AdminShell from "@/components/AdminShell";
+ import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+ import { useAutoRefresh } from "@/lib/useAutoRefresh";
+-
+-type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
++import { useIsOwner } from "@/lib/useIsOwner";
++import { PaymentUpdateModal, PAYMENT_META, formatMoney, type PaymentStatus } from "@/components/PaymentUpdateModal";
+ 
+ interface RegistrationRow {
+   id: string;
+@@ -18,6 +18,7 @@ interface RegistrationRow {
+   amountPaid: number;
+   paymentUpdatedAt: string | null;
+   seatInviteSentAt: string | null;
++  proofs: { id: string; fileName: string; currency: string; method: string | null; createdAt: string }[];
+ }
+ 
+ interface PaymentStats {
+@@ -27,22 +28,6 @@ interface PaymentStats {
+   totalCollected: number;
+ }
+ 
+-const PAYMENT_META: Record<PaymentStatus, { label: string; className: string }> = {
+-  NOT_PAID: { label: "Not paid", className: "border-red-400/40 text-red-300" },
+-  PARTIAL: { label: "Partial", className: "border-amber-400/40 text-amber-300" },
+-  PAID: { label: "Paid", className: "border-emerald-400/40 text-emerald-300" },
+-};
+-
+-function formatMoney(amount: number, currency: string): string {
+-  return `${currency} ${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+-}
+-
+-function deriveStatus(amount: number, expectedFee: number | null): PaymentStatus {
+-  if (amount <= 0) return "NOT_PAID";
+-  if (expectedFee !== null && amount >= expectedFee) return "PAID";
+-  return "PARTIAL";
+-}
+-
+ function StatCard({ label, value, accent }: { label: string; value: string; accent: string }) {
+   return (
+     <div className="border border-border rounded-xl px-5 py-4 flex-1 min-w-[140px]">
+@@ -52,156 +37,6 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
+   );
+ }
+ 
+-function PaymentConfirmModal({
+-  row,
+-  currency,
+-  expectedFee,
+-  onClose,
+-  onConfirm,
+-}: {
+-  row: RegistrationRow;
+-  currency: string;
+-  expectedFee: number | null;
+-  onClose: () => void;
+-  onConfirm: (amountPaid: number, note: string) => Promise<void>;
+-}) {
+-  const [step, setStep] = useState<"input" | "confirm">("input");
+-  const [amountText, setAmountText] = useState("");
+-  const [note, setNote] = useState("");
+-  const [error, setError] = useState<string | null>(null);
+-  const [submitting, setSubmitting] = useState(false);
+-
+-  const amount = parseFloat(amountText);
+-  const validAmount = amountText.trim() !== "" && !Number.isNaN(amount) && amount >= 0;
+-  const previewStatus = validAmount ? deriveStatus(amount, expectedFee) : null;
+-
+-  function handleContinue() {
+-    if (!validAmount) {
+-      setError("Enter a valid amount (0 or more).");
+-      return;
+-    }
+-    setError(null);
+-    setStep("confirm");
+-  }
+-
+-  async function handleConfirm() {
+-    setSubmitting(true);
+-    setError(null);
+-    try {
+-      await onConfirm(amount, note);
+-    } catch (err) {
+-      setError(err instanceof Error ? err.message : "Failed to update payment.");
+-      setSubmitting(false);
+-      return;
+-    }
+-  }
+-
+-  return (
+-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 px-4">
+-      <div className="w-full max-w-md bg-cardbg border border-border rounded-2xl p-6">
+-        <p className="text-xs uppercase tracking-wider text-muted mb-1">Update payment</p>
+-        <h3 className="font-serif text-xl mb-5">{row.fullName}</h3>
+-
+-        {step === "input" && (
+-          <>
+-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
+-              Amount received ({currency})
+-            </label>
+-            <input
+-              autoFocus
+-              inputMode="decimal"
+-              value={amountText}
+-              onChange={(e) => setAmountText(e.target.value)}
+-              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
+-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
+-            />
+-            <p className="text-xs text-muted mb-4">
+-              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to
+-              date for this registration
+-              {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
+-            </p>
+-
+-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
+-              Note <span className="normal-case text-muted/70">(optional)</span>
+-            </label>
+-            <textarea
+-              value={note}
+-              onChange={(e) => setNote(e.target.value)}
+-              rows={2}
+-              placeholder="e.g. bank transfer ref, part of a split payment…"
+-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
+-            />
+-
+-            {error && <p className="text-sm text-red-400 mt-3">{error}</p>}
+-
+-            <div className="flex items-center justify-end gap-3 mt-6">
+-              <button
+-                onClick={onClose}
+-                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg"
+-              >
+-                Cancel
+-              </button>
+-              <button
+-                onClick={handleContinue}
+-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest"
+-              >
+-                Continue
+-              </button>
+-            </div>
+-          </>
+-        )}
+-
+-        {step === "confirm" && previewStatus && (
+-          <>
+-            <div className="border border-border rounded-xl p-4 mb-5 space-y-2">
+-              <div className="flex justify-between text-sm">
+-                <span className="text-muted">Amount received</span>
+-                <span>{formatMoney(amount, currency)}</span>
+-              </div>
+-              {expectedFee !== null && (
+-                <div className="flex justify-between text-sm">
+-                  <span className="text-muted">Expected fee</span>
+-                  <span>{formatMoney(expectedFee, currency)}</span>
+-                </div>
+-              )}
+-              <div className="flex justify-between text-sm items-center pt-2 border-t border-border/50">
+-                <span className="text-muted">New status</span>
+-                <span className={`text-xs rounded-full border px-2.5 py-1 ${PAYMENT_META[previewStatus].className}`}>
+-                  {PAYMENT_META[previewStatus].label}
+-                </span>
+-              </div>
+-            </div>
+-            <p className="text-sm text-muted mb-5">
+-              This will mark <span className="text-fg">{row.fullName}</span> as{" "}
+-              <span className="text-fg">{PAYMENT_META[previewStatus].label.toLowerCase()}</span> and record today's
+-              date as the payment update date. Continue?
+-            </p>
+-
+-            {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
+-
+-            <div className="flex items-center justify-end gap-3">
+-              <button
+-                onClick={() => setStep("input")}
+-                disabled={submitting}
+-                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg disabled:opacity-60"
+-              >
+-                Back
+-              </button>
+-              <button
+-                onClick={handleConfirm}
+-                disabled={submitting}
+-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
+-              >
+-                {submitting ? "Confirming…" : "Confirm"}
+-              </button>
+-            </div>
+-          </>
+-        )}
+-      </div>
+-    </div>
+-  );
+-}
+-
+ export default function PaymentsPage() {
+   const [rows, setRows] = useState<RegistrationRow[]>([]);
+   const [total, setTotal] = useState(0);
+@@ -216,6 +51,7 @@ export default function PaymentsPage() {
+   const [loading, setLoading] = useState(true);
+   const [activeRow, setActiveRow] = useState<RegistrationRow | null>(null);
+   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
++  const isOwner = useIsOwner();
+   const requestId = useRef(0);
+   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+@@ -279,6 +115,41 @@ export default function PaymentsPage() {
+     load(true);
+   }
+ 
++  async function handleReset(row: RegistrationRow) {
++    const extra = row.seatInviteSentAt
++      ? " A seat invite was already sent to them; their seat (if any) is not changed."
++      : "";
++    if (
++      !window.confirm(
++        `Reset ${row.fullName}'s payment? This clears the recorded amount (${formatMoney(row.amountPaid, currency)}), note and date and marks them as not paid.${extra}`
++      )
++    ) {
++      return;
++    }
++    const res = await fetch(`/api/admin/registrations/${row.id}/payment`, { method: "DELETE" });
++    if (res.ok) {
++      flash("Payment reset.", true);
++      load(true);
++    } else {
++      const data = await res.json().catch(() => ({}));
++      flash(data.error || "Failed to reset payment.", false);
++    }
++  }
++
++  async function handleDelete(row: RegistrationRow) {
++    if (!window.confirm(`Permanently delete the registration for ${row.fullName} (${row.email})? This cannot be undone.`)) {
++      return;
++    }
++    const res = await fetch(`/api/admin/registrations/${row.id}`, { method: "DELETE" });
++    if (res.ok) {
++      flash("Registration deleted.", true);
++      load(true);
++    } else {
++      const data = await res.json().catch(() => ({}));
++      flash(data.error || "Failed to delete.", false);
++    }
++  }
++
+   const visibleRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.paymentStatus === statusFilter);
+ 
+   function expectedFeeFor(row: RegistrationRow): number | null {
+@@ -400,6 +271,18 @@ export default function PaymentsPage() {
+                           {formatMoney(r.amountPaid, currency)}
+                           {fee !== null ? ` of ${formatMoney(fee, currency)}` : ""}
+                         </span>
++                        {r.proofs.map((p, i) => (
++                          <a
++                            key={p.id}
++                            href={`/api/admin/payment-proofs/${p.id}`}
++                            target="_blank"
++                            rel="noopener noreferrer"
++                            title={`${p.fileName} · ${p.currency.replace("_NG", " (Nigeria)")}${p.method ? ` · ${p.method.replace("_", " ")}` : ""} · ${new Date(p.createdAt).toLocaleString()}`}
++                            className="block text-xs text-goldlight underline underline-offset-4 mt-1"
++                          >
++                            View proof{r.proofs.length > 1 ? ` ${i + 1}` : ""}
++                          </a>
++                        ))}
+                       </td>
+                       <td className="px-5 py-4 text-muted whitespace-nowrap">
+                         {r.paymentUpdatedAt ? new Date(r.paymentUpdatedAt).toLocaleString() : "—"}
+@@ -412,10 +295,31 @@ export default function PaymentsPage() {
+                           >
+                             Update payment
+                           </button>
++                          {/* The most useful next email for this person: chase the balance,
++                              or — once they've paid in full — invite them to pick a seat. */}
++                          {r.paymentStatus === "PAID" ? (
++                            <button
++                              onClick={() => handleEmailAction(r.id, "send_seat_invite")}
++                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
++                            >
++                              {r.seatInviteSentAt ? "Resend seat invite" : "Send seat invite"}
++                            </button>
++                          ) : (
++                            <button
++                              onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
++                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
++                            >
++                              Send payment reminder
++                            </button>
++                          )}
+                           <RegistrationActionsMenu
+                             paymentStatus={r.paymentStatus}
+                             seatInviteSentAt={r.seatInviteSentAt}
+                             onAction={(action) => handleEmailAction(r.id, action)}
++                            onUpdatePayment={() => setActiveRow(r)}
++                            onResetPayment={() => handleReset(r)}
++                            repliesHref={`/admin/replies?registrationId=${r.id}`}
++                            onDelete={isOwner ? () => handleDelete(r) : undefined}
+                           />
+                         </div>
+                       </td>
+@@ -428,7 +332,7 @@ export default function PaymentsPage() {
+       </div>
+ 
+       {activeRow && (
+-        <PaymentConfirmModal
++        <PaymentUpdateModal
+           row={activeRow}
+           currency={currency}
+           expectedFee={expectedFeeFor(activeRow)}
+diff --git a/src/app/admin/replies/page.tsx b/src/app/admin/replies/page.tsx
+new file mode 100644
+index 0000000..4eff15b
+--- /dev/null
++++ b/src/app/admin/replies/page.tsx
+@@ -0,0 +1,353 @@
++"use client";
++
++import { useCallback, useEffect, useRef, useState } from "react";
++import AdminShell from "@/components/AdminShell";
++import { useAutoRefresh } from "@/lib/useAutoRefresh";
++
++interface ThreadRow {
++  threadId: string;
++  participantName: string;
++  participantEmail: string;
++  registrationId: string | null;
++  brochureRequestId: string | null;
++  subject: string;
++  lastMessageAt: string;
++  lastSnippet: string;
++  lastDirection: "INBOUND" | "OUTBOUND";
++  unreadCount: number;
++  messageCount: number;
++}
++
++interface Message {
++  id: string;
++  direction: "INBOUND" | "OUTBOUND";
++  body: string;
++  subject: string;
++  occurredAt: string;
++  sentByName: string | null;
++}
++
++interface Conversation {
++  participant: {
++    name: string;
++    email: string;
++    phone: string | null;
++    registrationId: string | null;
++    brochureRequestId: string | null;
++  };
++  original: { kind: string | null; subject: string | null; sentAt: string } | null;
++  messages: Message[];
++}
++
++const KIND_LABELS: Record<string, string> = {
++  registration_confirmation: "Registration confirmation",
++  brochure_confirmation: "Brochure email",
++  seat_selection_invite: "Seat-selection invite",
++  payment_reminder: "Payment reminder",
++  campaign: "Campaign",
++};
++
++function formatWhen(iso: string): string {
++  const d = new Date(iso);
++  const now = new Date();
++  return d.toDateString() === now.toDateString()
++    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
++    : d.toLocaleDateString([], { day: "numeric", month: "short" });
++}
++
++export default function RepliesPage() {
++  const [threads, setThreads] = useState<ThreadRow[]>([]);
++  const [filter, setFilter] = useState<"all" | "unread">("all");
++  const [scope, setScope] = useState<{ registrationId?: string; brochureRequestId?: string }>({});
++  const [scopeReady, setScopeReady] = useState(false);
++  const [loading, setLoading] = useState(true);
++  const [gmailConfigured, setGmailConfigured] = useState(true);
++  const [syncError, setSyncError] = useState<string | null>(null);
++  const [selected, setSelected] = useState<string | null>(null);
++  const [conversation, setConversation] = useState<Conversation | null>(null);
++  const [convLoading, setConvLoading] = useState(false);
++  const [reply, setReply] = useState("");
++  const [sending, setSending] = useState(false);
++  const [checking, setChecking] = useState(false);
++  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
++  const requestId = useRef(0);
++  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
++  const bottomRef = useRef<HTMLDivElement>(null);
++
++  // Read ?registrationId= / ?brochureRequestId= (from the row action menus) once on mount.
++  useEffect(() => {
++    const p = new URLSearchParams(window.location.search);
++    setScope({
++      registrationId: p.get("registrationId") || undefined,
++      brochureRequestId: p.get("brochureRequestId") || undefined,
++    });
++    setScopeReady(true);
++  }, []);
++
++  function flash(text: string, ok: boolean) {
++    if (messageTimer.current) clearTimeout(messageTimer.current);
++    setMessage({ text, ok });
++    messageTimer.current = setTimeout(() => setMessage(null), ok ? 4000 : 10000);
++  }
++
++  const loadThreads = useCallback(
++    async (silent = false) => {
++      if (!scopeReady) return;
++      const mine = ++requestId.current;
++      if (!silent) setLoading(true);
++      try {
++        const params = new URLSearchParams({ filter });
++        if (scope.registrationId) params.set("registrationId", scope.registrationId);
++        if (scope.brochureRequestId) params.set("brochureRequestId", scope.brochureRequestId);
++        const res = await fetch(`/api/admin/replies?${params.toString()}`);
++        if (res.ok && mine === requestId.current) {
++          const data = await res.json();
++          setThreads(data.threads);
++          setGmailConfigured(data.gmailConfigured);
++          setSyncError(data.syncError);
++        }
++      } catch {
++        // keep the last list; the next poll retries
++      } finally {
++        if (mine === requestId.current) setLoading(false);
++      }
++    },
++    [filter, scope, scopeReady]
++  );
++
++  useEffect(() => {
++    loadThreads();
++  }, [loadThreads]);
++
++  const loadConversation = useCallback(async (threadId: string, silent = false) => {
++    if (!silent) setConvLoading(true);
++    try {
++      const res = await fetch(`/api/admin/replies/${threadId}`);
++      if (res.ok) {
++        setConversation(await res.json());
++        // Opening a conversation reads it.
++        await fetch(`/api/admin/replies/${threadId}`, { method: "PATCH" });
++      }
++    } finally {
++      if (!silent) setConvLoading(false);
++    }
++  }, []);
++
++  useAutoRefresh(() => {
++    loadThreads(true);
++    if (selected) loadConversation(selected, true);
++  }, 30_000);
++
++  useEffect(() => {
++    bottomRef.current?.scrollIntoView({ block: "end" });
++  }, [conversation?.messages.length]);
++
++  function openThread(threadId: string) {
++    setSelected(threadId);
++    setConversation(null);
++    setReply("");
++    loadConversation(threadId).then(() => loadThreads(true));
++  }
++
++  async function handleCheckNow() {
++    setChecking(true);
++    try {
++      const res = await fetch("/api/admin/replies/sync", { method: "POST" });
++      const data = await res.json().catch(() => ({}));
++      if (res.ok) {
++        flash(data.imported ? `${data.imported} new repl${data.imported === 1 ? "y" : "ies"}.` : "No new replies.", true);
++        await loadThreads(true);
++      } else {
++        flash(data.error || "Couldn't check for replies.", false);
++      }
++    } finally {
++      setChecking(false);
++    }
++  }
++
++  async function handleSend() {
++    if (!selected || !reply.trim()) return;
++    setSending(true);
++    try {
++      const res = await fetch(`/api/admin/replies/${selected}`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ body: reply }),
++      });
++      const data = await res.json().catch(() => ({}));
++      if (res.ok) {
++        setReply("");
++        flash("Reply sent.", true);
++        await loadConversation(selected, true);
++        loadThreads(true);
++      } else {
++        flash(data.error || "Failed to send reply.", false);
++      }
++    } finally {
++      setSending(false);
++    }
++  }
++
++  const totalUnread = threads.reduce((sum, t) => sum + t.unreadCount, 0);
++  const scoped = Boolean(scope.registrationId || scope.brochureRequestId);
++
++  return (
++    <AdminShell active="/admin/replies">
++      <div className="flex items-center justify-between flex-wrap gap-4 mb-6">
++        <div>
++          <h2 className="font-serif text-2xl">Replies</h2>
++          <p className="text-muted text-sm mt-1">
++            {threads.length} conversation{threads.length === 1 ? "" : "s"}
++            {totalUnread > 0 && ` · ${totalUnread} unread`}
++            {message && <span className={`ml-3 ${message.ok ? "text-goldlight" : "text-red-400"}`}>{message.text}</span>}
++          </p>
++        </div>
++        <button
++          onClick={handleCheckNow}
++          disabled={checking || !gmailConfigured}
++          className="text-sm px-5 py-2.5 rounded-full border border-border hover:border-gold disabled:opacity-60 whitespace-nowrap"
++        >
++          {checking ? "Checking…" : "Check for new replies"}
++        </button>
++      </div>
++
++      {!gmailConfigured && (
++        <div className="border border-amber-400/40 text-amber-300 rounded-xl px-5 py-4 text-sm mb-6">
++          Gmail isn&apos;t connected on the server yet, so replies can&apos;t be collected or sent. Set
++          GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GMAIL_REFRESH_TOKEN and GMAIL_SENDER, then redeploy.
++        </div>
++      )}
++      {syncError && (
++        <div className="border border-red-400/40 text-red-300 rounded-xl px-5 py-4 text-sm mb-6">
++          Couldn&apos;t check Gmail: {syncError}
++        </div>
++      )}
++
++      <div className="flex gap-2 mb-4 flex-wrap items-center">
++        {(["all", "unread"] as const).map((f) => (
++          <button
++            key={f}
++            onClick={() => setFilter(f)}
++            className={`text-sm px-4 py-2 rounded-full border transition-colors ${
++              filter === f ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
++            }`}
++          >
++            {f === "all" ? "All" : "Unread"}
++          </button>
++        ))}
++        {scoped && (
++          <a href="/admin/replies" className="text-sm text-goldlight underline underline-offset-4 ml-2">
++            Showing one person — show everyone
++          </a>
++        )}
++      </div>
++
++      <div className="grid gap-4 md:grid-cols-[340px_1fr]">
++        {/* Conversation list */}
++        <div className="border border-border rounded-xl overflow-hidden self-start max-h-[70vh] overflow-y-auto">
++          {loading && <p className="px-5 py-8 text-center text-muted text-sm">Loading…</p>}
++          {!loading && threads.length === 0 && (
++            <p className="px-5 py-8 text-center text-muted text-sm">
++              {filter === "unread" ? "No unread replies." : "No replies yet."}
++            </p>
++          )}
++          {!loading &&
++            threads.map((t) => (
++              <button
++                key={t.threadId}
++                onClick={() => openThread(t.threadId)}
++                className={`w-full text-left px-5 py-4 border-b border-border/50 last:border-b-0 hover:bg-gold/5 ${
++                  selected === t.threadId ? "bg-gold/10" : ""
++                }`}
++              >
++                <div className="flex items-center justify-between gap-3">
++                  <span className={`text-sm truncate ${t.unreadCount > 0 ? "font-semibold text-fg" : "text-fg"}`}>
++                    {t.participantName}
++                  </span>
++                  <span className="text-xs text-muted whitespace-nowrap">{formatWhen(t.lastMessageAt)}</span>
++                </div>
++                <div className="text-xs text-muted truncate mt-0.5">{t.subject}</div>
++                <div className="flex items-center justify-between gap-3 mt-1">
++                  <span className="text-xs text-muted truncate">
++                    {t.lastDirection === "OUTBOUND" ? "You: " : ""}
++                    {t.lastSnippet}
++                  </span>
++                  {t.unreadCount > 0 && (
++                    <span className="min-w-5 h-5 px-1.5 rounded-full bg-gold text-black text-[11px] font-semibold flex items-center justify-center">
++                      {t.unreadCount}
++                    </span>
++                  )}
++                </div>
++              </button>
++            ))}
++        </div>
++
++        {/* Conversation */}
++        <div className="border border-border rounded-xl min-h-[320px] flex flex-col">
++          {!selected && <p className="m-auto text-muted text-sm px-6 py-16 text-center">Select a conversation to read it.</p>}
++          {selected && convLoading && !conversation && <p className="m-auto text-muted text-sm">Loading…</p>}
++          {selected && conversation && (
++            <>
++              <div className="px-5 py-4 border-b border-border">
++                <p className="font-serif text-lg">{conversation.participant.name}</p>
++                <p className="text-xs text-muted mt-0.5">
++                  {conversation.participant.email}
++                  {conversation.participant.phone ? ` · ${conversation.participant.phone}` : ""}
++                </p>
++                {conversation.original && (
++                  <p className="text-xs text-muted mt-2">
++                    In reply to:{" "}
++                    <span className="text-fg">
++                      {(conversation.original.kind && KIND_LABELS[conversation.original.kind]) || "Email"}
++                    </span>
++                    {conversation.original.subject ? ` — “${conversation.original.subject}”` : ""}, sent{" "}
++                    {new Date(conversation.original.sentAt).toLocaleString()}
++                  </p>
++                )}
++              </div>
++
++              <div className="flex-1 px-5 py-4 space-y-4 overflow-y-auto max-h-[50vh]">
++                {conversation.messages.map((m) => (
++                  <div key={m.id} className={`flex ${m.direction === "OUTBOUND" ? "justify-end" : "justify-start"}`}>
++                    <div
++                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap break-words ${
++                        m.direction === "OUTBOUND" ? "bg-gold/15 border border-gold/30" : "bg-black/30 border border-border"
++                      }`}
++                    >
++                      {m.body}
++                      <p className="text-[11px] text-muted mt-2">
++                        {m.direction === "OUTBOUND" ? `${m.sentByName ?? "Admin"} · ` : ""}
++                        {new Date(m.occurredAt).toLocaleString()}
++                      </p>
++                    </div>
++                  </div>
++                ))}
++                <div ref={bottomRef} />
++              </div>
++
++              <div className="px-5 py-4 border-t border-border">
++                <textarea
++                  value={reply}
++                  onChange={(e) => setReply(e.target.value)}
++                  rows={3}
++                  placeholder={`Reply to ${conversation.participant.name}…`}
++                  className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold resize-none"
++                />
++                <div className="flex items-center justify-between mt-3">
++                  <span className="text-xs text-muted">Sent from the connected Gmail address, in the same thread.</span>
++                  <button
++                    onClick={handleSend}
++                    disabled={sending || !reply.trim() || !gmailConfigured}
++                    className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
++                  >
++                    {sending ? "Sending…" : "Send reply"}
++                  </button>
++                </div>
++              </div>
++            </>
++          )}
++        </div>
++      </div>
++    </AdminShell>
++  );
++}
+diff --git a/src/app/api/admin/admins/[id]/route.ts b/src/app/api/admin/admins/[id]/route.ts
+index 3360cc8..59b84e2 100644
+--- a/src/app/api/admin/admins/[id]/route.ts
++++ b/src/app/api/admin/admins/[id]/route.ts
+@@ -1,10 +1,11 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+   const session = await getSession();
+   if (!session || session.role !== "OWNER") {
+     return NextResponse.json({ error: "Only an owner can remove admins." }, { status: 403 });
+@@ -29,5 +30,10 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
+   }
+ 
+   await prisma.admin.delete({ where: { id } });
++  await logAdminAction(
++    session,
++    { action: "admin.delete", entityType: "admin", entityId: id, entityLabel: target.name, details: { email: target.email, role: target.role } },
++    request
++  );
+   return NextResponse.json({ result: "success" });
+ }
+diff --git a/src/app/api/admin/admins/route.ts b/src/app/api/admin/admins/route.ts
+index 6f8dd64..d3c3851 100644
+--- a/src/app/api/admin/admins/route.ts
++++ b/src/app/api/admin/admins/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { createAdminSchema } from "@/lib/validation";
+ import { hashPassword, getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -48,5 +49,11 @@ export async function POST(request: NextRequest) {
+     select: { id: true, name: true, email: true, role: true, createdAt: true },
+   });
+ 
++  await logAdminAction(
++    session,
++    { action: "admin.create", entityType: "admin", entityId: admin.id, entityLabel: admin.name, details: { email: admin.email, role: admin.role } },
++    request
++  );
++
+   return NextResponse.json({ result: "success", admin }, { status: 201 });
+ }
+diff --git a/src/app/api/admin/audit-logs/route.ts b/src/app/api/admin/audit-logs/route.ts
+new file mode 100644
+index 0000000..5135b63
+--- /dev/null
++++ b/src/app/api/admin/audit-logs/route.ts
+@@ -0,0 +1,72 @@
++import { NextRequest, NextResponse } from "next/server";
++import type { Prisma } from "@prisma/client";
++import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++
++export const runtime = "nodejs";
++
++/**
++ * The audit trail (owner only). Query: admin=<adminId>, category=<action prefix
++ * such as "registration"|"auth"|"campaign">, search=<text>, page, pageSize.
++ * Read-only on purpose — there is no endpoint that edits or deletes entries.
++ */
++export async function GET(request: NextRequest) {
++  const session = await getSession();
++  if (!session || session.role !== "OWNER") {
++    return NextResponse.json({ error: "Only an owner can view the audit log." }, { status: 403 });
++  }
++
++  const { searchParams } = request.nextUrl;
++  const adminId = searchParams.get("admin") || undefined;
++  const category = searchParams.get("category")?.replace(/[^a-z_]/g, "") || undefined;
++  const search = searchParams.get("search")?.trim() || "";
++  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
++  const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10) || 50));
++
++  const where: Prisma.AuditLogWhereInput = {
++    AND: [
++      adminId ? { adminId } : {},
++      category ? { action: { startsWith: `${category}.` } } : {},
++      search
++        ? {
++            OR: [
++              { adminName: { contains: search, mode: "insensitive" } },
++              { entityLabel: { contains: search, mode: "insensitive" } },
++              { action: { contains: search, mode: "insensitive" } },
++            ],
++          }
++        : {},
++    ],
++  };
++
++  const [total, logs, admins] = await Promise.all([
++    prisma.auditLog.count({ where }),
++    prisma.auditLog.findMany({
++      where,
++      orderBy: { createdAt: "desc" },
++      skip: (page - 1) * pageSize,
++      take: pageSize,
++    }),
++    prisma.auditLog.groupBy({ by: ["adminId", "adminName"], where: { adminId: { not: null } } }),
++  ]);
++
++  return NextResponse.json({
++    total,
++    page,
++    pageSize,
++    logs: logs.map((l) => ({
++      id: l.id,
++      adminId: l.adminId,
++      adminName: l.adminName,
++      adminEmail: l.adminEmail,
++      action: l.action,
++      entityType: l.entityType,
++      entityId: l.entityId,
++      entityLabel: l.entityLabel,
++      details: l.details,
++      ipAddress: l.ipAddress,
++      createdAt: l.createdAt.toISOString(),
++    })),
++    admins: admins.map((a) => ({ id: a.adminId, name: a.adminName })),
++  });
++}
+diff --git a/src/app/api/admin/brochure-requests/[id]/route.ts b/src/app/api/admin/brochure-requests/[id]/route.ts
+index da266bc..38d1fc7 100644
+--- a/src/app/api/admin/brochure-requests/[id]/route.ts
++++ b/src/app/api/admin/brochure-requests/[id]/route.ts
+@@ -1,22 +1,28 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+ /** Permanently deletes one brochure request and its email history (owner only). */
+-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+   const session = await getSession();
+   if (!session || session.role !== "OWNER") {
+     return NextResponse.json({ error: "Only an owner can delete records." }, { status: 403 });
+   }
+ 
+   const { id } = await params;
+-  const existing = await prisma.brochureRequest.findUnique({ where: { id }, select: { id: true } });
++  const existing = await prisma.brochureRequest.findUnique({ where: { id }, select: { id: true, fullName: true, email: true } });
+   if (!existing) {
+     return NextResponse.json({ error: "Brochure request not found." }, { status: 404 });
+   }
+ 
+   await prisma.brochureRequest.delete({ where: { id } });
++  await logAdminAction(
++    session,
++    { action: "brochure.delete", entityType: "brochure_request", entityId: id, entityLabel: existing.fullName, details: { email: existing.email } },
++    request
++  );
+   return NextResponse.json({ result: "success" });
+ }
+diff --git a/src/app/api/admin/campaigns/route.ts b/src/app/api/admin/campaigns/route.ts
+index 1ed9cdb..a9f83f7 100644
+--- a/src/app/api/admin/campaigns/route.ts
++++ b/src/app/api/admin/campaigns/route.ts
+@@ -5,6 +5,7 @@ import { audienceWhere } from "@/lib/campaigns";
+ import { getSettingsMap } from "@/lib/settings";
+ import { sendCampaignEmail } from "@/lib/notifications";
+ import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ import type { Campaign, Registration } from "@prisma/client";
+ 
+ export const runtime = "nodejs";
+@@ -87,6 +88,18 @@ export async function POST(request: NextRequest) {
+     },
+   });
+ 
++  await logAdminAction(
++    session,
++    {
++      action: "campaign.send",
++      entityType: "campaign",
++      entityId: campaign.id,
++      entityLabel: subject,
++      details: { audience, recipientCount: recipients.length, sentCount, failedCount },
++    },
++    request
++  );
++
+   return NextResponse.json({
+     result: "success",
+     campaign: { id: campaign.id, recipientCount: recipients.length, sentCount, failedCount },
+diff --git a/src/app/api/admin/data/clear/route.ts b/src/app/api/admin/data/clear/route.ts
+index dba5639..c78d6f6 100644
+--- a/src/app/api/admin/data/clear/route.ts
++++ b/src/app/api/admin/data/clear/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { getSession } from "@/lib/auth";
+ import { clearDataSchema } from "@/lib/validation";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -51,5 +52,11 @@ export async function POST(request: NextRequest) {
+     brochureRequests = (await prisma.brochureRequest.deleteMany({})).count;
+   }
+ 
++  await logAdminAction(
++    session,
++    { action: "data.clear", entityType: "data", entityLabel: target, details: { target, registrations, brochureRequests } },
++    request
++  );
++
+   return NextResponse.json({ result: "success", deleted: { registrations, brochureRequests } });
+ }
+diff --git a/src/app/api/admin/login/route.ts b/src/app/api/admin/login/route.ts
+index 01079a3..a4e487a 100644
+--- a/src/app/api/admin/login/route.ts
++++ b/src/app/api/admin/login/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { loginSchema } from "@/lib/validation";
+ import { verifyPassword, createSessionToken, setSessionCookie } from "@/lib/auth";
++import { logAudit } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -25,10 +26,24 @@ export async function POST(request: NextRequest) {
+   const genericError = NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
+ 
+   const admin = await prisma.admin.findUnique({ where: { email: email.toLowerCase() } });
+-  if (!admin) return genericError;
++  if (!admin) {
++    await logAudit(
++      { name: "Unknown", email: email.toLowerCase() },
++      { action: "auth.login_failed", details: { reason: "no admin with that email" } },
++      request
++    );
++    return genericError;
++  }
+ 
+   const valid = await verifyPassword(password, admin.passwordHash);
+-  if (!valid) return genericError;
++  if (!valid) {
++    await logAudit(
++      { adminId: admin.id, name: admin.name, email: admin.email },
++      { action: "auth.login_failed", entityType: "admin", entityId: admin.id, entityLabel: admin.name, details: { reason: "wrong password" } },
++      request
++    );
++    return genericError;
++  }
+ 
+   const token = await createSessionToken({
+     adminId: admin.id,
+@@ -43,6 +58,12 @@ export async function POST(request: NextRequest) {
+     data: { lastLoginAt: new Date() },
+   });
+ 
++  await logAudit(
++    { adminId: admin.id, name: admin.name, email: admin.email },
++    { action: "auth.login", entityType: "admin", entityId: admin.id, entityLabel: admin.name },
++    request
++  );
++
+   return NextResponse.json({
+     result: "success",
+     admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
+diff --git a/src/app/api/admin/logout/route.ts b/src/app/api/admin/logout/route.ts
+index 1c0a0fc..da06c08 100644
+--- a/src/app/api/admin/logout/route.ts
++++ b/src/app/api/admin/logout/route.ts
+@@ -1,9 +1,14 @@
+-import { NextResponse } from "next/server";
+-import { clearSessionCookie } from "@/lib/auth";
++import { NextRequest, NextResponse } from "next/server";
++import { clearSessionCookie, getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+-export async function POST() {
++export async function POST(request: NextRequest) {
++  const session = await getSession();
+   await clearSessionCookie();
++  if (session) {
++    await logAdminAction(session, { action: "auth.logout", entityType: "admin", entityId: session.adminId, entityLabel: session.name }, request);
++  }
+   return NextResponse.json({ result: "success" });
+ }
+diff --git a/src/app/api/admin/payment-proofs/[id]/route.ts b/src/app/api/admin/payment-proofs/[id]/route.ts
+new file mode 100644
+index 0000000..4731214
+--- /dev/null
++++ b/src/app/api/admin/payment-proofs/[id]/route.ts
+@@ -0,0 +1,21 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++
++export const runtime = "nodejs";
++
++/** Serves an uploaded proof-of-payment file to a signed-in admin. */
++export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  const proof = await prisma.paymentProof.findUnique({ where: { id } });
++  if (!proof) return NextResponse.json({ error: "Not found." }, { status: 404 });
++
++  return new NextResponse(new Uint8Array(proof.data), {
++    headers: {
++      "Content-Type": proof.mimeType,
++      "Content-Disposition": `inline; filename="${proof.fileName}"`,
++      "X-Content-Type-Options": "nosniff",
++      "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
++      "Cache-Control": "private, max-age=300",
++    },
++  });
++}
+diff --git a/src/app/api/admin/registrations/[id]/actions/route.ts b/src/app/api/admin/registrations/[id]/actions/route.ts
+index 312e43b..23ff469 100644
+--- a/src/app/api/admin/registrations/[id]/actions/route.ts
++++ b/src/app/api/admin/registrations/[id]/actions/route.ts
+@@ -1,6 +1,10 @@
+ import { NextRequest, NextResponse } from "next/server";
++import type { Registration } from "@prisma/client";
+ import { prisma } from "@/lib/prisma";
+ import { registrationActionSchema } from "@/lib/validation";
++import { getSettingsMap } from "@/lib/settings";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ import {
+   resendRegistrationConfirmation,
+   sendSeatSelectionInvite,
+@@ -9,6 +13,20 @@ import {
+ 
+ export const runtime = "nodejs";
+ 
++function money(currency: string, amount: number): string {
++  return `${currency} ${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
++}
++
++/** "no payment recorded yet" / "USD 1,000 of USD 2,000 received" — used in the not-fully-paid error. */
++function describePayment(registration: Registration, settings: Record<string, string>): string {
++  if (registration.paymentStatus === "NOT_PAID") return "no payment recorded yet";
++  const currency = settings.currency || "USD";
++  const fee = parseFloat(
++    registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
++  );
++  return `${money(currency, registration.amountPaid)}${Number.isFinite(fee) ? ` of ${money(currency, fee)}` : ""} received`;
++}
++
+ /**
+  * Admin email actions for a single registration:
+  *   resend_confirmation   — the registration confirmation email
+@@ -16,10 +34,12 @@ export const runtime = "nodejs";
+  *   send_payment_reminder — a reminder (only while not fully paid)
+  *
+  * On a send failure this returns 502 with the provider's reason in `error`,
+- * which the dashboard shows next to the button.
++ * which the dashboard shows next to the button. Every attempt — sent, blocked
++ * or failed — is written to the audit log.
+  */
+ export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+   const { id } = await params;
++  const session = await getSession();
+ 
+   let raw: unknown;
+   try {
+@@ -39,16 +59,32 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+   }
+ 
+   const { action } = parsed.data;
++  const audit = (outcome: "sent" | "blocked" | "failed", extra?: Record<string, string>) =>
++    logAdminAction(
++      session,
++      {
++        action: `registration.${action}`,
++        entityType: "registration",
++        entityId: registration.id,
++        entityLabel: registration.fullName,
++        details: { outcome, to: registration.email, paymentStatus: registration.paymentStatus, ...extra },
++      },
++      request
++    );
+ 
+   // The seat-invite email says "your payment has been confirmed", and a
+   // reminder for someone who has paid in full would be wrong — so guard both.
+   if (action === "send_seat_invite" && registration.paymentStatus !== "PAID") {
+-    return NextResponse.json(
+-      { error: "Payment isn't marked as fully paid yet. Update the payment first, then send the seat invite." },
+-      { status: 409 }
+-    );
++    const settings = await getSettingsMap();
++    const error = `${registration.fullName} hasn't finished making their payment (${describePayment(
++      registration,
++      settings
++    )}). The seat-selection email can only be sent once they've paid in full.`;
++    await audit("blocked", { reason: "payment not complete" });
++    return NextResponse.json({ error }, { status: 409 });
+   }
+   if (action === "send_payment_reminder" && registration.paymentStatus === "PAID") {
++    await audit("blocked", { reason: "already fully paid" });
+     return NextResponse.json({ error: "This registration is already fully paid." }, { status: 409 });
+   }
+ 
+@@ -57,11 +93,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+     else if (action === "send_seat_invite") await sendSeatSelectionInvite(registration);
+     else await sendPaymentReminder(registration);
+   } catch (err) {
+-    return NextResponse.json(
+-      { error: err instanceof Error ? err.message : "Failed to send email." },
+-      { status: 502 }
+-    );
++    const message = err instanceof Error ? err.message : "Failed to send email.";
++    await audit("failed", { error: message.slice(0, 300) });
++    return NextResponse.json({ error: message }, { status: 502 });
+   }
+ 
++  await audit("sent");
+   return NextResponse.json({ result: "success" });
+ }
+diff --git a/src/app/api/admin/registrations/[id]/checkin/route.ts b/src/app/api/admin/registrations/[id]/checkin/route.ts
+index 847f5b0..098a693 100644
+--- a/src/app/api/admin/registrations/[id]/checkin/route.ts
++++ b/src/app/api/admin/registrations/[id]/checkin/route.ts
+@@ -1,5 +1,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -22,7 +24,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     return NextResponse.json({ error: "checkedIn must be a boolean." }, { status: 400 });
+   }
+ 
+-  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true } });
++  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true, fullName: true } });
+   if (!existing) {
+     return NextResponse.json({ error: "Registration not found." }, { status: 404 });
+   }
+@@ -32,6 +34,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     data: { checkedInAt: checkedIn ? new Date() : null },
+   });
+ 
++  await logAdminAction(
++    await getSession(),
++    {
++      action: "registration.checkin",
++      entityType: "registration",
++      entityId: id,
++      entityLabel: existing.fullName,
++      details: { checkedIn },
++    },
++    request
++  );
++
+   return NextResponse.json({
+     result: "success",
+     checkedInAt: registration.checkedInAt ? registration.checkedInAt.toISOString() : null,
+diff --git a/src/app/api/admin/registrations/[id]/payment/route.ts b/src/app/api/admin/registrations/[id]/payment/route.ts
+new file mode 100644
+index 0000000..97a2a96
+--- /dev/null
++++ b/src/app/api/admin/registrations/[id]/payment/route.ts
+@@ -0,0 +1,43 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
++
++export const runtime = "nodejs";
++
++/**
++ * Resets a registration's payment back to "not paid": amount, note and the
++ * payment-updated date are cleared. The registration, its seat and its email
++ * history are left alone. The previous values are kept in the audit log.
++ */
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  const session = await getSession();
++
++  const existing = await prisma.registration.findUnique({ where: { id } });
++  if (!existing) {
++    return NextResponse.json({ error: "Registration not found." }, { status: 404 });
++  }
++
++  const registration = await prisma.registration.update({
++    where: { id },
++    data: { amountPaid: 0, paymentStatus: "NOT_PAID", paymentNote: null, paymentUpdatedAt: null },
++  });
++
++  await logAdminAction(
++    session,
++    {
++      action: "registration.payment_reset",
++      entityType: "registration",
++      entityId: id,
++      entityLabel: existing.fullName,
++      details: {
++        before: { amountPaid: existing.amountPaid, status: existing.paymentStatus, note: existing.paymentNote },
++        after: { amountPaid: 0, status: "NOT_PAID" },
++      },
++    },
++    request
++  );
++
++  return NextResponse.json({ result: "success", registration });
++}
+diff --git a/src/app/api/admin/registrations/[id]/route.ts b/src/app/api/admin/registrations/[id]/route.ts
+index 61f9290..cf27300 100644
+--- a/src/app/api/admin/registrations/[id]/route.ts
++++ b/src/app/api/admin/registrations/[id]/route.ts
+@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
+ import { confirmPaymentSchema } from "@/lib/validation";
+ import { getSettingsMap } from "@/lib/settings";
+ import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -14,6 +15,7 @@ export const runtime = "nodejs";
+  */
+ export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+   const { id } = await params;
++  const session = await getSession();
+ 
+   let raw: unknown;
+   try {
+@@ -55,6 +57,23 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     },
+   });
+ 
++  await logAdminAction(
++    session,
++    {
++      action: "registration.payment_update",
++      entityType: "registration",
++      entityId: id,
++      entityLabel: existing.fullName,
++      details: {
++        before: { amountPaid: existing.amountPaid, status: existing.paymentStatus },
++        after: { amountPaid, status: paymentStatus },
++        expectedFee,
++        ...(parsed.data.note ? { note: parsed.data.note } : {}),
++      },
++    },
++    request
++  );
++
+   return NextResponse.json({ result: "success", registration, expectedFee });
+ }
+ 
+@@ -62,14 +81,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+  * Permanently deletes one registration (owner only). Its email history goes
+  * with it, and any seat it held is released back to OPEN.
+  */
+-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+   const session = await getSession();
+   if (!session || session.role !== "OWNER") {
+     return NextResponse.json({ error: "Only an owner can delete records." }, { status: 403 });
+   }
+ 
+   const { id } = await params;
+-  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true } });
++  const existing = await prisma.registration.findUnique({
++    where: { id },
++    select: { id: true, fullName: true, email: true, paymentStatus: true, amountPaid: true },
++  });
+   if (!existing) {
+     return NextResponse.json({ error: "Registration not found." }, { status: 404 });
+   }
+@@ -82,5 +104,17 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
+     prisma.registration.delete({ where: { id } }),
+   ]);
+ 
++  await logAdminAction(
++    session,
++    {
++      action: "registration.delete",
++      entityType: "registration",
++      entityId: id,
++      entityLabel: existing.fullName,
++      details: { email: existing.email, paymentStatus: existing.paymentStatus, amountPaid: existing.amountPaid },
++    },
++    request
++  );
++
+   return NextResponse.json({ result: "success" });
+ }
+diff --git a/src/app/api/admin/registrations/export/route.ts b/src/app/api/admin/registrations/export/route.ts
+index 7d47d71..2275a08 100644
+--- a/src/app/api/admin/registrations/export/route.ts
++++ b/src/app/api/admin/registrations/export/route.ts
+@@ -1,5 +1,7 @@
+ import { NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -11,7 +13,7 @@ function csvEscape(value: unknown): string {
+   return str;
+ }
+ 
+-export async function GET() {
++export async function GET(request: Request) {
+   const registrations = await prisma.registration.findMany({
+     orderBy: { createdAt: "desc" },
+     include: { seat: { select: { label: true } } },
+@@ -55,6 +57,12 @@ export async function GET() {
+   const csv = lines.join("\n");
+   const filename = `ridge-registrations-${new Date().toISOString().slice(0, 10)}.csv`;
+ 
++  await logAdminAction(
++    await getSession(),
++    { action: "registration.export", entityType: "registration", entityLabel: `${registrations.length} registrations`, details: { rows: registrations.length } },
++    request
++  );
++
+   return new NextResponse(csv, {
+     status: 200,
+     headers: {
+diff --git a/src/app/api/admin/registrations/route.ts b/src/app/api/admin/registrations/route.ts
+index 3554824..5614541 100644
+--- a/src/app/api/admin/registrations/route.ts
++++ b/src/app/api/admin/registrations/route.ts
+@@ -64,6 +64,10 @@ export async function GET(request: NextRequest) {
+           select: { type: true, occurredAt: true, errorMessage: true },
+         },
+         seat: { select: { label: true } },
++        paymentProofs: {
++          select: { id: true, fileName: true, currency: true, method: true, createdAt: true },
++          orderBy: { createdAt: "asc" },
++        },
+       },
+     }),
+     // Aggregate stats are computed across ALL registrations (not just this
+@@ -136,6 +140,13 @@ export async function GET(request: NextRequest) {
+     amountPaid: r.amountPaid,
+     paymentUpdatedAt: r.paymentUpdatedAt ? r.paymentUpdatedAt.toISOString() : null,
+     seatInviteSentAt: r.seatInviteSentAt ? r.seatInviteSentAt.toISOString() : null,
++    proofs: r.paymentProofs.map((p) => ({
++      id: p.id,
++      fileName: p.fileName,
++      currency: p.currency,
++      method: p.method,
++      createdAt: p.createdAt.toISOString(),
++    })),
+     createdAt: r.createdAt.toISOString(),
+   }));
+ 
+diff --git a/src/app/api/admin/replies/[threadId]/route.ts b/src/app/api/admin/replies/[threadId]/route.ts
+new file mode 100644
+index 0000000..0f0d9ce
+--- /dev/null
++++ b/src/app/api/admin/replies/[threadId]/route.ts
+@@ -0,0 +1,117 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
++import { markThreadRead, sendInboxReply } from "@/lib/inbox";
++import { sendReplySchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/** One conversation: the original email we sent (if it was one of ours) plus every reply, oldest first. */
++export async function GET(_request: NextRequest, { params }: { params: Promise<{ threadId: string }> }) {
++  const { threadId } = await params;
++
++  const [messages, original] = await Promise.all([
++    prisma.inboxMessage.findMany({ where: { threadId }, orderBy: { occurredAt: "asc" } }),
++    prisma.emailEvent.findFirst({
++      where: { threadId, type: "SENT", audience: "ATTENDEE" },
++      orderBy: { occurredAt: "asc" },
++      select: { kind: true, subject: true, occurredAt: true, provider: true },
++    }),
++  ]);
++
++  if (messages.length === 0) {
++    return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
++  }
++
++  const first = messages[0];
++  const [registration, brochure] = await Promise.all([
++    first.registrationId
++      ? prisma.registration.findUnique({
++          where: { id: first.registrationId },
++          select: { id: true, fullName: true, email: true, phone: true, paymentStatus: true },
++        })
++      : null,
++    first.brochureRequestId
++      ? prisma.brochureRequest.findUnique({
++          where: { id: first.brochureRequestId },
++          select: { id: true, fullName: true, email: true },
++        })
++      : null,
++  ]);
++
++  return NextResponse.json({
++    participant: {
++      name: registration?.fullName ?? brochure?.fullName ?? first.counterpartName ?? first.counterpartAddress,
++      email: first.counterpartAddress,
++      phone: registration?.phone ?? null,
++      registrationId: registration?.id ?? null,
++      brochureRequestId: brochure?.id ?? null,
++    },
++    original: original
++      ? {
++          kind: original.kind,
++          subject: original.subject,
++          sentAt: original.occurredAt.toISOString(),
++        }
++      : null,
++    messages: messages.map((m) => ({
++      id: m.id,
++      direction: m.direction,
++      body: m.bodyText,
++      subject: m.subject,
++      occurredAt: m.occurredAt.toISOString(),
++      readAt: m.readAt ? m.readAt.toISOString() : null,
++      sentByName: m.sentByName,
++    })),
++  });
++}
++
++/** Marks every reply in the conversation as read. */
++export async function PATCH(_request: NextRequest, { params }: { params: Promise<{ threadId: string }> }) {
++  const { threadId } = await params;
++  await markThreadRead(threadId);
++  return NextResponse.json({ result: "success" });
++}
++
++/** Sends the admin's reply inside the participant's Gmail thread. */
++export async function POST(request: NextRequest, { params }: { params: Promise<{ threadId: string }> }) {
++  const { threadId } = await params;
++  const session = await getSession();
++
++  let raw: unknown;
++  try {
++    raw = await request.json();
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }
++  const parsed = sendReplySchema.safeParse(raw);
++  if (!parsed.success) {
++    return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid reply." }, { status: 400 });
++  }
++
++  try {
++    const stored = await sendInboxReply({
++      threadId,
++      body: parsed.data.body,
++      adminName: session?.name ?? "Admin",
++    });
++
++    await logAdminAction(
++      session,
++      {
++        action: "reply.send",
++        entityType: stored.registrationId ? "registration" : "brochure_request",
++        entityId: stored.registrationId ?? stored.brochureRequestId ?? undefined,
++        entityLabel: stored.counterpartName ?? stored.counterpartAddress,
++        details: { to: stored.counterpartAddress, subject: stored.subject },
++      },
++      request
++    );
++
++    return NextResponse.json({ result: "success" });
++  } catch (err) {
++    return NextResponse.json({ error: err instanceof Error ? err.message : "Failed to send reply." }, { status: 502 });
++  }
++}
+diff --git a/src/app/api/admin/replies/route.ts b/src/app/api/admin/replies/route.ts
+new file mode 100644
+index 0000000..af9ed96
+--- /dev/null
++++ b/src/app/api/admin/replies/route.ts
+@@ -0,0 +1,87 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { isGmailConfigured } from "@/lib/gmail";
++import { syncGmailReplies } from "@/lib/inbox";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/**
++ * Conversation list for the Replies inbox: one row per Gmail thread that has at
++ * least one participant reply, newest activity first. Also triggers a
++ * (throttled) sync so new replies show up without anyone clicking anything.
++ *
++ * Query: filter=all|unread, registrationId=…, brochureRequestId=…
++ */
++export async function GET(request: NextRequest) {
++  const { searchParams } = request.nextUrl;
++  const filter = searchParams.get("filter") === "unread" ? "unread" : "all";
++  const registrationId = searchParams.get("registrationId") || undefined;
++  const brochureRequestId = searchParams.get("brochureRequestId") || undefined;
++
++  const sync = await syncGmailReplies();
++
++  const messages = await prisma.inboxMessage.findMany({
++    where: { channel: "EMAIL", registrationId, brochureRequestId },
++    orderBy: { occurredAt: "desc" },
++    take: 1500,
++    include: {
++      registration: { select: { id: true, fullName: true } },
++      brochureRequest: { select: { id: true, fullName: true } },
++    },
++  });
++
++  interface Thread {
++    threadId: string;
++    participantName: string;
++    participantEmail: string;
++    registrationId: string | null;
++    brochureRequestId: string | null;
++    subject: string;
++    lastMessageAt: string;
++    lastSnippet: string;
++    lastDirection: "INBOUND" | "OUTBOUND";
++    unreadCount: number;
++    messageCount: number;
++    hasInbound: boolean;
++  }
++
++  const threads = new Map<string, Thread>();
++  for (const m of messages) {
++    // messages are newest-first, so the first one seen for a thread is its latest
++    let t = threads.get(m.threadId);
++    if (!t) {
++      t = {
++        threadId: m.threadId,
++        participantName: m.registration?.fullName ?? m.brochureRequest?.fullName ?? m.counterpartName ?? m.counterpartAddress,
++        participantEmail: m.counterpartAddress,
++        registrationId: m.registrationId,
++        brochureRequestId: m.brochureRequestId,
++        subject: m.subject,
++        lastMessageAt: m.occurredAt.toISOString(),
++        lastSnippet: m.bodyText.replace(/\s+/g, " ").slice(0, 140),
++        lastDirection: m.direction,
++        unreadCount: 0,
++        messageCount: 0,
++        hasInbound: false,
++      };
++      threads.set(m.threadId, t);
++    }
++    t.messageCount += 1;
++    if (m.direction === "INBOUND") {
++      t.hasInbound = true;
++      if (!m.readAt) t.unreadCount += 1;
++    }
++  }
++
++  let list = [...threads.values()].filter((t) => t.hasInbound);
++  const totalUnread = list.reduce((sum, t) => sum + t.unreadCount, 0);
++  if (filter === "unread") list = list.filter((t) => t.unreadCount > 0);
++
++  return NextResponse.json({
++    threads: list,
++    totalUnread,
++    gmailConfigured: isGmailConfigured(),
++    syncError: sync.error ?? null,
++  });
++}
+diff --git a/src/app/api/admin/replies/sync/route.ts b/src/app/api/admin/replies/sync/route.ts
+new file mode 100644
+index 0000000..de96dc0
+--- /dev/null
++++ b/src/app/api/admin/replies/sync/route.ts
+@@ -0,0 +1,16 @@
++import { NextResponse } from "next/server";
++import { syncGmailReplies } from "@/lib/inbox";
++import { isGmailConfigured, GMAIL_NOT_CONFIGURED_MESSAGE } from "@/lib/gmail";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/** The "Check for new replies" button: sync now, ignoring the throttle. */
++export async function POST() {
++  if (!isGmailConfigured()) {
++    return NextResponse.json({ error: GMAIL_NOT_CONFIGURED_MESSAGE }, { status: 400 });
++  }
++  const result = await syncGmailReplies({ force: true });
++  if (result.error) return NextResponse.json({ error: result.error }, { status: 502 });
++  return NextResponse.json({ result: "success", imported: result.imported, bounces: result.bounces });
++}
+diff --git a/src/app/api/admin/replies/unread-count/route.ts b/src/app/api/admin/replies/unread-count/route.ts
+new file mode 100644
+index 0000000..af5eaa0
+--- /dev/null
++++ b/src/app/api/admin/replies/unread-count/route.ts
+@@ -0,0 +1,11 @@
++import { NextResponse } from "next/server";
++import { syncGmailReplies, unreadReplyCount } from "@/lib/inbox";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/** Badge count for the Replies tab. Also runs the (throttled) Gmail sync so the badge stays current on every page. */
++export async function GET() {
++  await syncGmailReplies();
++  return NextResponse.json({ unread: await unreadReplyCount() });
++}
+diff --git a/src/app/api/admin/seats/[seatId]/route.ts b/src/app/api/admin/seats/[seatId]/route.ts
+index 012dfe3..0d826bc 100644
+--- a/src/app/api/admin/seats/[seatId]/route.ts
++++ b/src/app/api/admin/seats/[seatId]/route.ts
+@@ -1,6 +1,8 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { updateSeatStatusSchema } from "@/lib/validation";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -41,5 +43,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     include: { registration: { select: { id: true, fullName: true, email: true } } },
+   });
+ 
++  await logAdminAction(
++    await getSession(),
++    {
++      action: "seat.update",
++      entityType: "seat",
++      entityId: seatId,
++      entityLabel: existing.label,
++      details: { from: existing.status, to: status, ...(clearAssignment && existing.registrationId ? { releasedRegistrationId: existing.registrationId } : {}) },
++    },
++    request
++  );
++
+   return NextResponse.json({ result: "success", seat });
+ }
+diff --git a/src/app/api/admin/settings/route.ts b/src/app/api/admin/settings/route.ts
+index 6956dc9..41d4e65 100644
+--- a/src/app/api/admin/settings/route.ts
++++ b/src/app/api/admin/settings/route.ts
+@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { getSettingsMap } from "@/lib/settings";
+ import { updateSettingsSchema } from "@/lib/validation";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -24,6 +26,7 @@ export async function PUT(request: NextRequest) {
+   }
+ 
+   const entries = Object.entries(parsed.data);
++  const before = await getSettingsMap();
+   await prisma.$transaction(
+     entries.map(([key, value]) =>
+       prisma.setting.upsert({
+@@ -35,5 +38,13 @@ export async function PUT(request: NextRequest) {
+   );
+ 
+   const settings = await getSettingsMap();
++  const changedKeys = entries.filter(([key, value]) => before[key] !== value).map(([key]) => key);
++  if (changedKeys.length > 0) {
++    await logAdminAction(
++      await getSession(),
++      { action: "settings.update", entityType: "template", entityLabel: changedKeys.join(", "), details: { changedKeys } },
++      request
++    );
++  }
+   return NextResponse.json({ result: "success", settings });
+ }
+diff --git a/src/app/api/admin/templates/[key]/route.ts b/src/app/api/admin/templates/[key]/route.ts
+index 929bfac..e090165 100644
+--- a/src/app/api/admin/templates/[key]/route.ts
++++ b/src/app/api/admin/templates/[key]/route.ts
+@@ -1,6 +1,8 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { updateTemplateSchema } from "@/lib/validation";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -45,5 +47,11 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{
+     },
+   });
+ 
++  await logAdminAction(
++    await getSession(),
++    { action: "template.update", entityType: "template", entityId: key, entityLabel: key, details: { subjectChanged: existing.subject !== template.subject, bodyChanged: existing.body !== template.body } },
++    request
++  );
++
+   return NextResponse.json({ result: "success", template });
+ }
+diff --git a/src/app/api/public/payment-proofs/route.ts b/src/app/api/public/payment-proofs/route.ts
+new file mode 100644
+index 0000000..9bda9ad
+--- /dev/null
++++ b/src/app/api/public/payment-proofs/route.ts
+@@ -0,0 +1,82 @@
++import { NextRequest } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { jsonWithCors, preflight } from "@/lib/cors";
++import { verifyProofToken } from "@/lib/proof-token";
++
++export const runtime = "nodejs";
++
++const MAX_BYTES = 4 * 1024 * 1024; // stays under Vercel's 4.5 MB request limit
++const MAX_PROOFS_PER_REGISTRATION = 10;
++const CURRENCIES = new Set(["USD", "CAD", "NGN", "USD_NG"]);
++const METHODS = new Set(["bank_transfer", "interac"]);
++
++export async function OPTIONS(request: NextRequest) {
++  return preflight(request);
++}
++
++/** Identifies the real file type from its first bytes rather than trusting the browser's label. */
++function sniffType(bytes: Buffer): string | null {
++  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
++  if (bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
++    return "image/png";
++  if (bytes.length > 4 && bytes.subarray(0, 4).toString("ascii") === "%PDF") return "application/pdf";
++  if (bytes.length > 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP")
++    return "image/webp";
++  return null;
++}
++
++/** Receives a proof-of-payment file (multipart: token, currency, method?, file) from the public payment screen. */
++export async function POST(request: NextRequest) {
++  let form: FormData;
++  try {
++    form = await request.formData();
++  } catch {
++    return jsonWithCors(request, { error: "Invalid upload." }, 400);
++  }
++
++  const registrationId = verifyProofToken(String(form.get("token") || ""));
++  if (!registrationId) {
++    return jsonWithCors(request, { error: "This upload link isn't valid. Please register again." }, 400);
++  }
++
++  const currency = String(form.get("currency") || "");
++  const methodRaw = String(form.get("method") || "");
++  if (!CURRENCIES.has(currency)) return jsonWithCors(request, { error: "Choose a currency." }, 400);
++  const method = METHODS.has(methodRaw) ? methodRaw : null;
++
++  const file = form.get("file");
++  if (!(file instanceof File) || file.size === 0) {
++    return jsonWithCors(request, { error: "Choose a file to upload." }, 400);
++  }
++  if (file.size > MAX_BYTES) {
++    return jsonWithCors(request, { error: "That file is too large. Please upload a file under 4 MB." }, 400);
++  }
++
++  const bytes = Buffer.from(await file.arrayBuffer());
++  const mimeType = sniffType(bytes);
++  if (!mimeType) {
++    return jsonWithCors(request, { error: "Please upload a photo (JPG, PNG, WebP) or a PDF." }, 400);
++  }
++
++  const registration = await prisma.registration.findUnique({ where: { id: registrationId }, select: { id: true } });
++  if (!registration) return jsonWithCors(request, { error: "Registration not found." }, 404);
++
++  const existing = await prisma.paymentProof.count({ where: { registrationId } });
++  if (existing >= MAX_PROOFS_PER_REGISTRATION) {
++    return jsonWithCors(request, { error: "Too many files uploaded for this registration." }, 429);
++  }
++
++  await prisma.paymentProof.create({
++    data: {
++      registrationId,
++      currency,
++      method,
++      fileName: (file.name || "proof").replace(/[^\w.\- ]+/g, "_").slice(0, 120),
++      mimeType,
++      size: bytes.length,
++      data: bytes,
++    },
++  });
++
++  return jsonWithCors(request, { result: "success" });
++}
+diff --git a/src/app/api/public/registrations/route.ts b/src/app/api/public/registrations/route.ts
+index e33b892..89b90d9 100644
+--- a/src/app/api/public/registrations/route.ts
++++ b/src/app/api/public/registrations/route.ts
+@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
+ import { registrationSchema } from "@/lib/validation";
+ import { sendRegistrationEmails } from "@/lib/notifications";
+ import { jsonWithCors, preflight } from "@/lib/cors";
++import { makeProofToken } from "@/lib/proof-token";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -62,5 +63,7 @@ export async function POST(request: NextRequest) {
+     console.error("[registrations] Failed to send confirmation/notification emails:", err);
+   }
+ 
+-  return jsonWithCors(request, { result: "success" });
++  // proofToken lets the payment screen upload proof of payment for this
++  // registration without exposing the registration id itself.
++  return jsonWithCors(request, { result: "success", proofToken: makeProofToken(registration.id) });
+ }
+\ No newline at end of file
+diff --git a/src/components/AdminShell.tsx b/src/components/AdminShell.tsx
+index 45209c6..ed17660 100644
+--- a/src/components/AdminShell.tsx
++++ b/src/components/AdminShell.tsx
+@@ -1,8 +1,9 @@
+ "use client";
+ 
+-import { useEffect, useState } from "react";
++import { useCallback, useEffect, useState } from "react";
+ import Link from "next/link";
+ import { useRouter } from "next/navigation";
++import { useAutoRefresh } from "@/lib/useAutoRefresh";
+ 
+ interface AdminSession {
+   name: string;
+@@ -10,12 +11,14 @@ interface AdminSession {
+   role: "OWNER" | "ADMIN";
+ }
+ 
+-const TABS: { href: string; label: string }[] = [
++const TABS: { href: string; label: string; ownerOnly?: boolean }[] = [
+   { href: "/admin", label: "Registrations" },
+   { href: "/admin/payments", label: "Payments" },
+   { href: "/admin/brochure-requests", label: "Brochure Requests" },
+   { href: "/admin/seats", label: "Day 7 Seating" },
+   { href: "/admin/campaigns", label: "Campaigns" },
++  { href: "/admin/replies", label: "Replies" },
++  { href: "/admin/audit", label: "Audit Log", ownerOnly: true },
+   { href: "/admin/admins", label: "Manage Admins" },
+ ];
+ 
+@@ -27,8 +30,24 @@ export default function AdminShell({
+   children: React.ReactNode;
+ }) {
+   const [session, setSession] = useState<AdminSession | null>(null);
++  const [unreadReplies, setUnreadReplies] = useState(0);
+   const router = useRouter();
+ 
++  // Also nudges the server to pull new replies from Gmail (throttled there).
++  const refreshUnread = useCallback(async () => {
++    try {
++      const res = await fetch("/api/admin/replies/unread-count");
++      if (res.ok) setUnreadReplies((await res.json()).unread ?? 0);
++    } catch {
++      // ignore — the next poll retries
++    }
++  }, []);
++
++  useEffect(() => {
++    refreshUnread();
++  }, [refreshUnread]);
++  useAutoRefresh(refreshUnread, 60_000);
++
+   useEffect(() => {
+     fetch("/api/admin/me")
+       .then((res) => (res.ok ? res.json() : Promise.reject()))
+@@ -64,7 +83,7 @@ export default function AdminShell({
+           </button>
+         </div>
+         <nav className="max-w-6xl mx-auto px-6 flex gap-2 pb-4 flex-wrap">
+-          {TABS.map((tab) => (
++          {TABS.filter((tab) => !tab.ownerOnly || session?.role === "OWNER").map((tab) => (
+             <Link
+               key={tab.href}
+               href={tab.href}
+@@ -75,6 +94,11 @@ export default function AdminShell({
+               }`}
+             >
+               {tab.label}
++              {tab.href === "/admin/replies" && unreadReplies > 0 && (
++                <span className="ml-2 inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-gold text-black text-[11px] font-semibold">
++                  {unreadReplies}
++                </span>
++              )}
+             </Link>
+           ))}
+         </nav>
+diff --git a/src/components/PaymentUpdateModal.tsx b/src/components/PaymentUpdateModal.tsx
+new file mode 100644
+index 0000000..fdd9901
+--- /dev/null
++++ b/src/components/PaymentUpdateModal.tsx
+@@ -0,0 +1,199 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++export type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
++
++export const PAYMENT_META: Record<PaymentStatus, { label: string; className: string }> = {
++  NOT_PAID: { label: "Not paid", className: "border-red-400/40 text-red-300" },
++  PARTIAL: { label: "Partial", className: "border-amber-400/40 text-amber-300" },
++  PAID: { label: "Paid", className: "border-emerald-400/40 text-emerald-300" },
++};
++
++export function formatMoney(amount: number, currency: string): string {
++  return `${currency} ${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
++}
++
++export function deriveStatus(amount: number, expectedFee: number | null): PaymentStatus {
++  if (amount <= 0) return "NOT_PAID";
++  if (expectedFee !== null && amount >= expectedFee) return "PAID";
++  return "PARTIAL";
++}
++
++/** Currency and expected fees, needed by the payment modal on any page that opens it. */
++export function usePaymentSettings() {
++  const [currency, setCurrency] = useState("USD");
++  const [feeAmounts, setFeeAmounts] = useState<{ early: number | null; late: number | null }>({
++    early: null,
++    late: null,
++  });
++
++  useEffect(() => {
++    fetch("/api/admin/settings")
++      .then((res) => (res.ok ? res.json() : Promise.reject()))
++      .then((data) => {
++        setCurrency(data.settings.currency || "USD");
++        const early = parseFloat(data.settings.registration_fee_amount);
++        const late = parseFloat(data.settings.late_registration_fee_amount);
++        setFeeAmounts({
++          early: Number.isFinite(early) ? early : null,
++          late: Number.isFinite(late) ? late : null,
++        });
++      })
++      .catch(() => {
++        // Keep defaults — the modal still works, it just can't preview the derived status.
++      });
++  }, []);
++
++  return { currency, feeAmounts };
++}
++
++export function PaymentUpdateModal({
++  row,
++  currency,
++  expectedFee,
++  onClose,
++  onConfirm,
++}: {
++  row: { fullName: string; amountPaid: number };
++  currency: string;
++  expectedFee: number | null;
++  onClose: () => void;
++  onConfirm: (amountPaid: number, note: string) => Promise<void>;
++}) {
++  const [step, setStep] = useState<"input" | "confirm">("input");
++  const [amountText, setAmountText] = useState("");
++  const [note, setNote] = useState("");
++  const [error, setError] = useState<string | null>(null);
++  const [submitting, setSubmitting] = useState(false);
++
++  const amount = parseFloat(amountText);
++  const validAmount = amountText.trim() !== "" && !Number.isNaN(amount) && amount >= 0;
++  const previewStatus = validAmount ? deriveStatus(amount, expectedFee) : null;
++
++  function handleContinue() {
++    if (!validAmount) {
++      setError("Enter a valid amount (0 or more).");
++      return;
++    }
++    setError(null);
++    setStep("confirm");
++  }
++
++  async function handleConfirm() {
++    setSubmitting(true);
++    setError(null);
++    try {
++      await onConfirm(amount, note);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Failed to update payment.");
++      setSubmitting(false);
++      return;
++    }
++  }
++
++  return (
++    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 px-4">
++      <div className="w-full max-w-md bg-cardbg border border-border rounded-2xl p-6">
++        <p className="text-xs uppercase tracking-wider text-muted mb-1">Update payment</p>
++        <h3 className="font-serif text-xl mb-5">{row.fullName}</h3>
++
++        {step === "input" && (
++          <>
++            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
++              Amount received ({currency})
++            </label>
++            <input
++              autoFocus
++              inputMode="decimal"
++              value={amountText}
++              onChange={(e) => setAmountText(e.target.value)}
++              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
++              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
++            />
++            <p className="text-xs text-muted mb-4">
++              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to
++              date for this registration
++              {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
++            </p>
++
++            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
++              Note <span className="normal-case text-muted/70">(optional)</span>
++            </label>
++            <textarea
++              value={note}
++              onChange={(e) => setNote(e.target.value)}
++              rows={2}
++              placeholder="e.g. bank transfer ref, part of a split payment…"
++              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
++            />
++
++            {error && <p className="text-sm text-red-400 mt-3">{error}</p>}
++
++            <div className="flex items-center justify-end gap-3 mt-6">
++              <button
++                onClick={onClose}
++                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg"
++              >
++                Cancel
++              </button>
++              <button
++                onClick={handleContinue}
++                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest"
++              >
++                Continue
++              </button>
++            </div>
++          </>
++        )}
++
++        {step === "confirm" && previewStatus && (
++          <>
++            <div className="border border-border rounded-xl p-4 mb-5 space-y-2">
++              <div className="flex justify-between text-sm">
++                <span className="text-muted">Amount received</span>
++                <span>{formatMoney(amount, currency)}</span>
++              </div>
++              {expectedFee !== null && (
++                <div className="flex justify-between text-sm">
++                  <span className="text-muted">Expected fee</span>
++                  <span>{formatMoney(expectedFee, currency)}</span>
++                </div>
++              )}
++              <div className="flex justify-between text-sm items-center pt-2 border-t border-border/50">
++                <span className="text-muted">New status</span>
++                <span className={`text-xs rounded-full border px-2.5 py-1 ${PAYMENT_META[previewStatus].className}`}>
++                  {PAYMENT_META[previewStatus].label}
++                </span>
++              </div>
++            </div>
++            <p className="text-sm text-muted mb-5">
++              This will mark <span className="text-fg">{row.fullName}</span> as{" "}
++              <span className="text-fg">{PAYMENT_META[previewStatus].label.toLowerCase()}</span> and record today's
++              date as the payment update date. Continue?
++            </p>
++
++            {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
++
++            <div className="flex items-center justify-end gap-3">
++              <button
++                onClick={() => setStep("input")}
++                disabled={submitting}
++                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg disabled:opacity-60"
++              >
++                Back
++              </button>
++              <button
++                onClick={handleConfirm}
++                disabled={submitting}
++                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
++              >
++                {submitting ? "Confirming…" : "Confirm"}
++              </button>
++            </div>
++          </>
++        )}
++      </div>
++    </div>
++  );
++}
+diff --git a/src/components/RegistrationActionsMenu.tsx b/src/components/RegistrationActionsMenu.tsx
+index efcdb13..c016d5e 100644
+--- a/src/components/RegistrationActionsMenu.tsx
++++ b/src/components/RegistrationActionsMenu.tsx
+@@ -27,14 +27,28 @@ interface Props {
+   paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
+   seatInviteSentAt: string | null;
+   onAction: (action: RegistrationAction) => void;
++  /** Opens the "Update payment" dialog. */
++  onUpdatePayment?: () => void;
++  /** Clears the recorded payment (the page confirms first). Hidden when nothing is recorded. */
++  onResetPayment?: () => void;
++  /** Where the "View replies" item goes (the Replies inbox filtered to this person). */
++  repliesHref?: string;
+   /** Pass only for owners; renders a destructive "Delete registration" item. */
+   onDelete?: () => void;
+ }
+ 
+-const MENU_WIDTH = 240;
+-const MENU_HEIGHT_ESTIMATE = 190;
++const MENU_WIDTH = 260;
++const MENU_HEIGHT_ESTIMATE = 400;
+ 
+-export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentAt, onAction, onDelete }: Props) {
++export default function RegistrationActionsMenu({
++  paymentStatus,
++  seatInviteSentAt,
++  onAction,
++  onUpdatePayment,
++  onResetPayment,
++  repliesHref,
++  onDelete,
++}: Props) {
+   const [open, setOpen] = useState(false);
+   const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
+   const buttonRef = useRef<HTMLButtonElement>(null);
+@@ -75,7 +89,6 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
+     };
+   }, [open]);
+ 
+-  const seatDisabled = paymentStatus !== "PAID";
+   const reminderDisabled = paymentStatus === "PAID";
+ 
+   function choose(action: RegistrationAction) {
+@@ -83,7 +96,7 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
+     onAction(action);
+   }
+ 
+-  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
++  const itemClass = "block w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
+ 
+   return (
+     <>
+@@ -102,27 +115,55 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
+           style={{ position: "fixed", width: MENU_WIDTH, ...pos }}
+           className="bg-cardbg border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+         >
+-          <button onClick={() => choose("resend_confirmation")} className={itemClass}>
+-            Resend confirmation email
+-          </button>
+-          <button
+-            onClick={() => choose("send_seat_invite")}
+-            disabled={seatDisabled}
+-            title={seatDisabled ? "Available once payment is marked as fully paid" : undefined}
+-            className={itemClass}
+-          >
++          {/* Seat selection is always clickable: if the person hasn't paid in
++              full the server refuses and the page shows why, rather than the
++              option silently being greyed out. */}
++          <button onClick={() => choose("send_seat_invite")} className={itemClass}>
+             {seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
+-            {seatDisabled && <span className="block text-xs text-muted mt-0.5">Once fully paid</span>}
++            {paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>}
+           </button>
+           <button
+             onClick={() => choose("send_payment_reminder")}
+             disabled={reminderDisabled}
+             title={reminderDisabled ? "Already fully paid" : undefined}
+-            className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
++            className={itemClass}
+           >
+             Send payment reminder
+             {reminderDisabled && <span className="block text-xs text-muted mt-0.5">Already fully paid</span>}
+           </button>
++          <button onClick={() => choose("resend_confirmation")} className={itemClass}>
++            Resend confirmation email
++          </button>
++          {onUpdatePayment && (
++            <button
++              onClick={() => {
++                setOpen(false);
++                onUpdatePayment();
++              }}
++              className={itemClass}
++            >
++              Update payment…
++            </button>
++          )}
++          {onResetPayment && (
++            <button
++              onClick={() => {
++                setOpen(false);
++                onResetPayment();
++              }}
++              disabled={paymentStatus === "NOT_PAID"}
++              title={paymentStatus === "NOT_PAID" ? "No payment recorded" : undefined}
++              className={itemClass}
++            >
++              Reset payment…
++              {paymentStatus === "NOT_PAID" && <span className="block text-xs text-muted mt-0.5">No payment recorded</span>}
++            </button>
++          )}
++          {repliesHref && (
++            <a href={repliesHref} className={`${itemClass} hover:bg-gold/10 ${onDelete ? "" : "border-b-0"}`}>
++              View replies
++            </a>
++          )}
+           {onDelete && (
+             <button
+               onClick={() => {
+diff --git a/src/lib/audit.ts b/src/lib/audit.ts
+new file mode 100644
+index 0000000..29f287c
+--- /dev/null
++++ b/src/lib/audit.ts
+@@ -0,0 +1,85 @@
++import type { Prisma } from "@prisma/client";
++import { prisma } from "@/lib/prisma";
++import type { SessionPayload } from "@/lib/auth";
++
++/**
++ * Every action name written to the audit log. Grouped by the part before the
++ * dot, which is what the Audit Log page's category filter matches on.
++ */
++export type AuditAction =
++  | "auth.login"
++  | "auth.login_failed"
++  | "auth.logout"
++  | "registration.payment_update"
++  | "registration.payment_reset"
++  | "registration.resend_confirmation"
++  | "registration.send_seat_invite"
++  | "registration.send_payment_reminder"
++  | "registration.checkin"
++  | "registration.delete"
++  | "registration.export"
++  | "brochure.delete"
++  | "campaign.send"
++  | "reply.send"
++  | "seat.update"
++  | "template.update"
++  | "settings.update"
++  | "admin.create"
++  | "admin.delete"
++  | "data.clear";
++
++export interface AuditEntry {
++  action: AuditAction;
++  entityType?: "registration" | "brochure_request" | "campaign" | "seat" | "template" | "admin" | "reply" | "data";
++  entityId?: string;
++  /** Human-readable label, e.g. the participant's name — so the log reads without joins. */
++  entityLabel?: string;
++  details?: Prisma.InputJsonValue;
++}
++
++export interface AuditActor {
++  adminId?: string | null;
++  name: string;
++  email?: string | null;
++}
++
++export function actorFromSession(session: SessionPayload | null): AuditActor {
++  return session
++    ? { adminId: session.adminId, name: session.name, email: session.email }
++    : { adminId: null, name: "Unknown admin", email: null };
++}
++
++function clientIp(request?: Request): string | null {
++  const forwarded = request?.headers.get("x-forwarded-for");
++  if (forwarded) return forwarded.split(",")[0].trim() || null;
++  return request?.headers.get("x-real-ip") ?? null;
++}
++
++/**
++ * Records one admin action. Best-effort by design: a failure to write the audit
++ * row is logged but never blocks or fails the action being audited.
++ */
++export async function logAudit(actor: AuditActor, entry: AuditEntry, request?: Request): Promise<void> {
++  try {
++    await prisma.auditLog.create({
++      data: {
++        adminId: actor.adminId ?? null,
++        adminName: actor.name,
++        adminEmail: actor.email ?? null,
++        action: entry.action,
++        entityType: entry.entityType,
++        entityId: entry.entityId,
++        entityLabel: entry.entityLabel,
++        details: entry.details,
++        ipAddress: clientIp(request),
++      },
++    });
++  } catch (err) {
++    console.error("[audit] Could not write audit log entry:", entry.action, err);
++  }
++}
++
++/** Convenience wrapper for the common case of auditing as the signed-in admin. */
++export async function logAdminAction(session: SessionPayload | null, entry: AuditEntry, request?: Request) {
++  return logAudit(actorFromSession(session), entry, request);
++}
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index 373e02f..0193a6d 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -1,3 +1,5 @@
++import { GMAIL_NOT_CONFIGURED_MESSAGE, gmailSenderAddress, isGmailConfigured, sendGmail } from "@/lib/gmail";
++
+ // Brand palette — matches the black-and-gold executive theme from the
+ // original index.html / register.html. Change here to restyle every email.
+ const BRAND = {
+@@ -103,20 +105,37 @@ export function renderBrandedEmail(opts: BrandedEmailOptions): string {
+   </div>`;
+ }
+ 
++export type EmailProvider = "GMAIL" | "RESEND";
++
+ export interface SendEmailInput {
+   to: string;
+   subject: string;
+   html: string;
+   replyTo?: string | null;
+   tags?: { name: string; value: string }[];
++  /** Defaults to the transactional provider (Gmail). Campaigns pass "RESEND". */
++  provider?: EmailProvider;
+ }
+ 
+ export interface SendEmailResult {
+   success: boolean;
++  provider?: EmailProvider;
+   providerMessageId?: string;
++  /** Gmail thread id — lets replies be matched back to this email. */
++  threadId?: string;
+   error?: string;
+ }
+ 
++/**
++ * Which service sends transactional mail (confirmations, reminders, seat
++ * invites, internal alerts). Gmail by default; set
++ * TRANSACTIONAL_EMAIL_PROVIDER=resend to switch back without a code change
++ * (e.g. while Gmail credentials are being set up).
++ */
++export function transactionalProvider(): EmailProvider {
++  return (process.env.TRANSACTIONAL_EMAIL_PROVIDER || "gmail").toLowerCase() === "resend" ? "RESEND" : "GMAIL";
++}
++
+ /** True for "a@b.co" or "Name <a@b.co>" — the two shapes Resend accepts for from / reply_to. */
+ export function isValidEmailAddress(value: string): boolean {
+   const v = value.trim();
+@@ -135,24 +154,54 @@ function describeResendError(status: number, body: string): string {
+ }
+ 
+ /**
+- * Sends via Resend. In production a missing RESEND_API_KEY is a hard failure
+- * (so the dashboard shows "Failed" with the reason, rather than a fake "Sent").
+- * Outside production it logs the email to the console instead, so local
+- * development works without live email credentials.
++ * Sends via Gmail (OAuth). In production a missing configuration is a hard
++ * failure so the dashboard shows "Failed" with the reason rather than a fake
++ * "Sent"; outside production the email is logged to the console instead.
+  */
+-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
++async function sendViaGmail(input: SendEmailInput): Promise<SendEmailResult> {
++  if (!isGmailConfigured()) {
++    if (process.env.NODE_ENV === "production") {
++      console.error("[email] Gmail is not configured in this deployment — email not sent.");
++      return { success: false, provider: "GMAIL", error: GMAIL_NOT_CONFIGURED_MESSAGE };
++    }
++    console.warn(
++      `[email:dev-mode] Gmail not configured — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
++    );
++    return { success: true, provider: "GMAIL" };
++  }
++
++  try {
++    const sent = await sendGmail({
++      to: input.to,
++      subject: input.subject,
++      html: input.html,
++      replyTo: input.replyTo,
++      fromName: process.env.EMAIL_FROM_NAME || "RIDGE 2026",
++    });
++    return { success: true, provider: "GMAIL", providerMessageId: sent.id, threadId: sent.threadId };
++  } catch (err) {
++    console.error("[email] Gmail send failed:", err);
++    return { success: false, provider: "GMAIL", error: err instanceof Error ? err.message : String(err) };
++  }
++}
++
++/**
++ * Sends via Resend. Same production/dev behaviour as Gmail above. Used for
++ * campaigns (bulk sends) — Gmail's daily sending limits are far lower.
++ */
++async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
+   const apiKey = process.env.RESEND_API_KEY;
+   const from = process.env.EMAIL_FROM || "RIDGE 2026 <onboarding@resend.dev>";
+ 
+   if (!apiKey) {
+     if (process.env.NODE_ENV === "production") {
+       console.error("[email] RESEND_API_KEY is not set in this deployment — email not sent.");
+-      return { success: false, error: "RESEND_API_KEY is not set on the server." };
++      return { success: false, provider: "RESEND", error: "RESEND_API_KEY is not set on the server." };
+     }
+     console.warn(
+       `[email:dev-mode] RESEND_API_KEY not set — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
+     );
+-    return { success: true, providerMessageId: undefined };
++    return { success: true, provider: "RESEND" };
+   }
+ 
+   try {
+@@ -175,13 +224,23 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
+     if (!response.ok) {
+       const errText = await response.text();
+       console.error("[email] Resend send failed:", response.status, errText);
+-      return { success: false, error: describeResendError(response.status, errText) };
++      return { success: false, provider: "RESEND", error: describeResendError(response.status, errText) };
+     }
+ 
+     const data = (await response.json()) as { id?: string };
+-    return { success: true, providerMessageId: data.id };
++    return { success: true, provider: "RESEND", providerMessageId: data.id };
+   } catch (err) {
+     console.error("[email] Resend request threw:", err);
+-    return { success: false, error: err instanceof Error ? err.message : String(err) };
++    return { success: false, provider: "RESEND", error: err instanceof Error ? err.message : String(err) };
+   }
+ }
++
++export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
++  const provider = input.provider ?? transactionalProvider();
++  return provider === "GMAIL" ? sendViaGmail(input) : sendViaResend(input);
++}
++
++/** The address replies should come back to for Resend-sent campaigns: the connected Gmail mailbox, so replies show up in the Replies inbox. */
++export function campaignReplyToAddress(): string | undefined {
++  return gmailSenderAddress() ?? undefined;
++}
+diff --git a/src/lib/gmail.ts b/src/lib/gmail.ts
+new file mode 100644
+index 0000000..f9c41c9
+--- /dev/null
++++ b/src/lib/gmail.ts
+@@ -0,0 +1,340 @@
++/**
++ * Minimal Gmail API client (no SDK — just fetch), used for:
++ *   - sending transactional mail (confirmations, reminders, seat invites, replies)
++ *   - reading replies back into the admin's Replies inbox
++ *
++ * Auth is OAuth2 with a long-lived refresh token for ONE mailbox (the one the
++ * emails are sent from). Required environment variables:
++ *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_SENDER
++ * Required OAuth scopes when generating the refresh token:
++ *   https://www.googleapis.com/auth/gmail.send
++ *   https://www.googleapis.com/auth/gmail.readonly
++ */
++
++const TOKEN_URL = "https://oauth2.googleapis.com/token";
++const API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
++
++export function isGmailConfigured(): boolean {
++  return Boolean(
++    process.env.GOOGLE_CLIENT_ID &&
++      process.env.GOOGLE_CLIENT_SECRET &&
++      process.env.GMAIL_REFRESH_TOKEN &&
++      process.env.GMAIL_SENDER
++  );
++}
++
++export const GMAIL_NOT_CONFIGURED_MESSAGE =
++  "Gmail isn't connected on the server. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GMAIL_REFRESH_TOKEN and GMAIL_SENDER.";
++
++export function gmailSenderAddress(): string | null {
++  return process.env.GMAIL_SENDER?.trim() || null;
++}
++
++export class GmailError extends Error {
++  status: number;
++  constructor(message: string, status: number) {
++    super(message);
++    this.name = "GmailError";
++    this.status = status;
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Auth
++// ---------------------------------------------------------------------------
++
++let cachedToken: { value: string; expiresAt: number } | null = null;
++
++async function getAccessToken(): Promise<string> {
++  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
++
++  const res = await fetch(TOKEN_URL, {
++    method: "POST",
++    headers: { "Content-Type": "application/x-www-form-urlencoded" },
++    body: new URLSearchParams({
++      client_id: process.env.GOOGLE_CLIENT_ID || "",
++      client_secret: process.env.GOOGLE_CLIENT_SECRET || "",
++      refresh_token: process.env.GMAIL_REFRESH_TOKEN || "",
++      grant_type: "refresh_token",
++    }),
++  });
++
++  if (!res.ok) {
++    const text = await res.text();
++    let reason = text.slice(0, 200);
++    try {
++      const parsed = JSON.parse(text) as { error?: string; error_description?: string };
++      reason = [parsed.error, parsed.error_description].filter(Boolean).join(": ") || reason;
++    } catch {
++      // keep the raw text
++    }
++    // invalid_grant almost always means the refresh token was revoked or (for an
++    // app left in "Testing" mode) expired after 7 days.
++    throw new GmailError(`Gmail sign-in failed (${reason}). The refresh token may have expired or been revoked.`, res.status);
++  }
++
++  const data = (await res.json()) as { access_token: string; expires_in: number };
++  cachedToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
++  return data.access_token;
++}
++
++async function gmailFetch<T>(path: string, init?: RequestInit): Promise<T> {
++  const token = await getAccessToken();
++  const res = await fetch(`${API_BASE}${path}`, {
++    ...init,
++    headers: {
++      Authorization: `Bearer ${token}`,
++      "Content-Type": "application/json",
++      ...(init?.headers ?? {}),
++    },
++  });
++
++  if (!res.ok) {
++    const text = await res.text();
++    let reason = text.slice(0, 300);
++    try {
++      const parsed = JSON.parse(text) as { error?: { message?: string } };
++      if (parsed.error?.message) reason = parsed.error.message;
++    } catch {
++      // keep the raw text
++    }
++    throw new GmailError(`Gmail ${res.status}: ${reason}`, res.status);
++  }
++  return (await res.json()) as T;
++}
++
++// ---------------------------------------------------------------------------
++// MIME building
++// ---------------------------------------------------------------------------
++
++function base64Url(input: string | Buffer): string {
++  return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++}
++
++/** Standard base64 wrapped at 76 chars, as MIME requires. */
++function base64Wrapped(input: string): string {
++  return (Buffer.from(input, "utf-8").toString("base64").match(/.{1,76}/g) ?? []).join("\r\n");
++}
++
++/** RFC 2047 encoding for header text that isn't plain ASCII (names, subjects). */
++function encodeHeaderText(value: string): string {
++  // eslint-disable-next-line no-control-regex
++  if (/^[\x00-\x7F]*$/.test(value)) return value;
++  return `=?UTF-8?B?${Buffer.from(value, "utf-8").toString("base64")}?=`;
++}
++
++/** Strips CR/LF so a value can never inject extra headers. */
++function cleanHeader(value: string): string {
++  return value.replace(/[\r\n]+/g, " ").trim();
++}
++
++function formatAddress(address: string, displayName?: string): string {
++  const a = cleanHeader(address);
++  if (!displayName) return a;
++  const name = cleanHeader(displayName).replace(/"/g, "");
++  return `"${encodeHeaderText(name)}" <${a}>`;
++}
++
++export function htmlToPlainText(html: string): string {
++  return html
++    .replace(/<style[\s\S]*?<\/style>/gi, "")
++    .replace(/<br\s*\/?>/gi, "\n")
++    .replace(/<\/(p|div|tr|h[1-6])>/gi, "\n\n")
++    .replace(/<\/t[dh]>/gi, "  ")
++    .replace(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "$2 ($1)")
++    .replace(/<[^>]+>/g, "")
++    .replace(/&nbsp;/g, " ")
++    .replace(/&lt;/g, "<")
++    .replace(/&gt;/g, ">")
++    .replace(/&quot;/g, '"')
++    .replace(/&amp;/g, "&")
++    .replace(/[ \t]+\n/g, "\n")
++    .replace(/\n{3,}/g, "\n\n")
++    .trim();
++}
++
++export interface GmailSendInput {
++  to: string;
++  subject: string;
++  html: string;
++  text?: string;
++  replyTo?: string | null;
++  fromName?: string;
++  /** Send inside an existing Gmail thread (a reply). */
++  threadId?: string;
++  inReplyTo?: string;
++  references?: string;
++}
++
++export function buildRawMessage(input: GmailSendInput): string {
++  const from = formatAddress(gmailSenderAddress() || "", input.fromName);
++  const boundary = `ridge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
++  const text = input.text ?? htmlToPlainText(input.html);
++
++  const headers = [
++    `From: ${from}`,
++    `To: ${cleanHeader(input.to)}`,
++    input.replyTo ? `Reply-To: ${cleanHeader(input.replyTo)}` : null,
++    `Subject: ${encodeHeaderText(cleanHeader(input.subject))}`,
++    input.inReplyTo ? `In-Reply-To: ${cleanHeader(input.inReplyTo)}` : null,
++    input.references ? `References: ${cleanHeader(input.references)}` : null,
++    "MIME-Version: 1.0",
++    `Content-Type: multipart/alternative; boundary="${boundary}"`,
++  ].filter((h): h is string => h !== null);
++
++  const body = [
++    `--${boundary}`,
++    'Content-Type: text/plain; charset="UTF-8"',
++    "Content-Transfer-Encoding: base64",
++    "",
++    base64Wrapped(text),
++    `--${boundary}`,
++    'Content-Type: text/html; charset="UTF-8"',
++    "Content-Transfer-Encoding: base64",
++    "",
++    base64Wrapped(input.html),
++    `--${boundary}--`,
++    "",
++  ];
++
++  return base64Url([...headers, "", ...body].join("\r\n"));
++}
++
++// ---------------------------------------------------------------------------
++// Sending
++// ---------------------------------------------------------------------------
++
++export async function sendGmail(input: GmailSendInput): Promise<{ id: string; threadId: string }> {
++  const raw = buildRawMessage(input);
++  const result = await gmailFetch<{ id: string; threadId: string }>("/messages/send", {
++    method: "POST",
++    body: JSON.stringify(input.threadId ? { raw, threadId: input.threadId } : { raw }),
++  });
++  return { id: result.id, threadId: result.threadId };
++}
++
++// ---------------------------------------------------------------------------
++// Reading
++// ---------------------------------------------------------------------------
++
++interface GmailPart {
++  mimeType?: string;
++  body?: { data?: string };
++  parts?: GmailPart[];
++}
++
++interface GmailMessageResource {
++  id: string;
++  threadId: string;
++  internalDate?: string;
++  snippet?: string;
++  labelIds?: string[];
++  payload?: GmailPart & { headers?: { name: string; value: string }[] };
++}
++
++export async function listMessageIds(query: string, maxResults = 100): Promise<{ id: string; threadId: string }[]> {
++  const found: { id: string; threadId: string }[] = [];
++  let pageToken: string | undefined;
++  do {
++    const params = new URLSearchParams({ q: query, maxResults: String(Math.min(100, maxResults - found.length)) });
++    if (pageToken) params.set("pageToken", pageToken);
++    const page = await gmailFetch<{ messages?: { id: string; threadId: string }[]; nextPageToken?: string }>(
++      `/messages?${params.toString()}`
++    );
++    found.push(...(page.messages ?? []));
++    pageToken = page.nextPageToken;
++  } while (pageToken && found.length < maxResults);
++  return found;
++}
++
++function decodeBase64Url(data: string): string {
++  return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
++}
++
++function findPart(part: GmailPart | undefined, mimeType: string): string | null {
++  if (!part) return null;
++  if (part.mimeType === mimeType && part.body?.data) return decodeBase64Url(part.body.data);
++  for (const child of part.parts ?? []) {
++    const found = findPart(child, mimeType);
++    if (found) return found;
++  }
++  return null;
++}
++
++export interface ParsedGmailMessage {
++  id: string;
++  threadId: string;
++  from: string;
++  fromEmail: string;
++  fromName: string | null;
++  to: string;
++  subject: string;
++  rfcMessageId: string | null;
++  autoSubmitted: boolean;
++  receivedAt: Date;
++  text: string;
++  isSent: boolean;
++}
++
++/** "Jane Doe <jane@x.com>" or "jane@x.com" -> { email, name } */
++export function parseAddress(value: string): { email: string; name: string | null } {
++  const match = value.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
++  if (match) return { email: match[2].trim().toLowerCase(), name: match[1].trim() || null };
++  return { email: value.trim().toLowerCase(), name: null };
++}
++
++/**
++ * Cuts the quoted original out of a reply ("On <date>, X wrote:" and everything
++ * after it) so the inbox shows just what the person actually typed. Best-effort:
++ * if nothing is left after trimming, the full text is returned instead.
++ */
++export function stripQuotedReply(text: string): string {
++  const normalized = text.replace(/\r\n/g, "\n");
++  const cutPatterns = [
++    /\n\s*On [\s\S]{5,250}?wrote:\s*\n/i,
++    /\n\s*-{2,}\s*Original Message\s*-{2,}/i,
++    /\n\s*_{5,}\s*\n\s*From:/i,
++    /\n\s*From: .+\n\s*Sent: /i,
++  ];
++  let cut = normalized.length;
++  for (const pattern of cutPatterns) {
++    const m = pattern.exec(normalized);
++    if (m && m.index < cut) cut = m.index;
++  }
++  const trimmed = normalized
++    .slice(0, cut)
++    .split("\n")
++    .filter((line, i, all) => !(line.trim().startsWith(">") && all.slice(i).every((l) => l.trim().startsWith(">") || !l.trim())))
++    .join("\n")
++    .trim();
++  return trimmed || normalized.trim();
++}
++
++export async function getMessage(id: string): Promise<ParsedGmailMessage> {
++  const msg = await gmailFetch<GmailMessageResource>(`/messages/${id}?format=full`);
++  const headers = msg.payload?.headers ?? [];
++  const header = (name: string) => headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
++
++  const from = header("From");
++  const parsedFrom = parseAddress(from);
++  const plain = findPart(msg.payload, "text/plain");
++  const html = findPart(msg.payload, "text/html");
++  const text = plain ?? (html ? htmlToPlainText(html) : msg.snippet ?? "");
++
++  const autoSubmitted = /auto-(replied|generated)/i.test(header("Auto-Submitted")) || /bulk|auto_reply/i.test(header("Precedence"));
++
++  return {
++    id: msg.id,
++    threadId: msg.threadId,
++    from,
++    fromEmail: parsedFrom.email,
++    fromName: parsedFrom.name,
++    to: header("To"),
++    subject: header("Subject"),
++    rfcMessageId: header("Message-ID") || header("Message-Id") || null,
++    autoSubmitted,
++    receivedAt: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)) : new Date(),
++    text,
++    isSent: (msg.labelIds ?? []).includes("SENT"),
++  };
++}
+diff --git a/src/lib/inbox.ts b/src/lib/inbox.ts
+new file mode 100644
+index 0000000..3e66abd
+--- /dev/null
++++ b/src/lib/inbox.ts
+@@ -0,0 +1,241 @@
++/**
++ * The Replies inbox.
++ *
++ * Replies are read from the connected Gmail mailbox (the one transactional mail
++ * is sent from — see src/lib/gmail.ts) and stored as InboxMessage rows so the
++ * admin can read them, mark them read, and answer from /admin/replies.
++ *
++ * A reply is matched to a participant in two ways:
++ *   1. its Gmail thread is one we started (EmailEvent.threadId), or
++ *   2. the sender's address is a registrant's / brochure requester's address
++ *      (this is how replies to Resend campaigns are matched — those are sent
++ *      with Reply-To set to the Gmail mailbox).
++ * Anything else in the mailbox is ignored: this is not a general mail client.
++ *
++ * WhatsApp: InboxMessage.channel already has a WHATSAPP value. When a WhatsApp
++ * Business account exists, the integration only needs to (a) receive Meta's
++ * webhook and insert INBOUND rows here with channel = WHATSAPP, and (b) send
++ * OUTBOUND rows through the WhatsApp Cloud API — the inbox UI and the audit
++ * log need no changes. Nothing WhatsApp-specific is built yet.
++ */
++import { prisma } from "@/lib/prisma";
++import {
++  getMessage,
++  gmailSenderAddress,
++  isGmailConfigured,
++  listMessageIds,
++  sendGmail,
++  stripQuotedReply,
++  GMAIL_NOT_CONFIGURED_MESSAGE,
++} from "@/lib/gmail";
++import { escapeHtml } from "@/lib/email";
++
++const SYNC_AFTER_KEY = "_gmail_sync_after"; // epoch seconds: only fetch mail newer than this
++const SYNCED_AT_KEY = "_gmail_synced_at"; // ISO time of the last sync attempt (throttle)
++const THROTTLE_MS = 45_000;
++const FIRST_SYNC_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
++const OVERLAP_MS = 5 * 60 * 1000; // re-scan a little history each time; duplicates are skipped by id
++const MAX_MESSAGES_PER_SYNC = 200;
++
++export interface SyncResult {
++  ran: boolean;
++  imported: number;
++  bounces: number;
++  error?: string;
++}
++
++async function setSetting(key: string, value: string) {
++  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
++}
++
++/**
++ * Pulls new replies from Gmail into the database. Throttled so several open
++ * dashboard tabs don't each hit the Gmail API; pass { force: true } for the
++ * manual "Check for new replies" button. Never throws.
++ */
++export async function syncGmailReplies(opts: { force?: boolean } = {}): Promise<SyncResult> {
++  if (!isGmailConfigured()) return { ran: false, imported: 0, bounces: 0 };
++
++  try {
++    const rows = await prisma.setting.findMany({ where: { key: { in: [SYNC_AFTER_KEY, SYNCED_AT_KEY] } } });
++    const state = Object.fromEntries(rows.map((r) => [r.key, r.value]));
++
++    const lastRun = state[SYNCED_AT_KEY] ? Date.parse(state[SYNCED_AT_KEY]) : 0;
++    if (!opts.force && Date.now() - lastRun < THROTTLE_MS) return { ran: false, imported: 0, bounces: 0 };
++
++    const startedAt = Date.now();
++    await setSetting(SYNCED_AT_KEY, new Date(startedAt).toISOString());
++
++    const afterSeconds = state[SYNC_AFTER_KEY]
++      ? parseInt(state[SYNC_AFTER_KEY], 10)
++      : Math.floor((startedAt - FIRST_SYNC_LOOKBACK_MS) / 1000);
++
++    const listed = await listMessageIds(`in:inbox after:${afterSeconds}`, MAX_MESSAGES_PER_SYNC);
++    const ids = listed.map((m) => m.id);
++
++    const [knownMessages, knownBounces] = await Promise.all([
++      prisma.inboxMessage.findMany({ where: { providerMessageId: { in: ids } }, select: { providerMessageId: true } }),
++      prisma.emailEvent.findMany({
++        where: { providerMessageId: { in: ids }, type: "BOUNCED" },
++        select: { providerMessageId: true },
++      }),
++    ]);
++    const seen = new Set<string>([
++      ...knownMessages.map((m) => m.providerMessageId),
++      ...knownBounces.map((b) => b.providerMessageId ?? ""),
++    ]);
++
++    const sender = gmailSenderAddress()?.toLowerCase();
++    let imported = 0;
++    let bounces = 0;
++
++    for (const { id } of listed) {
++      if (seen.has(id)) continue;
++
++      const msg = await getMessage(id);
++      if (msg.isSent || (sender && msg.fromEmail === sender)) continue;
++
++      const threadEvent = await prisma.emailEvent.findFirst({
++        where: { threadId: msg.threadId, audience: "ATTENDEE", type: "SENT" },
++        select: { registrationId: true, brochureRequestId: true },
++      });
++
++      // Delivery failure notices from Gmail: record as a bounce on the email we sent.
++      if (/mailer-daemon|postmaster/i.test(msg.fromEmail)) {
++        if (threadEvent) {
++          await prisma.emailEvent.create({
++            data: {
++              source: threadEvent.registrationId ? "REGISTRATION" : "BROCHURE",
++              audience: "ATTENDEE",
++              registrationId: threadEvent.registrationId,
++              brochureRequestId: threadEvent.brochureRequestId,
++              type: "BOUNCED",
++              provider: "GMAIL",
++              providerMessageId: msg.id,
++              threadId: msg.threadId,
++              errorMessage: msg.text.replace(/\s+/g, " ").slice(0, 300),
++            },
++          });
++          bounces++;
++        }
++        continue;
++      }
++
++      let registrationId = threadEvent?.registrationId ?? null;
++      let brochureRequestId = threadEvent?.brochureRequestId ?? null;
++      let participantName: string | null = null;
++
++      if (!registrationId && !brochureRequestId) {
++        const registration = await prisma.registration.findFirst({
++          where: { email: { equals: msg.fromEmail, mode: "insensitive" } },
++          select: { id: true, fullName: true },
++        });
++        if (registration) {
++          registrationId = registration.id;
++          participantName = registration.fullName;
++        } else {
++          const brochure = await prisma.brochureRequest.findFirst({
++            where: { email: { equals: msg.fromEmail, mode: "insensitive" } },
++            select: { id: true, fullName: true },
++          });
++          if (!brochure) continue; // not a participant — leave it alone
++          brochureRequestId = brochure.id;
++          participantName = brochure.fullName;
++        }
++      }
++
++      const created = await prisma.inboxMessage.createMany({
++        data: [
++          {
++            channel: "EMAIL",
++            direction: "INBOUND",
++            providerMessageId: msg.id,
++            threadId: msg.threadId,
++            rfcMessageId: msg.rfcMessageId,
++            registrationId,
++            brochureRequestId,
++            counterpartAddress: msg.fromEmail,
++            counterpartName: msg.fromName ?? participantName,
++            subject: (msg.subject || "(no subject)").slice(0, 300),
++            bodyText: stripQuotedReply(msg.text).slice(0, 20000),
++            occurredAt: msg.receivedAt,
++          },
++        ],
++        skipDuplicates: true,
++      });
++      imported += created.count;
++    }
++
++    await setSetting(SYNC_AFTER_KEY, String(Math.floor((startedAt - OVERLAP_MS) / 1000)));
++    return { ran: true, imported, bounces };
++  } catch (err) {
++    console.error("[inbox] Gmail sync failed:", err);
++    return { ran: true, imported: 0, bounces: 0, error: err instanceof Error ? err.message : String(err) };
++  }
++}
++
++export async function unreadReplyCount(): Promise<number> {
++  return prisma.inboxMessage.count({ where: { direction: "INBOUND", readAt: null } });
++}
++
++export async function markThreadRead(threadId: string): Promise<void> {
++  await prisma.inboxMessage.updateMany({
++    where: { threadId, direction: "INBOUND", readAt: null },
++    data: { readAt: new Date() },
++  });
++}
++
++/**
++ * Sends an admin's reply inside the participant's existing Gmail thread and
++ * stores it so it appears in the conversation. Throws with a readable message.
++ */
++export async function sendInboxReply(opts: { threadId: string; body: string; adminName: string }) {
++  if (!isGmailConfigured()) throw new Error(GMAIL_NOT_CONFIGURED_MESSAGE);
++
++  const messages = await prisma.inboxMessage.findMany({
++    where: { threadId: opts.threadId },
++    orderBy: { occurredAt: "asc" },
++  });
++  const lastInbound = [...messages].reverse().find((m) => m.direction === "INBOUND");
++  if (!lastInbound) throw new Error("This conversation has no reply to answer.");
++
++  const subject = /^re:/i.test(lastInbound.subject) ? lastInbound.subject : `Re: ${lastInbound.subject}`;
++  const references = messages.map((m) => m.rfcMessageId).filter((v): v is string => Boolean(v));
++
++  const html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#111;">${escapeHtml(
++    opts.body
++  ).replace(/\n/g, "<br/>")}</div>`;
++
++  const sent = await sendGmail({
++    to: lastInbound.counterpartAddress,
++    subject,
++    html,
++    text: opts.body,
++    fromName: process.env.EMAIL_FROM_NAME || "RIDGE 2026",
++    threadId: opts.threadId,
++    inReplyTo: lastInbound.rfcMessageId ?? undefined,
++    references: references.length ? references.join(" ") : undefined,
++  });
++
++  const now = new Date();
++  const stored = await prisma.inboxMessage.create({
++    data: {
++      channel: "EMAIL",
++      direction: "OUTBOUND",
++      providerMessageId: sent.id,
++      threadId: sent.threadId,
++      registrationId: lastInbound.registrationId,
++      brochureRequestId: lastInbound.brochureRequestId,
++      counterpartAddress: lastInbound.counterpartAddress,
++      counterpartName: lastInbound.counterpartName,
++      subject,
++      bodyText: opts.body,
++      occurredAt: now,
++      readAt: now,
++      sentByName: opts.adminName,
++    },
++  });
++
++  await markThreadRead(opts.threadId);
++  return stored;
++}
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index 2d73a70..cc3cedc 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -1,7 +1,14 @@
+ import { prisma } from "@/lib/prisma";
+ import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
+-import { renderBrandedEmail, sendEmail, escapeHtml, isValidEmailAddress } from "@/lib/email";
+-import type { SendEmailResult } from "@/lib/email";
++import {
++  renderBrandedEmail,
++  sendEmail,
++  escapeHtml,
++  isValidEmailAddress,
++  transactionalProvider,
++  campaignReplyToAddress,
++} from "@/lib/email";
++import type { SendEmailResult, EmailProvider } from "@/lib/email";
+ import type { Registration, BrochureRequest } from "@prisma/client";
+ 
+ type Settings = Record<string, string>;
+@@ -48,7 +55,11 @@ async function recordEvent(params: {
+   audience: "ATTENDEE" | "INTERNAL";
+   id: string;
+   type: "SENT" | "FAILED";
++  provider?: EmailProvider;
+   providerMessageId?: string;
++  threadId?: string;
++  subject?: string;
++  kind?: string;
+   errorMessage?: string;
+ }) {
+   await prisma.emailEvent.create({
+@@ -58,7 +69,11 @@ async function recordEvent(params: {
+       registrationId: params.source === "REGISTRATION" || params.source === "CAMPAIGN" ? params.id : undefined,
+       brochureRequestId: params.source === "BROCHURE" ? params.id : undefined,
+       type: params.type,
++      provider: params.provider,
+       providerMessageId: params.providerMessageId,
++      threadId: params.threadId,
++      subject: params.subject?.slice(0, 300),
++      kind: params.kind,
+       errorMessage: params.errorMessage ? params.errorMessage.slice(0, 500) : undefined,
+     },
+   });
+@@ -74,16 +89,29 @@ async function deliverAttendeeEmail(opts: {
+   source: EventSource;
+   id: string;
+   to: string;
++  /** template key, or "campaign" — stored on the event so the Replies inbox can say what was sent */
++  kind: string;
++  /** Campaigns go through Resend; everything else through the transactional provider (Gmail). */
++  provider?: EmailProvider;
+   build: () => Promise<BuiltEmail>;
+ }): Promise<SendEmailResult> {
+   let result: SendEmailResult;
++  let subject: string | undefined;
++  const provider = opts.provider ?? transactionalProvider();
+   try {
+     const email = await opts.build();
++    subject = email.subject;
++    // Replies must land in the mailbox the Replies inbox reads. Gmail-sent mail
++    // already replies to that mailbox (no Reply-To needed), and campaigns sent
++    // through Resend are pointed at it explicitly. A template's own Reply-To is
++    // therefore not used for attendee emails.
++    const replyTo = provider === "GMAIL" ? undefined : opts.kind === "campaign" ? campaignReplyToAddress() : email.replyTo;
+     result = await sendEmail({
++      provider,
+       to: opts.to,
+       subject: email.subject,
+       html: email.html,
+-      replyTo: email.replyTo,
++      replyTo,
+       tags: [
+         { name: "source", value: opts.source === "BROCHURE" ? "brochure" : opts.source === "CAMPAIGN" ? "campaign" : "registration" },
+         { name: "id", value: opts.id },
+@@ -98,7 +126,11 @@ async function deliverAttendeeEmail(opts: {
+     audience: "ATTENDEE",
+     id: opts.id,
+     type: result.success ? "SENT" : "FAILED",
++    provider: result.provider ?? provider,
+     providerMessageId: result.providerMessageId,
++    threadId: result.threadId,
++    subject,
++    kind: opts.kind,
+     errorMessage: result.error,
+   });
+   return result;
+@@ -159,7 +191,11 @@ async function sendInternalNotification(opts: {
+       audience: "INTERNAL",
+       id: opts.id,
+       type: result.success ? "SENT" : "FAILED",
++      provider: result.provider,
+       providerMessageId: result.providerMessageId,
++      threadId: result.threadId,
++      subject: opts.subject,
++      kind: "internal_notification",
+       errorMessage: result.error,
+     });
+   } catch (err) {
+@@ -303,6 +339,7 @@ export async function sendRegistrationEmails(registration: Registration): Promis
+     source: "REGISTRATION",
+     id: registration.id,
+     to: registration.email,
++    kind: "registration_confirmation",
+     build: () => buildRegistrationConfirmation(registration, settings),
+   });
+ 
+@@ -332,6 +369,7 @@ export async function sendBrochureEmails(brochureRequest: BrochureRequest): Prom
+     source: "BROCHURE",
+     id: brochureRequest.id,
+     to: brochureRequest.email,
++    kind: "brochure_confirmation",
+     build: () => buildBrochureEmail(brochureRequest, settings),
+   });
+ 
+@@ -356,6 +394,7 @@ export async function resendRegistrationConfirmation(registration: Registration)
+       source: "REGISTRATION",
+       id: registration.id,
+       to: registration.email,
++      kind: "registration_confirmation",
+       build: () => buildRegistrationConfirmation(registration, settings),
+     })
+   );
+@@ -369,6 +408,7 @@ export async function resendBrochureConfirmation(brochureRequest: BrochureReques
+       source: "BROCHURE",
+       id: brochureRequest.id,
+       to: brochureRequest.email,
++      kind: "brochure_confirmation",
+       build: () => buildBrochureEmail(brochureRequest, settings),
+     })
+   );
+@@ -382,6 +422,7 @@ export async function sendSeatSelectionInvite(registration: Registration): Promi
+       source: "REGISTRATION",
+       id: registration.id,
+       to: registration.email,
++      kind: "seat_selection_invite",
+       build: () => buildSeatInvite(registration, settings),
+     })
+   );
+@@ -400,13 +441,15 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
+       source: "REGISTRATION",
+       id: registration.id,
+       to: registration.email,
++      kind: "payment_reminder",
+       build: () => buildPaymentReminder(registration, settings),
+     })
+   );
+ }
+ 
+ /**
+- * Sends one Campaigns-page broadcast email to a single registration. Subject
++ * Sends one Campaigns-page broadcast email to a single registration via Resend
++ * (the only email that doesn't go through Gmail). Subject
+  * and body come from the admin's compose form (not an EmailTemplate row) and
+  * support the same {{first_name}} / {{full_name}} / Settings merge vars.
+  * Never throws — the outcome (sent/failed) is recorded and returned so the
+@@ -426,6 +469,8 @@ export async function sendCampaignEmail(
+     source: "CAMPAIGN",
+     id: registration.id,
+     to: registration.email,
++    kind: "campaign",
++    provider: "RESEND",
+     build: async () => ({
+       subject: mergedSubject,
+       html: renderBrandedEmail({
+diff --git a/src/lib/proof-token.ts b/src/lib/proof-token.ts
+new file mode 100644
+index 0000000..d7ee6f8
+--- /dev/null
++++ b/src/lib/proof-token.ts
+@@ -0,0 +1,27 @@
++import crypto from "node:crypto";
++
++/**
++ * A signed, proof-upload-only token handed back after a public registration.
++ * It stands in for the registration id so the public site never learns the id
++ * itself (which is also the key in the seat-selection link).
++ */
++function sign(payload: string): string {
++  const secret = process.env.SESSION_SECRET;
++  if (!secret) throw new Error("SESSION_SECRET is not set.");
++  return crypto.createHmac("sha256", secret).update(`proof:${payload}`).digest("base64url");
++}
++
++export function makeProofToken(registrationId: string): string {
++  const payload = Buffer.from(registrationId).toString("base64url");
++  return `${payload}.${sign(payload)}`;
++}
++
++export function verifyProofToken(token: string): string | null {
++  const [payload, signature] = token.split(".");
++  if (!payload || !signature) return null;
++  const expected = sign(payload);
++  const a = Buffer.from(signature);
++  const b = Buffer.from(expected);
++  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
++  return Buffer.from(payload, "base64url").toString("utf-8");
++}
+diff --git a/src/lib/validation.ts b/src/lib/validation.ts
+index 267992e..4697fa4 100644
+--- a/src/lib/validation.ts
++++ b/src/lib/validation.ts
+@@ -87,3 +87,7 @@ export const sendCampaignSchema = z.object({
+   subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
+   body: z.string().trim().min(1, "Message can't be empty.").max(20000),
+ });
++
++export const sendReplySchema = z.object({
++  body: z.string().trim().min(1, "Write a reply first.").max(10000, "Reply is too long (max 10,000 characters)."),
++});
+-- 
+2.43.0
+

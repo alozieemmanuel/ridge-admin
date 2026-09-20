@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { registrationSchema } from "@/lib/validation";
 import { sendRegistrationEmails } from "@/lib/notifications";
 import { jsonWithCors, preflight } from "@/lib/cors";
+import { makeProofToken } from "@/lib/proof-token";
 
 export const runtime = "nodejs";
 
@@ -62,5 +63,5 @@ export async function POST(request: NextRequest) {
     console.error("[registrations] Failed to send confirmation/notification emails:", err);
   }
 
-  return jsonWithCors(request, { result: "success" });
+  return jsonWithCors(request, { result: "success", proofToken: makeProofToken(registration.id) });
 }

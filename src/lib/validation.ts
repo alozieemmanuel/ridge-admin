@@ -61,6 +61,13 @@ export const confirmPaymentSchema = z.object({
     .min(0, "Amount can't be negative.")
     .max(10_000_000, "That amount looks too large — double check it."),
   note: z.string().trim().max(500).optional().or(z.literal("")),
+  // Approving uploaded receipts: mark them approved, and optionally email the participant.
+  approveProofIds: z.array(z.string()).max(20).optional(),
+  sendConfirmation: z.boolean().optional(),
+});
+
+export const sendReplySchema = z.object({
+  body: z.string().trim().min(1, "Write a reply first.").max(10000, "Reply is too long (max 10,000 characters)."),
 });
 
 export const registrationActionSchema = z.object({
@@ -87,3 +94,4 @@ export const sendCampaignSchema = z.object({
   subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
   body: z.string().trim().min(1, "Message can't be empty.").max(20000),
 });
+

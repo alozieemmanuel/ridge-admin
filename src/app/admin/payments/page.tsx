@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import AdminShell from "@/components/AdminShell";
 import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-
-type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
+import { useIsOwner } from "@/lib/useIsOwner";
+import ProofList, { suggestedTotal, type ProofInfo } from "@/components/ProofList";
+import { PaymentUpdateModal, PAYMENT_META, formatMoney, type PaymentStatus } from "@/components/PaymentUpdateModal";
 
 interface RegistrationRow {
   id: string;
@@ -18,6 +19,7 @@ interface RegistrationRow {
   amountPaid: number;
   paymentUpdatedAt: string | null;
   seatInviteSentAt: string | null;
+  proofs: ProofInfo[];
 }
 
 interface PaymentStats {
@@ -27,177 +29,11 @@ interface PaymentStats {
   totalCollected: number;
 }
 
-const PAYMENT_META: Record<PaymentStatus, { label: string; className: string }> = {
-  NOT_PAID: { label: "Not paid", className: "border-red-400/40 text-red-300" },
-  PARTIAL: { label: "Partial", className: "border-amber-400/40 text-amber-300" },
-  PAID: { label: "Paid", className: "border-emerald-400/40 text-emerald-300" },
-};
-
-function formatMoney(amount: number, currency: string): string {
-  return `${currency} ${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-}
-
-function deriveStatus(amount: number, expectedFee: number | null): PaymentStatus {
-  if (amount <= 0) return "NOT_PAID";
-  if (expectedFee !== null && amount >= expectedFee) return "PAID";
-  return "PARTIAL";
-}
-
 function StatCard({ label, value, accent }: { label: string; value: string; accent: string }) {
   return (
     <div className="border border-border rounded-xl px-5 py-4 flex-1 min-w-[140px]">
       <p className="text-xs uppercase tracking-wider text-muted mb-1.5">{label}</p>
       <p className={`text-2xl font-serif ${accent}`}>{value}</p>
-    </div>
-  );
-}
-
-function PaymentConfirmModal({
-  row,
-  currency,
-  expectedFee,
-  onClose,
-  onConfirm,
-}: {
-  row: RegistrationRow;
-  currency: string;
-  expectedFee: number | null;
-  onClose: () => void;
-  onConfirm: (amountPaid: number, note: string) => Promise<void>;
-}) {
-  const [step, setStep] = useState<"input" | "confirm">("input");
-  const [amountText, setAmountText] = useState("");
-  const [note, setNote] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const amount = parseFloat(amountText);
-  const validAmount = amountText.trim() !== "" && !Number.isNaN(amount) && amount >= 0;
-  const previewStatus = validAmount ? deriveStatus(amount, expectedFee) : null;
-
-  function handleContinue() {
-    if (!validAmount) {
-      setError("Enter a valid amount (0 or more).");
-      return;
-    }
-    setError(null);
-    setStep("confirm");
-  }
-
-  async function handleConfirm() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onConfirm(amount, note);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update payment.");
-      setSubmitting(false);
-      return;
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 px-4">
-      <div className="w-full max-w-md bg-cardbg border border-border rounded-2xl p-6">
-        <p className="text-xs uppercase tracking-wider text-muted mb-1">Update payment</p>
-        <h3 className="font-serif text-xl mb-5">{row.fullName}</h3>
-
-        {step === "input" && (
-          <>
-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
-              Amount received ({currency})
-            </label>
-            <input
-              autoFocus
-              inputMode="decimal"
-              value={amountText}
-              onChange={(e) => setAmountText(e.target.value)}
-              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
-            />
-            <p className="text-xs text-muted mb-4">
-              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to
-              date for this registration
-              {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
-            </p>
-
-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
-              Note <span className="normal-case text-muted/70">(optional)</span>
-            </label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              placeholder="e.g. bank transfer ref, part of a split payment…"
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
-            />
-
-            {error && <p className="text-sm text-red-400 mt-3">{error}</p>}
-
-            <div className="flex items-center justify-end gap-3 mt-6">
-              <button
-                onClick={onClose}
-                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleContinue}
-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest"
-              >
-                Continue
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === "confirm" && previewStatus && (
-          <>
-            <div className="border border-border rounded-xl p-4 mb-5 space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-muted">Amount received</span>
-                <span>{formatMoney(amount, currency)}</span>
-              </div>
-              {expectedFee !== null && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted">Expected fee</span>
-                  <span>{formatMoney(expectedFee, currency)}</span>
-                </div>
-              )}
-              <div className="flex justify-between text-sm items-center pt-2 border-t border-border/50">
-                <span className="text-muted">New status</span>
-                <span className={`text-xs rounded-full border px-2.5 py-1 ${PAYMENT_META[previewStatus].className}`}>
-                  {PAYMENT_META[previewStatus].label}
-                </span>
-              </div>
-            </div>
-            <p className="text-sm text-muted mb-5">
-              This will mark <span className="text-fg">{row.fullName}</span> as{" "}
-              <span className="text-fg">{PAYMENT_META[previewStatus].label.toLowerCase()}</span> and record today's
-              date as the payment update date. Continue?
-            </p>
-
-            {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
-
-            <div className="flex items-center justify-end gap-3">
-              <button
-                onClick={() => setStep("input")}
-                disabled={submitting}
-                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg disabled:opacity-60"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleConfirm}
-                disabled={submitting}
-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
-              >
-                {submitting ? "Confirming…" : "Confirm"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
     </div>
   );
 }
@@ -216,6 +52,7 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [activeRow, setActiveRow] = useState<RegistrationRow | null>(null);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const isOwner = useIsOwner();
   const requestId = useRef(0);
   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -251,7 +88,7 @@ export default function PaymentsPage() {
           });
         }
       } catch {
-        // Network hiccup — keep showing the last data; the next poll will retry.
+        // Network hiccup: keep showing the last data; the next poll will retry.
       } finally {
         if (myRequest === requestId.current) setLoading(false);
       }
@@ -279,25 +116,76 @@ export default function PaymentsPage() {
     load(true);
   }
 
+  async function handleReset(row: RegistrationRow) {
+    const extra = row.seatInviteSentAt
+      ? " A seat invite was already sent to them; their seat (if any) is not changed."
+      : "";
+    if (
+      !window.confirm(
+        `Reset ${row.fullName}'s payment? This clears the recorded amount (${formatMoney(row.amountPaid, currency)}), note and date and marks them as not paid.${extra}`
+      )
+    ) {
+      return;
+    }
+    const res = await fetch(`/api/admin/registrations/${row.id}/payment`, { method: "DELETE" });
+    if (res.ok) {
+      flash("Payment reset.", true);
+      load(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      flash(data.error || "Failed to reset payment.", false);
+    }
+  }
+
+  async function handleDelete(row: RegistrationRow) {
+    if (!window.confirm(`Permanently delete the registration for ${row.fullName} (${row.email})? This cannot be undone.`)) {
+      return;
+    }
+    const res = await fetch(`/api/admin/registrations/${row.id}`, { method: "DELETE" });
+    if (res.ok) {
+      flash("Registration deleted.", true);
+      load(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      flash(data.error || "Failed to delete.", false);
+    }
+  }
+
   const visibleRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.paymentStatus === statusFilter);
 
   function expectedFeeFor(row: RegistrationRow): number | null {
     return row.regType === "LATE" ? feeAmounts.late : feeAmounts.early;
   }
 
-  async function handleConfirmPayment(id: string, amountPaid: number, note: string) {
+  async function handleConfirmPayment(
+    id: string,
+    amountPaid: number,
+    note: string,
+    opts: { sendConfirmation: boolean; approveProofIds: string[] }
+  ) {
     const res = await fetch(`/api/admin/registrations/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amountPaid, note }),
+      body: JSON.stringify({ amountPaid, note, ...opts }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || "Failed to update payment.");
-    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Failed to update payment.");
     setActiveRow(null);
-    flash("Payment updated.", true);
+    if (data.emailError) flash(`Payment updated, but the confirmation email failed: ${data.emailError}`, false);
+    else flash(data.emailSent ? "Payment updated and confirmation emailed." : "Payment updated.", true);
     load(true);
+  }
+
+  async function handleRejectProof(proof: ProofInfo) {
+    if (!window.confirm("Reject this receipt? The participant is not emailed.")) return;
+    const res = await fetch(`/api/admin/payment-proofs/${proof.id}`, { method: "PATCH" });
+    if (res.ok) {
+      flash("Receipt rejected.", true);
+      load(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      flash(data.error || "Failed to reject receipt.", false);
+    }
   }
 
   return (
@@ -377,8 +265,9 @@ export default function PaymentsPage() {
                 visibleRows.map((r) => {
                   const fee = expectedFeeFor(r);
                   const meta = PAYMENT_META[r.paymentStatus];
+                  const pendingCount = r.proofs.filter((p) => p.status === "PENDING").length;
                   return (
-                    <tr key={r.id} className="border-b border-border/50 last:border-b-0">
+                    <tr key={r.id} className="border-b border-border/50 last:border-b-0 align-top">
                       <td className="sticky left-0 z-10 bg-pagebg px-5 py-4 whitespace-nowrap font-medium">
                         {r.fullName}
                       </td>
@@ -400,6 +289,7 @@ export default function PaymentsPage() {
                           {formatMoney(r.amountPaid, currency)}
                           {fee !== null ? ` of ${formatMoney(fee, currency)}` : ""}
                         </span>
+                        <ProofList proofs={r.proofs} onReject={handleRejectProof} />
                       </td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {r.paymentUpdatedAt ? new Date(r.paymentUpdatedAt).toLocaleString() : "—"}
@@ -410,12 +300,32 @@ export default function PaymentsPage() {
                             onClick={() => setActiveRow(r)}
                             className="text-xs px-3.5 py-2 rounded-full border border-gold/40 text-goldlight hover:bg-gold/10 whitespace-nowrap"
                           >
-                            Update payment
+                            {pendingCount > 0 ? `Approve payment (${pendingCount})` : "Update payment"}
                           </button>
+                          {/* The most useful next email for this person: chase the balance,
+                              or once they've paid in full, invite them to pick a seat. */}
+                          {r.paymentStatus === "PAID" ? (
+                            <button
+                              onClick={() => handleEmailAction(r.id, "send_seat_invite")}
+                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
+                            >
+                              {r.seatInviteSentAt ? "Resend seat invite" : "Send seat invite"}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
+                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
+                            >
+                              Send payment reminder
+                            </button>
+                          )}
                           <RegistrationActionsMenu
                             paymentStatus={r.paymentStatus}
                             seatInviteSentAt={r.seatInviteSentAt}
                             onAction={(action) => handleEmailAction(r.id, action)}
+                            onUpdatePayment={() => setActiveRow(r)}
+                            onResetPayment={() => handleReset(r)}
+                            onDelete={isOwner ? () => handleDelete(r) : undefined}
                           />
                         </div>
                       </td>
@@ -428,12 +338,14 @@ export default function PaymentsPage() {
       </div>
 
       {activeRow && (
-        <PaymentConfirmModal
+        <PaymentUpdateModal
           row={activeRow}
           currency={currency}
           expectedFee={expectedFeeFor(activeRow)}
+          pendingProofs={activeRow.proofs.filter((p) => p.status === "PENDING")}
+          initialAmount={suggestedTotal(activeRow.amountPaid, activeRow.proofs)}
           onClose={() => setActiveRow(null)}
-          onConfirm={(amountPaid, note) => handleConfirmPayment(activeRow.id, amountPaid, note)}
+          onConfirm={(amountPaid, note, opts) => handleConfirmPayment(activeRow.id, amountPaid, note, opts)}
         />
       )}
     </AdminShell>

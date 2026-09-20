@@ -79,6 +79,19 @@ export async function GET(request: NextRequest) {
           select: { type: true, occurredAt: true, errorMessage: true, kind: true },
         },
         seat: { select: { label: true } },
+        paymentProofs: {
+          select: {
+            id: true,
+            fileName: true,
+            currency: true,
+            method: true,
+            amountClaimed: true,
+            expectedAmount: true,
+            status: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "asc" },
+        },
       },
     }),
   ]);
@@ -131,6 +144,16 @@ export async function GET(request: NextRequest) {
       amountPaid: r.amountPaid,
       paymentUpdatedAt: r.paymentUpdatedAt ? r.paymentUpdatedAt.toISOString() : null,
       seatInviteSentAt: r.seatInviteSentAt ? r.seatInviteSentAt.toISOString() : null,
+      proofs: r.paymentProofs.map((p) => ({
+        id: p.id,
+        fileName: p.fileName,
+        currency: p.currency,
+        method: p.method,
+        amountClaimed: p.amountClaimed,
+        expectedAmount: p.expectedAmount,
+        status: p.status,
+        createdAt: p.createdAt.toISOString(),
+      })),
       createdAt: r.createdAt.toISOString(),
     };
   });

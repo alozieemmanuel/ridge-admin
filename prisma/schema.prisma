@@ -31,6 +31,17 @@ enum EmailEventType {
   FAILED
 }
 
+enum EmailProvider {
+  GMAIL // transactional mail: confirmations, reminders, seat invites, internal alerts
+  RESEND // campaigns (bulk sends)
+}
+
+enum ProofStatus {
+  PENDING // uploaded, waiting for an admin
+  APPROVED // an admin confirmed the payment it shows
+  REJECTED
+}
+
 enum EmailAudience {
   ATTENDEE // the registration/brochure confirmation email
   INTERNAL // the internal team notification
@@ -55,38 +66,39 @@ enum PaymentStatus {
 }
 
 model Registration {
-  id           String       @id @default(cuid())
+  id           String  @id @default(cuid())
   fullName     String
-  email        String       @unique
+  email        String  @unique
   phone        String
   country      String
   organization String?
   notes        String?
-  regType      RegType      @default(EARLY_BIRD)
+  regType      RegType @default(EARLY_BIRD)
 
-  paymentStatus     PaymentStatus @default(NOT_PAID)
-  paymentNote       String?       // free-text admin note, e.g. "$1000 of $2000 received 9/20"
-  amountPaid        Float         @default(0) // total confirmed amount received, in the programme currency;
-                                               // compared against the expected fee to derive paymentStatus
-  paymentUpdatedAt  DateTime?     // last time an admin confirmed a payment amount
-  seatInviteSentAt  DateTime?     // last time the "pick your seat" email was sent
-  checkedInAt       DateTime?     // when the attendee was marked as arrived on Day 7 (attendance)
+  paymentStatus    PaymentStatus @default(NOT_PAID)
+  paymentNote      String? // free-text admin note, e.g. "$1000 of $2000 received 9/20"
+  amountPaid       Float         @default(0) // total confirmed amount received, in the programme currency;
+  // compared against the expected fee to derive paymentStatus
+  paymentUpdatedAt DateTime? // last time an admin confirmed a payment amount
+  seatInviteSentAt DateTime? // last time the "pick your seat" email was sent
+  checkedInAt      DateTime? // when the attendee was marked as arrived on Day 7 (attendance)
 
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  emailEvents  EmailEvent[]
-  seat         Seat?
+  emailEvents   EmailEvent[]
+  seat          Seat?
+  paymentProofs PaymentProof[]
 
   @@index([createdAt])
 }
 
 model BrochureRequest {
-  id          String       @id @default(cuid())
-  fullName    String
-  email       String
+  id       String @id @default(cuid())
+  fullName String
+  email    String
 
-  createdAt   DateTime     @default(now())
+  createdAt DateTime @default(now())
 
   emailEvents EmailEvent[]
 
@@ -97,26 +109,49 @@ model BrochureRequest {
 // One row per lifecycle event per email sent (sent/delivered/opened/bounced/...),
 // so the admin dashboard can show live counts with a simple GROUP BY.
 model EmailEvent {
-  id                 String       @id @default(cuid())
-  source             EmailSource
-  registrationId     String?
-  registration       Registration?     @relation(fields: [registrationId], references: [id], onDelete: Cascade)
-  brochureRequestId  String?
-  brochureRequest    BrochureRequest?  @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
-  campaignId         String?
-  campaign           Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  id                String           @id @default(cuid())
+  source            EmailSource
+  registrationId    String?
+  registration      Registration?    @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  brochureRequestId String?
+  brochureRequest   BrochureRequest? @relation(fields: [brochureRequestId], references: [id], onDelete: Cascade)
+  campaignId        String?
+  campaign          Campaign?        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  type               EmailEventType
-  audience           EmailAudience @default(ATTENDEE)
-  kind               String?      // "confirmation" | "seat_invite" | "payment_reminder" | "brochure" | "campaign" | "internal"; null on older rows
-  providerMessageId  String?      // Resend's email id, used to correlate webhook events
-  errorMessage       String?      // why a send FAILED (Resend's message), shown on hover in the dashboard
-  occurredAt         DateTime     @default(now())
+  type              EmailEventType
+  audience          EmailAudience  @default(ATTENDEE)
+  kind              String? // "confirmation" | "seat_invite" | "payment_reminder" | "payment_confirmation" | "brochure" | "campaign" | "internal"; null on older rows
+  providerMessageId String? // Resend's email id, used to correlate webhook events
+  errorMessage      String? // why a send FAILED (provider's message), shown on hover in the dashboard
+  occurredAt        DateTime       @default(now())
+
+  provider EmailProvider? // which service sent it (null on rows from before this column = Resend)
+  subject  String? // the subject as sent
 
   @@index([registrationId])
   @@index([brochureRequestId])
   @@index([campaignId])
   @@index([providerMessageId])
+}
+
+// Append-only record of what each admin did. No foreign key to Admin on
+// purpose, so the trail survives an admin being removed.
+model AuditLog {
+  id          String   @id @default(cuid())
+  adminId     String?
+  adminName   String
+  adminEmail  String?
+  action      String // e.g. "auth.login", "registration.payment_update"
+  entityType  String? // "registration" | "brochure_request" | "admin" | ...
+  entityId    String?
+  entityLabel String? // human-readable, e.g. the participant's name
+  details     Json?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId])
+  @@index([action])
 }
 
 // Editable copy for the attendee-facing emails: registration_confirmation,
@@ -162,17 +197,17 @@ enum CampaignAudience {
 // send time from `audience`; each send also gets its own EmailEvent rows
 // (source: CAMPAIGN) so delivery/open tracking works the same as other mail.
 model Campaign {
-  id           String           @id @default(cuid())
-  subject      String
-  body         String           @db.Text
-  audience     CampaignAudience
-  recipientCount Int            @default(0)
-  sentCount    Int              @default(0)
-  failedCount  Int              @default(0)
-  sentAt       DateTime         @default(now())
-  sentByName   String?
+  id             String           @id @default(cuid())
+  subject        String
+  body           String           @db.Text
+  audience       CampaignAudience
+  recipientCount Int              @default(0)
+  sentCount      Int              @default(0)
+  failedCount    Int              @default(0)
+  sentAt         DateTime         @default(now())
+  sentByName     String?
 
-  emailEvents  EmailEvent[]
+  emailEvents EmailEvent[]
 
   @@index([sentAt])
 }
@@ -193,26 +228,49 @@ model EventTable {
   id    String @id @default(cuid())
   label String @unique // "A", "B", ... "AA"
   order Int    @unique // display order, 0-based — independent of label so
-                        // tables can be reordered later without relabeling
+  // tables can be reordered later without relabeling
 
   seats Seat[]
 }
 
 model Seat {
-  id            String     @id @default(cuid())
-  tableId       String
-  table         EventTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
-  seatNumber    Int        // 1..10 within the table
-  label         String     @unique // "A2" — table label + seat number, shown to guests and admins
+  id         String     @id @default(cuid())
+  tableId    String
+  table      EventTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  seatNumber Int // 1..10 within the table
+  label      String     @unique // "A2" — table label + seat number, shown to guests and admins
 
-  status        SeatStatus @default(OPEN)
+  status SeatStatus @default(OPEN)
 
-  registrationId String?   @unique
+  registrationId String?       @unique
   registration   Registration? @relation(fields: [registrationId], references: [id])
 
-  holdExpiresAt DateTime?  // for a future payment-pending hold window
-  updatedAt     DateTime   @updatedAt
+  holdExpiresAt DateTime? // for a future payment-pending hold window
+  updatedAt     DateTime  @updatedAt
 
   @@unique([tableId, seatNumber])
   @@index([status])
+}
+
+// Proof-of-payment files uploaded by participants from the public payment
+// screen. Stored in the database (small images/PDFs, max 4 MB) so no separate
+// file storage service is needed.
+model PaymentProof {
+  id             String       @id @default(cuid())
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  currency       String // USD | CAD | NGN | USD_NG
+  method         String? // e.g. "bank_transfer" | "interac"
+  fileName       String
+  mimeType       String
+  size           Int
+  amountClaimed  Float? // what the participant said they paid (in `currency`)
+  expectedAmount Float? // the fee they were shown in that currency, so admins can tell full from part
+  status         ProofStatus  @default(PENDING)
+  reviewedAt     DateTime?
+  reviewedByName String?
+  data           Bytes
+  createdAt      DateTime     @default(now())
+
+  @@index([registrationId])
 }

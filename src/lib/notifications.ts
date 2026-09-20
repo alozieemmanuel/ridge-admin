@@ -49,6 +49,8 @@ async function recordEvent(params: {
   id: string;
   type: "SENT" | "FAILED";
   kind?: EmailKind;
+  provider?: "GMAIL" | "RESEND";
+  subject?: string;
   providerMessageId?: string;
   errorMessage?: string;
   campaignId?: string;
@@ -61,6 +63,8 @@ async function recordEvent(params: {
       brochureRequestId: params.source === "BROCHURE" ? params.id : undefined,
       campaignId: params.campaignId,
       kind: params.kind,
+      provider: params.provider,
+      subject: params.subject?.slice(0, 300),
       type: params.type,
       providerMessageId: params.providerMessageId,
       errorMessage: params.errorMessage ? params.errorMessage.slice(0, 500) : undefined,
@@ -86,8 +90,10 @@ async function deliverAttendeeEmail(opts: {
   build: () => Promise<BuiltEmail>;
 }): Promise<SendEmailResult> {
   let result: SendEmailResult;
+  let subject: string | undefined;
   try {
     const email = await opts.build();
+    subject = email.subject;
     result = await sendEmail({
       kind: opts.kind,
       to: opts.to,
@@ -110,6 +116,8 @@ async function deliverAttendeeEmail(opts: {
     id: opts.id,
     type: result.success ? "SENT" : "FAILED",
     kind: opts.kind,
+    provider: result.provider,
+    subject,
     providerMessageId: result.providerMessageId,
     errorMessage: result.error,
     campaignId: opts.campaignId,
@@ -461,4 +469,58 @@ export async function sendCampaignEmail(
       }),
     }),
   });
+}
+
+/**
+ * Admin action: tells the participant their payment has been confirmed. Only
+ * ever sent from the admin side after an admin approves a payment. A receipt
+ * upload on the public site does NOT email the participant.
+ * Throws (with the reason) if the send fails. Does nothing for a not-paid registration.
+ */
+export async function sendPaymentConfirmation(registration: Registration): Promise<void> {
+  if (registration.paymentStatus === "NOT_PAID") return;
+  const settings = await getSettingsMap();
+  const currency = settings.currency || "USD";
+  const fmt = (n: number) => `${currency} ${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  const feeRaw = parseFloat(
+    registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
+  );
+  const fee = Number.isFinite(feeRaw) ? feeRaw : null;
+  const first = firstNameOf(registration.fullName);
+  const paidInFull = registration.paymentStatus === "PAID";
+  const balance = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;
+
+  const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
+  const bodyText = paidInFull
+    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
+    : `Hi ${first},\n\nWe've confirmed your payment of ${fmt(registration.amountPaid)} for ${settings.programme_name}.${
+        balance !== null ? ` The remaining balance is ${fmt(balance)}, which you can pay using the details in your registration email.` : ""
+      }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
+
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "payment_confirmation",
+      id: registration.id,
+      to: registration.email,
+      build: async () => ({
+        subject,
+        html: renderBrandedEmail({
+          eyebrow: settings.event_caption,
+          heading: subject,
+          bodyText,
+          summaryBlocks: [
+            {
+              heading: "Payment Summary",
+              rows: [
+                ["Amount confirmed", fmt(registration.amountPaid)],
+                ...(fee !== null ? ([["Registration fee", fmt(fee)]] as [string, string][]) : []),
+                ["Status", paidInFull ? "Paid in full" : "Part payment"],
+              ],
+            },
+          ],
+        }),
+      }),
+    })
+  );
 }

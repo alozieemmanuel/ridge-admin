@@ -1,0 +1,740 @@
+From 2898f60ba5e0b6ef7dc63cc49591b4bd3ef07440 Mon Sep 17 00:00:00 2001
+From: Alozie Emmanuel <alozie@ridge-admin.local>
+Date: Sun, 20 Sep 2026 08:52:08 +0000
+Subject: [PATCH] Payment receipts: amount claimed, admin approval,
+ confirmation email on approval, receipts shown on rows
+
+---
+ .../migration.sql                             |  9 +++
+ prisma/schema.prisma                          | 15 +++-
+ src/app/admin/audit/page.tsx                  |  4 +-
+ src/app/admin/page.tsx                        | 37 +++++++--
+ src/app/admin/payments/page.tsx               | 54 ++++++++-----
+ .../api/admin/payment-proofs/[id]/route.ts    | 34 ++++++++
+ src/app/api/admin/registrations/[id]/route.ts | 25 +++++-
+ src/app/api/admin/registrations/route.ts      | 14 +++-
+ src/app/api/public/payment-proofs/route.ts    |  9 +++
+ src/components/PaymentUpdateModal.tsx         | 46 ++++++++++-
+ src/components/ProofList.tsx                  | 81 +++++++++++++++++++
+ src/lib/audit.ts                              |  3 +-
+ src/lib/notifications.ts                      | 54 +++++++++++++
+ src/lib/validation.ts                         |  3 +
+ 14 files changed, 349 insertions(+), 39 deletions(-)
+ create mode 100644 prisma/migrations/20260920100000_payment_proof_review/migration.sql
+ create mode 100644 src/components/ProofList.tsx
+
+diff --git a/prisma/migrations/20260920100000_payment_proof_review/migration.sql b/prisma/migrations/20260920100000_payment_proof_review/migration.sql
+new file mode 100644
+index 0000000..8c5b571
+--- /dev/null
++++ b/prisma/migrations/20260920100000_payment_proof_review/migration.sql
+@@ -0,0 +1,9 @@
++-- CreateEnum
++CREATE TYPE "ProofStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
++
++-- AlterTable
++ALTER TABLE "PaymentProof" ADD COLUMN     "amountClaimed" DOUBLE PRECISION,
++ADD COLUMN     "expectedAmount" DOUBLE PRECISION,
++ADD COLUMN     "reviewedAt" TIMESTAMP(3),
++ADD COLUMN     "reviewedByName" TEXT,
++ADD COLUMN     "status" "ProofStatus" NOT NULL DEFAULT 'PENDING';
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 92297da..3e561fd 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -46,6 +46,12 @@ enum MessageDirection {
+   OUTBOUND // an admin replied from the Replies inbox
+ }
+ 
++enum ProofStatus {
++  PENDING // uploaded, waiting for an admin
++  APPROVED // an admin confirmed the payment it shows
++  REJECTED
++}
++
+ enum EmailAudience {
+   ATTENDEE // the registration/brochure confirmation email
+   INTERNAL // the internal team notification
+@@ -294,11 +300,16 @@ model PaymentProof {
+   id             String       @id @default(cuid())
+   registrationId String
+   registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+-  currency       String       // USD | CAD | NGN | USD_NG
+-  method         String?      // e.g. "bank_transfer" | "interac"
++  currency       String // USD | CAD | NGN | USD_NG
++  method         String? // e.g. "bank_transfer" | "interac"
+   fileName       String
+   mimeType       String
+   size           Int
++  amountClaimed  Float? // what the participant said they paid (in `currency`)
++  expectedAmount Float? // the fee they were shown in that currency, so admins can tell full from part
++  status         ProofStatus  @default(PENDING)
++  reviewedAt     DateTime?
++  reviewedByName String?
+   data           Bytes
+   createdAt      DateTime     @default(now())
+ 
+diff --git a/src/app/admin/audit/page.tsx b/src/app/admin/audit/page.tsx
+index ebead20..d2b4dba 100644
+--- a/src/app/admin/audit/page.tsx
++++ b/src/app/admin/audit/page.tsx
+@@ -30,6 +30,7 @@ const ACTION_LABELS: Record<string, string> = {
+   "registration.checkin": "Attendance",
+   "registration.delete": "Deleted registration",
+   "registration.export": "Exported registrations",
++  "payment_proof.reject": "Rejected receipt",
+   "brochure.delete": "Deleted brochure request",
+   "campaign.send": "Sent campaign",
+   "reply.send": "Replied to participant",
+@@ -45,6 +46,7 @@ const CATEGORIES: { value: string; label: string }[] = [
+   { value: "", label: "All activity" },
+   { value: "auth", label: "Sign-ins" },
+   { value: "registration", label: "Registrations & payments" },
++  { value: "payment_proof", label: "Receipts" },
+   { value: "brochure", label: "Brochure requests" },
+   { value: "campaign", label: "Campaigns" },
+   { value: "reply", label: "Replies" },
+@@ -60,7 +62,7 @@ function summarize(row: LogRow): string {
+   const d = (row.details ?? {}) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+   switch (row.action) {
+     case "registration.payment_update":
+-      return `${d.before?.amountPaid ?? 0} → ${d.after?.amountPaid ?? 0} (${String(d.before?.status ?? "").replace("_", " ").toLowerCase()} → ${String(d.after?.status ?? "").replace("_", " ").toLowerCase()})${d.note ? ` · “${d.note}”` : ""}`;
++      return `${d.approvedReceipts ? `Approved ${d.approvedReceipts} receipt(s) · ` : ""}${d.confirmationEmail ? `confirmation email ${d.confirmationEmail} · ` : ""}${d.before?.amountPaid ?? 0} → ${d.after?.amountPaid ?? 0} (${String(d.before?.status ?? "").replace("_", " ").toLowerCase()} → ${String(d.after?.status ?? "").replace("_", " ").toLowerCase()})${d.note ? ` · “${d.note}”` : ""}`;
+     case "registration.payment_reset":
+       return `Cleared ${d.before?.amountPaid ?? 0} (was ${String(d.before?.status ?? "").replace("_", " ").toLowerCase()})`;
+     case "registration.resend_confirmation":
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index de624a3..148c4c9 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
+ import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+ import { useAutoRefresh } from "@/lib/useAutoRefresh";
+ import { useIsOwner } from "@/lib/useIsOwner";
++import ProofList, { suggestedTotal, type ProofInfo } from "@/components/ProofList";
+ import {
+   PaymentUpdateModal,
+   PAYMENT_META,
+@@ -25,6 +26,7 @@ interface RegistrationRow {
+   paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
+   paymentNote: string | null;
+   amountPaid: number;
++  proofs: ProofInfo[];
+   seatLabel: string | null;
+   seatInviteSentAt: string | null;
+   createdAt: string;
+@@ -124,21 +126,37 @@ export default function RegistrationsPage() {
+     load(true);
+   }
+ 
+-  async function handleConfirmPayment(id: string, amountPaid: number, note: string) {
++  async function handleConfirmPayment(
++    id: string,
++    amountPaid: number,
++    note: string,
++    opts: { sendConfirmation: boolean; approveProofIds: string[] }
++  ) {
+     const res = await fetch(`/api/admin/registrations/${id}`, {
+       method: "PATCH",
+       headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify({ amountPaid, note }),
++      body: JSON.stringify({ amountPaid, note, ...opts }),
+     });
+-    if (!res.ok) {
+-      const data = await res.json().catch(() => ({}));
+-      throw new Error(data.error || "Failed to update payment.");
+-    }
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok) throw new Error(data.error || "Failed to update payment.");
+     setPaymentRow(null);
+-    flash("Payment updated.", true);
++    if (data.emailError) flash(`Payment updated, but the confirmation email failed: ${data.emailError}`, false);
++    else flash(data.emailSent ? "Payment updated and confirmation emailed." : "Payment updated.", true);
+     load(true);
+   }
+ 
++  async function handleRejectProof(proof: ProofInfo) {
++    if (!window.confirm("Reject this receipt? The participant is not emailed.")) return;
++    const res = await fetch(`/api/admin/payment-proofs/${proof.id}`, { method: "PATCH" });
++    if (res.ok) {
++      flash("Receipt rejected.", true);
++      load(true);
++    } else {
++      const data = await res.json().catch(() => ({}));
++      flash(data.error || "Failed to reject receipt.", false);
++    }
++  }
++
+   async function handleReset(row: RegistrationRow) {
+     if (
+       !window.confirm(
+@@ -281,6 +299,7 @@ export default function RegistrationsPage() {
+                       >
+                         {PAYMENT_META[r.paymentStatus].label}
+                       </span>
++                      <ProofList proofs={r.proofs} onReject={handleRejectProof} />
+                     </td>
+                     <td className="px-5 py-4 whitespace-nowrap">
+                       {r.seatLabel ? (
+@@ -320,8 +339,10 @@ export default function RegistrationsPage() {
+           row={paymentRow}
+           currency={currency}
+           expectedFee={paymentRow.regType === "LATE" ? feeAmounts.late : feeAmounts.early}
++          pendingProofs={paymentRow.proofs.filter((p) => p.status === "PENDING")}
++          initialAmount={suggestedTotal(paymentRow.amountPaid, paymentRow.proofs)}
+           onClose={() => setPaymentRow(null)}
+-          onConfirm={(amountPaid, note) => handleConfirmPayment(paymentRow.id, amountPaid, note)}
++          onConfirm={(amountPaid, note, opts) => handleConfirmPayment(paymentRow.id, amountPaid, note, opts)}
+         />
+       )}
+     </AdminShell>
+diff --git a/src/app/admin/payments/page.tsx b/src/app/admin/payments/page.tsx
+index 048a97e..f73de40 100644
+--- a/src/app/admin/payments/page.tsx
++++ b/src/app/admin/payments/page.tsx
+@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
+ import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+ import { useAutoRefresh } from "@/lib/useAutoRefresh";
+ import { useIsOwner } from "@/lib/useIsOwner";
++import ProofList, { suggestedTotal, type ProofInfo } from "@/components/ProofList";
+ import { PaymentUpdateModal, PAYMENT_META, formatMoney, type PaymentStatus } from "@/components/PaymentUpdateModal";
+ 
+ interface RegistrationRow {
+@@ -18,7 +19,7 @@ interface RegistrationRow {
+   amountPaid: number;
+   paymentUpdatedAt: string | null;
+   seatInviteSentAt: string | null;
+-  proofs: { id: string; fileName: string; currency: string; method: string | null; createdAt: string }[];
++  proofs: ProofInfo[];
+ }
+ 
+ interface PaymentStats {
+@@ -156,21 +157,37 @@ export default function PaymentsPage() {
+     return row.regType === "LATE" ? feeAmounts.late : feeAmounts.early;
+   }
+ 
+-  async function handleConfirmPayment(id: string, amountPaid: number, note: string) {
++  async function handleConfirmPayment(
++    id: string,
++    amountPaid: number,
++    note: string,
++    opts: { sendConfirmation: boolean; approveProofIds: string[] }
++  ) {
+     const res = await fetch(`/api/admin/registrations/${id}`, {
+       method: "PATCH",
+       headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify({ amountPaid, note }),
++      body: JSON.stringify({ amountPaid, note, ...opts }),
+     });
+-    if (!res.ok) {
+-      const data = await res.json().catch(() => ({}));
+-      throw new Error(data.error || "Failed to update payment.");
+-    }
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok) throw new Error(data.error || "Failed to update payment.");
+     setActiveRow(null);
+-    flash("Payment updated.", true);
++    if (data.emailError) flash(`Payment updated, but the confirmation email failed: ${data.emailError}`, false);
++    else flash(data.emailSent ? "Payment updated and confirmation emailed." : "Payment updated.", true);
+     load(true);
+   }
+ 
++  async function handleRejectProof(proof: ProofInfo) {
++    if (!window.confirm("Reject this receipt? The participant is not emailed.")) return;
++    const res = await fetch(`/api/admin/payment-proofs/${proof.id}`, { method: "PATCH" });
++    if (res.ok) {
++      flash("Receipt rejected.", true);
++      load(true);
++    } else {
++      const data = await res.json().catch(() => ({}));
++      flash(data.error || "Failed to reject receipt.", false);
++    }
++  }
++
+   return (
+     <AdminShell active="/admin/payments">
+       <div className="mb-6">
+@@ -271,18 +288,7 @@ export default function PaymentsPage() {
+                           {formatMoney(r.amountPaid, currency)}
+                           {fee !== null ? ` of ${formatMoney(fee, currency)}` : ""}
+                         </span>
+-                        {r.proofs.map((p, i) => (
+-                          <a
+-                            key={p.id}
+-                            href={`/api/admin/payment-proofs/${p.id}`}
+-                            target="_blank"
+-                            rel="noopener noreferrer"
+-                            title={`${p.fileName} · ${p.currency.replace("_NG", " (Nigeria)")}${p.method ? ` · ${p.method.replace("_", " ")}` : ""} · ${new Date(p.createdAt).toLocaleString()}`}
+-                            className="block text-xs text-goldlight underline underline-offset-4 mt-1"
+-                          >
+-                            View proof{r.proofs.length > 1 ? ` ${i + 1}` : ""}
+-                          </a>
+-                        ))}
++                        <ProofList proofs={r.proofs} onReject={handleRejectProof} />
+                       </td>
+                       <td className="px-5 py-4 text-muted whitespace-nowrap">
+                         {r.paymentUpdatedAt ? new Date(r.paymentUpdatedAt).toLocaleString() : "—"}
+@@ -293,7 +299,9 @@ export default function PaymentsPage() {
+                             onClick={() => setActiveRow(r)}
+                             className="text-xs px-3.5 py-2 rounded-full border border-gold/40 text-goldlight hover:bg-gold/10 whitespace-nowrap"
+                           >
+-                            Update payment
++                            {r.proofs.some((p) => p.status === "PENDING")
++                              ? `Approve payment (${r.proofs.filter((p) => p.status === "PENDING").length})`
++                              : "Update payment"}
+                           </button>
+                           {/* The most useful next email for this person: chase the balance,
+                               or — once they've paid in full — invite them to pick a seat. */}
+@@ -336,8 +344,10 @@ export default function PaymentsPage() {
+           row={activeRow}
+           currency={currency}
+           expectedFee={expectedFeeFor(activeRow)}
++          pendingProofs={activeRow.proofs.filter((p) => p.status === "PENDING")}
++          initialAmount={suggestedTotal(activeRow.amountPaid, activeRow.proofs)}
+           onClose={() => setActiveRow(null)}
+-          onConfirm={(amountPaid, note) => handleConfirmPayment(activeRow.id, amountPaid, note)}
++          onConfirm={(amountPaid, note, opts) => handleConfirmPayment(activeRow.id, amountPaid, note, opts)}
+         />
+       )}
+     </AdminShell>
+diff --git a/src/app/api/admin/payment-proofs/[id]/route.ts b/src/app/api/admin/payment-proofs/[id]/route.ts
+index 4731214..678a82e 100644
+--- a/src/app/api/admin/payment-proofs/[id]/route.ts
++++ b/src/app/api/admin/payment-proofs/[id]/route.ts
+@@ -1,5 +1,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
++import { getSession } from "@/lib/auth";
++import { logAdminAction } from "@/lib/audit";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -19,3 +21,35 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
+     },
+   });
+ }
++
++/** Rejects an uploaded receipt (e.g. it's unreadable or doesn't match). No email is sent. */
++export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  const session = await getSession();
++
++  const proof = await prisma.paymentProof.findUnique({
++    where: { id },
++    select: { id: true, status: true, registrationId: true, registration: { select: { fullName: true } } },
++  });
++  if (!proof) return NextResponse.json({ error: "Not found." }, { status: 404 });
++  if (proof.status !== "PENDING") {
++    return NextResponse.json({ error: "This receipt has already been reviewed." }, { status: 409 });
++  }
++
++  await prisma.paymentProof.update({
++    where: { id },
++    data: { status: "REJECTED", reviewedAt: new Date(), reviewedByName: session?.name ?? null },
++  });
++  await logAdminAction(
++    session,
++    {
++      action: "payment_proof.reject",
++      entityType: "registration",
++      entityId: proof.registrationId,
++      entityLabel: proof.registration.fullName,
++      details: { proofId: id },
++    },
++    request
++  );
++  return NextResponse.json({ result: "success" });
++}
+diff --git a/src/app/api/admin/registrations/[id]/route.ts b/src/app/api/admin/registrations/[id]/route.ts
+index cf27300..1c71f27 100644
+--- a/src/app/api/admin/registrations/[id]/route.ts
++++ b/src/app/api/admin/registrations/[id]/route.ts
+@@ -4,6 +4,7 @@ import { confirmPaymentSchema } from "@/lib/validation";
+ import { getSettingsMap } from "@/lib/settings";
+ import { getSession } from "@/lib/auth";
+ import { logAdminAction } from "@/lib/audit";
++import { sendPaymentConfirmation } from "@/lib/notifications";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -57,6 +58,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     },
+   });
+ 
++  // Receipts the admin approved with this payment.
++  const approveIds = parsed.data.approveProofIds ?? [];
++  if (approveIds.length > 0) {
++    await prisma.paymentProof.updateMany({
++      where: { id: { in: approveIds }, registrationId: id, status: "PENDING" },
++      data: { status: "APPROVED", reviewedAt: new Date(), reviewedByName: session?.name ?? null },
++    });
++  }
++
++  // The participant is only emailed about their payment once an admin has approved it here.
++  let emailError: string | null = null;
++  const wantsEmail = parsed.data.sendConfirmation === true;
++  if (wantsEmail) {
++    try {
++      await sendPaymentConfirmation(registration);
++    } catch (err) {
++      emailError = err instanceof Error ? err.message : "Failed to send the confirmation email.";
++    }
++  }
++
+   await logAdminAction(
+     session,
+     {
+@@ -69,12 +90,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+         after: { amountPaid, status: paymentStatus },
+         expectedFee,
+         ...(parsed.data.note ? { note: parsed.data.note } : {}),
++        ...(approveIds.length ? { approvedReceipts: approveIds.length } : {}),
++        ...(wantsEmail ? { confirmationEmail: emailError ? `failed: ${emailError.slice(0, 200)}` : "sent" } : {}),
+       },
+     },
+     request
+   );
+ 
+-  return NextResponse.json({ result: "success", registration, expectedFee });
++  return NextResponse.json({ result: "success", registration, expectedFee, emailSent: wantsEmail && !emailError, emailError });
+ }
+ 
+ /**
+diff --git a/src/app/api/admin/registrations/route.ts b/src/app/api/admin/registrations/route.ts
+index 5614541..f325a33 100644
+--- a/src/app/api/admin/registrations/route.ts
++++ b/src/app/api/admin/registrations/route.ts
+@@ -65,7 +65,16 @@ export async function GET(request: NextRequest) {
+         },
+         seat: { select: { label: true } },
+         paymentProofs: {
+-          select: { id: true, fileName: true, currency: true, method: true, createdAt: true },
++          select: {
++            id: true,
++            fileName: true,
++            currency: true,
++            method: true,
++            amountClaimed: true,
++            expectedAmount: true,
++            status: true,
++            createdAt: true,
++          },
+           orderBy: { createdAt: "asc" },
+         },
+       },
+@@ -145,6 +154,9 @@ export async function GET(request: NextRequest) {
+       fileName: p.fileName,
+       currency: p.currency,
+       method: p.method,
++      amountClaimed: p.amountClaimed,
++      expectedAmount: p.expectedAmount,
++      status: p.status,
+       createdAt: p.createdAt.toISOString(),
+     })),
+     createdAt: r.createdAt.toISOString(),
+diff --git a/src/app/api/public/payment-proofs/route.ts b/src/app/api/public/payment-proofs/route.ts
+index 9bda9ad..4a07cf9 100644
+--- a/src/app/api/public/payment-proofs/route.ts
++++ b/src/app/api/public/payment-proofs/route.ts
+@@ -44,6 +44,13 @@ export async function POST(request: NextRequest) {
+   if (!CURRENCIES.has(currency)) return jsonWithCors(request, { error: "Choose a currency." }, 400);
+   const method = METHODS.has(methodRaw) ? methodRaw : null;
+ 
++  const amountClaimed = parseFloat(String(form.get("amount") || ""));
++  if (!Number.isFinite(amountClaimed) || amountClaimed <= 0 || amountClaimed > 1_000_000_000) {
++    return jsonWithCors(request, { error: "Enter the amount you paid." }, 400);
++  }
++  const expectedRaw = parseFloat(String(form.get("expected") || ""));
++  const expectedAmount = Number.isFinite(expectedRaw) && expectedRaw > 0 ? expectedRaw : null;
++
+   const file = form.get("file");
+   if (!(file instanceof File) || file.size === 0) {
+     return jsonWithCors(request, { error: "Choose a file to upload." }, 400);
+@@ -71,6 +78,8 @@ export async function POST(request: NextRequest) {
+       registrationId,
+       currency,
+       method,
++      amountClaimed,
++      expectedAmount,
+       fileName: (file.name || "proof").replace(/[^\w.\- ]+/g, "_").slice(0, 120),
+       mimeType,
+       size: bytes.length,
+diff --git a/src/components/PaymentUpdateModal.tsx b/src/components/PaymentUpdateModal.tsx
+index fdd9901..a2c7ddc 100644
+--- a/src/components/PaymentUpdateModal.tsx
++++ b/src/components/PaymentUpdateModal.tsx
+@@ -1,6 +1,7 @@
+ "use client";
+ 
+ import { useEffect, useState } from "react";
++import { claimedText, claimKind, type ProofInfo } from "@/components/ProofList";
+ 
+ export type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
+ 
+@@ -54,15 +55,23 @@ export function PaymentUpdateModal({
+   expectedFee,
+   onClose,
+   onConfirm,
++  pendingProofs = [],
++  initialAmount,
+ }: {
+   row: { fullName: string; amountPaid: number };
+   currency: string;
+   expectedFee: number | null;
+   onClose: () => void;
+-  onConfirm: (amountPaid: number, note: string) => Promise<void>;
++  /** Receipts waiting for approval; confirming this payment approves them. */
++  pendingProofs?: ProofInfo[];
++  /** Pre-filled "new total amount received". */
++  initialAmount?: number;
++  onConfirm: (amountPaid: number, note: string, opts: { sendConfirmation: boolean; approveProofIds: string[] }) => Promise<void>;
+ }) {
+   const [step, setStep] = useState<"input" | "confirm">("input");
+-  const [amountText, setAmountText] = useState("");
++  const [amountText, setAmountText] = useState(initialAmount !== undefined ? String(initialAmount) : "");
++  // Approving a participant's receipt is the moment they get told their payment is confirmed.
++  const [sendConfirmation, setSendConfirmation] = useState(pendingProofs.length > 0);
+   const [note, setNote] = useState("");
+   const [error, setError] = useState<string | null>(null);
+   const [submitting, setSubmitting] = useState(false);
+@@ -84,7 +93,7 @@ export function PaymentUpdateModal({
+     setSubmitting(true);
+     setError(null);
+     try {
+-      await onConfirm(amount, note);
++      await onConfirm(amount, note, { sendConfirmation: sendConfirmation && previewStatus !== "NOT_PAID", approveProofIds: pendingProofs.map((p) => p.id) });
+     } catch (err) {
+       setError(err instanceof Error ? err.message : "Failed to update payment.");
+       setSubmitting(false);
+@@ -100,6 +109,22 @@ export function PaymentUpdateModal({
+ 
+         {step === "input" && (
+           <>
++            {pendingProofs.length > 0 && (
++              <div className="border border-amber-400/30 rounded-xl p-3 mb-4 text-xs text-muted space-y-1">
++                <p className="text-amber-300">
++                  {pendingProofs.length} receipt{pendingProofs.length === 1 ? "" : "s"} waiting for approval
++                </p>
++                {pendingProofs.map((p) => (
++                  <p key={p.id}>
++                    {claimKind(p) ? `${claimKind(p)} payment · ` : ""}claims {claimedText(p)} ·{" "}
++                    <a href={`/api/admin/payment-proofs/${p.id}`} target="_blank" rel="noopener noreferrer" className="text-goldlight underline underline-offset-4">
++                      view receipt
++                    </a>
++                  </p>
++                ))}
++                <p>Check the receipt against your bank, then enter the total received in {currency}. Confirming approves the receipt(s).</p>
++              </div>
++            )}
+             <label className="block text-xs uppercase tracking-wider text-muted mb-2">
+               Amount received ({currency})
+             </label>
+@@ -173,6 +198,21 @@ export function PaymentUpdateModal({
+               date as the payment update date. Continue?
+             </p>
+ 
++            {previewStatus !== "NOT_PAID" && (
++              <label className="flex items-start gap-2 text-sm text-muted mb-5 normal-case tracking-normal font-normal cursor-pointer">
++                <input
++                  type="checkbox"
++                  checked={sendConfirmation}
++                  onChange={(e) => setSendConfirmation(e.target.checked)}
++                  className="mt-1"
++                />
++                <span>
++                  Email <span className="text-fg">{row.fullName}</span> a payment confirmation
++                  {pendingProofs.length === 0 ? " (off by default — no receipt is waiting)" : ""}
++                </span>
++              </label>
++            )}
++
+             {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
+ 
+             <div className="flex items-center justify-end gap-3">
+diff --git a/src/components/ProofList.tsx b/src/components/ProofList.tsx
+new file mode 100644
+index 0000000..8dcdb8f
+--- /dev/null
++++ b/src/components/ProofList.tsx
+@@ -0,0 +1,81 @@
++"use client";
++
++export interface ProofInfo {
++  id: string;
++  fileName: string;
++  currency: string;
++  method: string | null;
++  amountClaimed: number | null;
++  expectedAmount: number | null;
++  status: "PENDING" | "APPROVED" | "REJECTED";
++  createdAt: string;
++}
++
++const SYMBOL: Record<string, string> = { USD: "$", CAD: "C$", NGN: "₦", USD_NG: "US$" };
++const CURRENCY_NAME: Record<string, string> = { USD: "USD", CAD: "CAD", NGN: "Naira", USD_NG: "USD (Nigeria)" };
++
++/** Currencies that are the same as the programme currency, so a claimed amount can be applied directly. */
++export const PROGRAMME_CURRENCY_CODES = new Set(["USD", "USD_NG"]);
++
++export function claimedText(p: ProofInfo): string {
++  if (p.amountClaimed === null) return "Amount not stated";
++  return `${SYMBOL[p.currency] ?? ""}${p.amountClaimed.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
++}
++
++/** "Full" / "Part" as claimed by the participant against the fee they were shown; null if unknown. */
++export function claimKind(p: ProofInfo): "Full" | "Part" | null {
++  if (p.amountClaimed === null || p.expectedAmount === null) return null;
++  return p.amountClaimed >= p.expectedAmount ? "Full" : "Part";
++}
++
++/** Suggested new total for the payment dialog: what's on file plus pending receipts, when they're in the programme currency. */
++export function suggestedTotal(amountPaid: number, proofs: ProofInfo[]): number | undefined {
++  const pending = proofs.filter((p) => p.status === "PENDING");
++  if (pending.length === 0) return undefined;
++  if (!pending.every((p) => p.amountClaimed !== null && PROGRAMME_CURRENCY_CODES.has(p.currency))) return undefined;
++  return amountPaid + pending.reduce((sum, p) => sum + (p.amountClaimed ?? 0), 0);
++}
++
++const STATUS_STYLE: Record<ProofInfo["status"], string> = {
++  PENDING: "border-amber-400/40 text-amber-300",
++  APPROVED: "border-emerald-400/40 text-emerald-300",
++  REJECTED: "border-red-400/40 text-red-300",
++};
++
++/** The payment receipts a participant uploaded, with what they claim to have paid and a link to view each one. */
++export default function ProofList({ proofs, onReject }: { proofs: ProofInfo[]; onReject?: (proof: ProofInfo) => void }) {
++  if (proofs.length === 0) return null;
++  return (
++    <div className="mt-2 space-y-1.5">
++      {proofs.map((p) => {
++        const kind = claimKind(p);
++        return (
++          <div key={p.id} className="text-xs leading-tight">
++            <span className="text-fg">
++              {kind ? `${kind} payment · ` : ""}
++              {claimedText(p)}
++            </span>
++            <span className="text-muted"> {CURRENCY_NAME[p.currency] ?? p.currency}{p.method ? ` · ${p.method.replace("_", " ")}` : ""}</span>
++            <span className={`ml-2 rounded-full border px-2 py-0.5 ${STATUS_STYLE[p.status]}`}>{p.status.toLowerCase()}</span>
++            <div className="mt-0.5 space-x-3">
++              <a
++                href={`/api/admin/payment-proofs/${p.id}`}
++                target="_blank"
++                rel="noopener noreferrer"
++                title={`${p.fileName} · uploaded ${new Date(p.createdAt).toLocaleString()}`}
++                className="text-goldlight underline underline-offset-4"
++              >
++                View receipt
++              </a>
++              {onReject && p.status === "PENDING" && (
++                <button onClick={() => onReject(p)} className="text-red-400 underline underline-offset-4">
++                  Reject
++                </button>
++              )}
++            </div>
++          </div>
++        );
++      })}
++    </div>
++  );
++}
+diff --git a/src/lib/audit.ts b/src/lib/audit.ts
+index 29f287c..5b35cfd 100644
+--- a/src/lib/audit.ts
++++ b/src/lib/audit.ts
+@@ -18,6 +18,7 @@ export type AuditAction =
+   | "registration.checkin"
+   | "registration.delete"
+   | "registration.export"
++  | "payment_proof.reject"
+   | "brochure.delete"
+   | "campaign.send"
+   | "reply.send"
+@@ -30,7 +31,7 @@ export type AuditAction =
+ 
+ export interface AuditEntry {
+   action: AuditAction;
+-  entityType?: "registration" | "brochure_request" | "campaign" | "seat" | "template" | "admin" | "reply" | "data";
++  entityType?: "payment_proof" | "registration" | "brochure_request" | "campaign" | "seat" | "template" | "admin" | "reply" | "data";
+   entityId?: string;
+   /** Human-readable label, e.g. the participant's name — so the log reads without joins. */
+   entityLabel?: string;
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index cc3cedc..84fb03e 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -481,3 +481,57 @@ export async function sendCampaignEmail(
+     }),
+   });
+ }
++
++/**
++ * Admin action: tells the participant their payment has been confirmed. This is
++ * only ever sent from the admin side, after an admin approves a payment — a
++ * receipt upload on the public site does NOT trigger any email to the participant.
++ * Throws (with the reason) if the send fails. Does nothing for a not-paid registration.
++ */
++export async function sendPaymentConfirmation(registration: Registration): Promise<void> {
++  if (registration.paymentStatus === "NOT_PAID") return;
++  const settings = await getSettingsMap();
++  const currency = settings.currency || "USD";
++  const fmt = (n: number) => `${currency} ${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
++  const feeRaw = parseFloat(
++    registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
++  );
++  const fee = Number.isFinite(feeRaw) ? feeRaw : null;
++  const first = firstNameOf(registration.fullName);
++  const paidInFull = registration.paymentStatus === "PAID";
++  const balance = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;
++
++  const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
++  const bodyText = paidInFull
++    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
++    : `Hi ${first},\n\nWe've confirmed your payment of ${fmt(registration.amountPaid)} for ${settings.programme_name}.${
++        balance !== null ? ` The remaining balance is ${fmt(balance)}, which you can pay using the details in your registration email.` : ""
++      }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
++
++  throwIfFailed(
++    await deliverAttendeeEmail({
++      source: "REGISTRATION",
++      id: registration.id,
++      to: registration.email,
++      kind: "payment_confirmation",
++      build: async () => ({
++        subject,
++        html: renderBrandedEmail({
++          eyebrow: settings.event_caption,
++          heading: subject,
++          bodyText,
++          summaryBlocks: [
++            {
++              heading: "Payment Summary",
++              rows: [
++                ["Amount confirmed", fmt(registration.amountPaid)],
++                ...(fee !== null ? ([["Registration fee", fmt(fee)]] as [string, string][]) : []),
++                ["Status", paidInFull ? "Paid in full" : "Part payment"],
++              ],
++            },
++          ],
++        }),
++      }),
++    })
++  );
++}
+diff --git a/src/lib/validation.ts b/src/lib/validation.ts
+index 4697fa4..a6faf76 100644
+--- a/src/lib/validation.ts
++++ b/src/lib/validation.ts
+@@ -61,6 +61,9 @@ export const confirmPaymentSchema = z.object({
+     .min(0, "Amount can't be negative.")
+     .max(10_000_000, "That amount looks too large — double check it."),
+   note: z.string().trim().max(500).optional().or(z.literal("")),
++  // Approving uploaded receipts: mark them approved, and optionally email the participant.
++  approveProofIds: z.array(z.string()).max(20).optional(),
++  sendConfirmation: z.boolean().optional(),
+ });
+ 
+ export const registrationActionSchema = z.object({
+-- 
+2.43.0
+

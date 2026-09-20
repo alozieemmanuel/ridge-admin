@@ -119,6 +119,7 @@ export type EmailKind =
   | "brochure"
   | "seat_invite"
   | "payment_reminder"
+  | "payment_confirmation"
   | "internal"
   | "campaign";
 
@@ -131,8 +132,11 @@ export interface SendEmailInput {
   tags?: { name: string; value: string }[];
 }
 
+export type EmailProvider = "GMAIL" | "RESEND";
+
 export interface SendEmailResult {
   success: boolean;
+  provider?: EmailProvider;
   providerMessageId?: string;
   error?: string;
 }
@@ -167,12 +171,12 @@ async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
   if (!apiKey) {
     if (process.env.NODE_ENV === "production") {
       console.error("[email] RESEND_API_KEY is not set in this deployment — email not sent.");
-      return { success: false, error: "RESEND_API_KEY is not set on the server." };
+      return { success: false, provider: "RESEND", error: "RESEND_API_KEY is not set on the server." };
     }
     console.warn(
       `[email:dev-mode] RESEND_API_KEY not set — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
     );
-    return { success: true, providerMessageId: undefined };
+    return { success: true, provider: "RESEND", providerMessageId: undefined };
   }
 
   try {
@@ -195,14 +199,14 @@ async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
     if (!response.ok) {
       const errText = await response.text();
       console.error("[email] Resend send failed:", response.status, errText);
-      return { success: false, error: describeResendError(response.status, errText) };
+      return { success: false, provider: "RESEND", error: describeResendError(response.status, errText) };
     }
 
     const data = (await response.json()) as { id?: string };
-    return { success: true, providerMessageId: data.id };
+    return { success: true, provider: "RESEND", providerMessageId: data.id };
   } catch (err) {
     console.error("[email] Resend request threw:", err);
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return { success: false, provider: "RESEND", error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -215,8 +219,8 @@ async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResu
     replyTo: input.replyTo || undefined,
   });
   return res.ok
-    ? { success: true, providerMessageId: res.id }
-    : { success: false, error: res.error || "Gmail send failed." };
+    ? { success: true, provider: "GMAIL", providerMessageId: res.id }
+    : { success: false, provider: "GMAIL", error: res.error || "Gmail send failed." };
 }
 
 /**
@@ -242,6 +246,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
 
   return {
     success: false,
+    provider: "RESEND",
     error: `Gmail: ${gmailResult.error} | Resend: ${resendResult.error}`,
   };
 }

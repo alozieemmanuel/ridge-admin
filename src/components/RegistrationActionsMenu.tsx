@@ -27,21 +27,32 @@ interface Props {
   paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
   seatInviteSentAt: string | null;
   onAction: (action: RegistrationAction) => void;
+  /** Opens the "Update payment" dialog. */
+  onUpdatePayment?: () => void;
+  /** Clears the recorded payment (the page confirms first). Disabled when nothing is recorded. */
+  onResetPayment?: () => void;
   /** Pass only for owners; renders a destructive "Delete registration" item. */
   onDelete?: () => void;
 }
 
-const MENU_WIDTH = 240;
-const MENU_HEIGHT_ESTIMATE = 190;
+const MENU_WIDTH = 260;
+const MENU_HEIGHT_ESTIMATE = 330;
 
-export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentAt, onAction, onDelete }: Props) {
+export default function RegistrationActionsMenu({
+  paymentStatus,
+  seatInviteSentAt,
+  onAction,
+  onUpdatePayment,
+  onResetPayment,
+  onDelete,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // The tables scroll inside an overflow container, which would clip an
-  // absolutely-positioned dropdown — so the menu is fixed to the viewport
+  // absolutely-positioned dropdown, so the menu is fixed to the viewport
   // and placed relative to the button (flipping upward near the bottom).
   function toggle() {
     if (open) {
@@ -75,15 +86,16 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
     };
   }, [open]);
 
-  const seatDisabled = paymentStatus !== "PAID";
   const reminderDisabled = paymentStatus === "PAID";
+  const resetDisabled = paymentStatus === "NOT_PAID";
 
   function choose(action: RegistrationAction) {
     setOpen(false);
     onAction(action);
   }
 
-  const itemClass = "w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
+  const itemClass =
+    "block w-full text-left px-4 py-3 text-sm border-b border-border/50 text-fg disabled:text-muted/70 disabled:cursor-not-allowed enabled:hover:bg-gold/10";
 
   return (
     <>
@@ -102,34 +114,57 @@ export default function RegistrationActionsMenu({ paymentStatus, seatInviteSentA
           style={{ position: "fixed", width: MENU_WIDTH, ...pos }}
           className="bg-cardbg border border-border rounded-xl shadow-xl z-50 overflow-hidden"
         >
-          <button onClick={() => choose("resend_confirmation")} className={itemClass}>
-            Resend confirmation email
-          </button>
-          <button
-            onClick={() => choose("send_seat_invite")}
-            disabled={seatDisabled}
-            title={seatDisabled ? "Available once payment is marked as fully paid" : undefined}
-            className={itemClass}
-          >
+          {/* Seat selection is always clickable. If the person hasn't paid in
+              full the server refuses and the page shows why, rather than the
+              option silently being greyed out. */}
+          <button onClick={() => choose("send_seat_invite")} className={itemClass}>
             {seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
-            {seatDisabled && <span className="block text-xs text-muted mt-0.5">Once fully paid</span>}
+            {paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>}
           </button>
           <button
             onClick={() => choose("send_payment_reminder")}
             disabled={reminderDisabled}
             title={reminderDisabled ? "Already fully paid" : undefined}
-            className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
+            className={itemClass}
           >
             Send payment reminder
             {reminderDisabled && <span className="block text-xs text-muted mt-0.5">Already fully paid</span>}
           </button>
+          <button onClick={() => choose("resend_confirmation")} className={itemClass}>
+            Resend confirmation email
+          </button>
+          {onUpdatePayment && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                onUpdatePayment();
+              }}
+              className={itemClass}
+            >
+              Update payment…
+            </button>
+          )}
+          {onResetPayment && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                onResetPayment();
+              }}
+              disabled={resetDisabled}
+              title={resetDisabled ? "No payment recorded" : undefined}
+              className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
+            >
+              Reset payment…
+              {resetDisabled && <span className="block text-xs text-muted mt-0.5">No payment recorded</span>}
+            </button>
+          )}
           {onDelete && (
             <button
               onClick={() => {
                 setOpen(false);
                 onDelete();
               }}
-              className="w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-red-500/10"
+              className="block w-full text-left px-4 py-3 text-sm text-red-400 hover:bg-red-500/10"
             >
               Delete registration…
             </button>

@@ -10,13 +10,14 @@ interface AdminSession {
   role: "OWNER" | "ADMIN";
 }
 
-const TABS: { href: string; label: string }[] = [
+const TABS: { href: string; label: string; ownerOnly?: boolean }[] = [
   { href: "/admin", label: "Registrations" },
   { href: "/admin/payments", label: "Payments" },
   { href: "/admin/brochure-requests", label: "Brochure Requests" },
   { href: "/admin/seats", label: "Day 7 Seating" },
   { href: "/admin/campaigns", label: "Campaigns" },
-  { href: "/admin/admins", label: "Manage Admins" },
+  { href: "/admin/audit", label: "Audit Log", ownerOnly: true },
+  { href: "/admin/admins", label: "Manage Admins", ownerOnly: true },
 ];
 
 export default function AdminShell({
@@ -64,7 +65,7 @@ export default function AdminShell({
           </button>
         </div>
         <nav className="max-w-6xl mx-auto px-6 flex gap-2 pb-4 flex-wrap">
-          {TABS.map((tab) => (
+          {TABS.filter((tab) => !tab.ownerOnly || session?.role === "OWNER").map((tab) => (
             <Link
               key={tab.href}
               href={tab.href}
