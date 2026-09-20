@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
+import { prisma } from "@/lib/prisma";
 import { SESSION_COOKIE_NAME } from "@/lib/session-constants";
 
 export { SESSION_COOKIE_NAME };
@@ -39,6 +40,12 @@ export async function createSessionToken(payload: SessionPayload): Promise<strin
     .sign(getSecretKey());
 }
 
+/**
+ * Checks the token's signature and expiry only. It does NOT look at the
+ * database, so it is safe to call from middleware / the edge runtime.
+ * Use getSession() in route handlers and server components, which also
+ * confirms the admin still exists and hasn't been archived.
+ */
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecretKey());
@@ -61,12 +68,34 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
   }
 }
 
-/** Reads and verifies the session from cookies in a Server Component or Route Handler. */
+/**
+ * Reads and verifies the session from cookies in a Server Component or Route
+ * Handler. On top of the token check, it confirms against the database that
+ * the admin still exists and isn't archived, and it returns their CURRENT
+ * name, email and role rather than what was stored in the token at login.
+ * So archiving, removing, editing or demoting an admin takes effect on their
+ * very next request instead of after the 7-day token expires.
+ */
 export async function getSession(): Promise<SessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
-  return verifySessionToken(token);
+
+  const session = await verifySessionToken(token);
+  if (!session) return null;
+
+  const admin = await prisma.admin.findUnique({
+    where: { id: session.adminId },
+    select: { id: true, name: true, email: true, role: true, archivedAt: true },
+  });
+  if (!admin || admin.archivedAt) return null;
+
+  return {
+    adminId: admin.id,
+    email: admin.email,
+    name: admin.name,
+    role: admin.role,
+  };
 }
 
 export async function setSessionCookie(token: string) {

@@ -17,7 +17,7 @@ const TABS: { href: string; label: string; ownerOnly?: boolean }[] = [
   { href: "/admin/seats", label: "Day 7 Seating" },
   { href: "/admin/campaigns", label: "Campaigns" },
   { href: "/admin/audit", label: "Audit Log", ownerOnly: true },
-  { href: "/admin/admins", label: "Manage Admins", ownerOnly: true },
+  { href: "/admin/admins", label: "Manage Admins" },
 ];
 
 export default function AdminShell({

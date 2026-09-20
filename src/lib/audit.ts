@@ -27,6 +27,10 @@ export type AuditAction =
   | "settings.update"
   | "admin.create"
   | "admin.delete"
+  | "admin.update"
+  | "admin.password_change"
+  | "admin.archive"
+  | "admin.restore"
   | "data.clear";
 
 export interface AuditEntry {

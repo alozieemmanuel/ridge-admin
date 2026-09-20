@@ -36,7 +36,7 @@ function verifySignature(rawBody: string, headers: Headers): boolean {
   const svixSignature = headers.get("svix-signature");
   if (!svixId || !svixTimestamp || !svixSignature) return false;
 
-  const secretBytes = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
+  const secretBytes = new Uint8Array(Buffer.from(secret.replace(/^whsec_/, ""), "base64"));
   const signedContent = `${svixId}.${svixTimestamp}.${rawBody}`;
   const expected = crypto.createHmac("sha256", secretBytes).update(signedContent).digest("base64");
 
@@ -47,7 +47,7 @@ function verifySignature(rawBody: string, headers: Headers): boolean {
 
   return provided.some((sig) => {
     try {
-      return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+      return crypto.timingSafeEqual(new Uint8Array(Buffer.from(sig)), new Uint8Array(Buffer.from(expected)));
     } catch {
       return false;
     }

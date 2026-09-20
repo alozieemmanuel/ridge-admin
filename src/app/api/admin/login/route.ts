@@ -20,12 +20,13 @@ export async function POST(request: NextRequest) {
 
   const { email, password } = parsed.data;
 
-  // Generic error message on every failure path below (unknown email vs wrong
-  // password) so the endpoint doesn't reveal which admin emails exist.
+  // Generic error message on every failure path below (unknown email, archived
+  // account, wrong password) so the endpoint doesn't reveal which admin emails
+  // exist or which accounts are archived.
   const genericError = NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
 
   const admin = await prisma.admin.findUnique({ where: { email: email.toLowerCase() } });
-  if (!admin) return genericError;
+  if (!admin || admin.archivedAt) return genericError;
 
   const valid = await verifyPassword(password, admin.passwordHash);
   if (!valid) return genericError;

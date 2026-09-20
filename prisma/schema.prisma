@@ -220,6 +220,7 @@ model Admin {
   role         AdminRole @default(ADMIN)
   createdAt    DateTime  @default(now())
   lastLoginAt  DateTime?
+  archivedAt   DateTime? // set = archived: can't sign in, hidden from the default list
 }
 
 // The Day 7 venue floor plan: round tables labeled A, B, C... AA, AB...

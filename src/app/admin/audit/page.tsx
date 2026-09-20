@@ -38,6 +38,10 @@ const ACTION_LABELS: Record<string, string> = {
   "settings.update": "Changed settings",
   "admin.create": "Added admin",
   "admin.delete": "Removed admin",
+  "admin.update": "Edited admin",
+  "admin.password_change": "Changed admin password",
+  "admin.archive": "Archived admin",
+  "admin.restore": "Restored admin",
   "data.clear": "Cleared data",
 };
 
