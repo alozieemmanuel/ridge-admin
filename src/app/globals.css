@@ -2,10 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Dark (default) */
+  --c-pagebg: 10 8 6;
+  --c-cardbg: 21 17 11;
+  --c-inputbg: 14 11 8; /* the old black/30 over the card color, as a solid */
+  --c-fg: 245 239 224;
+  --c-muted: 168 153 119;
+  --c-border: 52 39 15;
+  --c-gold: 201 151 46;
+  --c-golddark: 156 114 32;
+  --c-goldlight: 241 200 102;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --c-pagebg: 250 247 240;
+  --c-cardbg: 255 255 255;
+  --c-inputbg: 255 255 255;
+  --c-fg: 31 26 18;
+  --c-muted: 107 94 69;
+  --c-border: 229 213 178;
+  --c-gold: 201 151 46;
+  --c-golddark: 156 114 32;
+  --c-goldlight: 241 200 102;
+  color-scheme: light;
+}
+
 html,
 body {
-  background: #0a0806;
-  color: #f5efe0;
+  background: rgb(var(--c-pagebg));
+  color: rgb(var(--c-fg));
 }
 
 * {
@@ -19,7 +46,25 @@ body {
 input,
 textarea,
 select {
-  color-scheme: dark;
+  color-scheme: inherit;
+}
+
+/* Gold TEXT needs to be darker on a light page; the gold button gradients keep the bright value. */
+:root[data-theme="light"] .text-goldlight {
+  color: #8a6114;
+}
+
+/* Status colors are tuned for dark backgrounds; darken them in light mode. */
+:root[data-theme="light"] .text-red-400,
+:root[data-theme="light"] .text-red-300 {
+  color: #b91c1c;
+}
+:root[data-theme="light"] .text-emerald-400,
+:root[data-theme="light"] .text-emerald-300 {
+  color: #047857;
+}
+:root[data-theme="light"] .text-amber-300 {
+  color: #b45309;
 }
 
 /* Slim, gold-tinted horizontal scrollbar for wide tables (Registrations,

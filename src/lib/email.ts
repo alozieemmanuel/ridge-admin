@@ -111,7 +111,7 @@ export function renderBrandedEmail(opts: BrandedEmailOptions): string {
 
 /**
  * kind decides the channel:
- *   "campaign"  -> Resend (bulk, with delivery/open/bounce tracking)
+ *   "campaign"  -> Brevo (broadcast email, with delivery/open/bounce tracking)
  *   anything else -> Gmail (confirmation, payment_reminder, seat_invite, internal, brochure)
  */
 export type EmailKind =
@@ -134,7 +134,7 @@ export interface SendEmailInput {
   tags?: { name: string; value: string }[];
 }
 
-export type EmailProvider = "GMAIL" | "RESEND";
+export type EmailProvider = "GMAIL" | "BREVO";
 
 export interface SendEmailResult {
   success: boolean;
@@ -143,72 +143,87 @@ export interface SendEmailResult {
   error?: string;
 }
 
-/** True for "a@b.co" or "Name <a@b.co>" — the two shapes Resend accepts for from / reply_to. */
+/** True for "a@b.co" or "Name <a@b.co>" — the two shapes accepted for from / reply-to. */
 export function isValidEmailAddress(value: string): boolean {
   const v = value.trim();
   return /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(v) || /^[^<>]*<[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+>$/.test(v);
 }
 
-/** Resend errors arrive as JSON like {"name":"validation_error","message":"..."} — pull out the readable part. */
-function describeResendError(status: number, body: string): string {
+/** Splits "Name <a@b.co>" or "a@b.co" into the { name, email } shape Brevo expects. */
+function parseAddress(value: string): { name?: string; email: string } {
+  const v = value.trim();
+  const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+  if (match) {
+    const name = match[1].trim();
+    return name ? { name, email: match[2].trim() } : { email: match[2].trim() };
+  }
+  return { email: v };
+}
+
+/** Brevo errors arrive as JSON like {"code":"invalid_parameter","message":"..."} — pull out the readable part. */
+function describeBrevoError(status: number, body: string): string {
   try {
-    const parsed = JSON.parse(body) as { message?: string; name?: string };
-    if (parsed.message) return `Resend ${status}${parsed.name ? ` (${parsed.name})` : ""}: ${parsed.message}`;
+    const parsed = JSON.parse(body) as { message?: string; code?: string };
+    if (parsed.message) return `Brevo ${status}${parsed.code ? ` (${parsed.code})` : ""}: ${parsed.message}`;
   } catch {
     // not JSON — fall through to the raw body
   }
-  return `Resend ${status}: ${body.slice(0, 300)}`;
+  return `Brevo ${status}: ${body.slice(0, 300)}`;
 }
 
 /**
- * Sends via Resend. In production a missing RESEND_API_KEY is a hard failure
- * (so the dashboard shows "Failed" with the reason, rather than a fake "Sent").
- * Outside production it logs the email to the console instead, so local
- * development works without live email credentials.
+ * Sends via Brevo's transactional email API (used for campaigns/broadcasts only).
+ * In production a missing BREVO_API_KEY is a hard failure (so the dashboard shows
+ * "Failed" with the reason, rather than a fake "Sent"). Outside production it logs
+ * the email to the console instead, so local development works without credentials.
+ *
+ * The sender in EMAIL_FROM must be a sender/domain you have verified in Brevo.
  */
-async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.EMAIL_FROM || "RIDGE 2026 <onboarding@resend.dev>";
+async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
+  const apiKey = process.env.BREVO_API_KEY;
+  const from = process.env.EMAIL_FROM || "RIDGE 2026 <ridge@pertinencegroup.com>";
 
   if (!apiKey) {
     if (process.env.NODE_ENV === "production") {
-      console.error("[email] RESEND_API_KEY is not set in this deployment — email not sent.");
-      return { success: false, provider: "RESEND", error: "RESEND_API_KEY is not set on the server." };
+      console.error("[email] BREVO_API_KEY is not set in this deployment — email not sent.");
+      return { success: false, provider: "BREVO", error: "BREVO_API_KEY is not set on the server." };
     }
     console.warn(
-      `[email:dev-mode] RESEND_API_KEY not set — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
+      `[email:dev-mode] BREVO_API_KEY not set — logging email instead of sending.\nTo: ${input.to}\nSubject: ${input.subject}`
     );
-    return { success: true, provider: "RESEND", providerMessageId: undefined };
+    return { success: true, provider: "BREVO", providerMessageId: undefined };
   }
 
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        "api-key": apiKey,
         "Content-Type": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({
-        from,
-        to: input.to,
+        sender: parseAddress(from),
+        to: [{ email: input.to }],
         subject: input.subject,
-        html: input.html,
-        reply_to: input.replyTo || undefined,
-        tags: input.tags,
+        htmlContent: input.html,
+        replyTo: input.replyTo ? parseAddress(input.replyTo) : undefined,
+        // Brevo tags are plain strings; the webhook reads them back as "name:value".
+        tags: input.tags?.map((t) => `${t.name}:${t.value}`),
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("[email] Resend send failed:", response.status, errText);
-      return { success: false, provider: "RESEND", error: describeResendError(response.status, errText) };
+      console.error("[email] Brevo send failed:", response.status, errText);
+      return { success: false, provider: "BREVO", error: describeBrevoError(response.status, errText) };
     }
 
-    const data = (await response.json()) as { id?: string };
-    return { success: true, provider: "RESEND", providerMessageId: data.id };
+    const data = (await response.json()) as { messageId?: string };
+    return { success: true, provider: "BREVO", providerMessageId: data.messageId };
   } catch (err) {
-    console.error("[email] Resend request threw:", err);
-    return { success: false, provider: "RESEND", error: err instanceof Error ? err.message : String(err) };
+    console.error("[email] Brevo request threw:", err);
+    return { success: false, provider: "BREVO", error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -227,28 +242,13 @@ async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResu
 
 /**
  * Routes one email to the right channel.
- * - campaign -> Resend only.
- * - everything else -> Gmail. If Gmail fails, falls back to Resend so the
- *   person still gets the email. Set EMAIL_GMAIL_FALLBACK=false to disable.
+ * - campaign -> Brevo only.
+ * - everything else -> Gmail only. There is no fallback to Brevo: Brevo is
+ *   reserved for broadcasts.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   if (input.kind === "campaign") {
-    return sendViaResend(input);
+    return sendViaBrevo(input);
   }
-
-  const gmailResult = await sendViaGmailChannel(input);
-  if (gmailResult.success) return gmailResult;
-
-  const fallbackEnabled = process.env.EMAIL_GMAIL_FALLBACK !== "false";
-  if (!fallbackEnabled) return gmailResult;
-
-  console.warn(`[email] Gmail failed (${gmailResult.error}). Falling back to Resend.`);
-  const resendResult = await sendViaResend(input);
-  if (resendResult.success) return resendResult;
-
-  return {
-    success: false,
-    provider: "RESEND",
-    error: `Gmail: ${gmailResult.error} | Resend: ${resendResult.error}`,
-  };
+  return sendViaGmailChannel(input);
 }

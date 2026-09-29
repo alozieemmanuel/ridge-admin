@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
 
 type Audience =
   | "ALL"
@@ -63,6 +64,7 @@ function StatCard({ label, value, hint, tone }: { label: string; value: number; 
 }
 
 export default function CampaignsPage() {
+  const [channel, setChannel] = useState<"email" | "whatsapp">("email");
   const [audience, setAudience] = useState<Audience>("ALL");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -97,7 +99,7 @@ export default function CampaignsPage() {
     load();
   }, [load]);
 
-  // Opens and bounces arrive from Resend after the send, so refresh in the background.
+  // Opens and bounces arrive from Brevo after the send, so refresh in the background.
   useAutoRefresh(() => load(), 15_000);
 
   const recipientCount = counts[audience] ?? 0;
@@ -138,6 +140,24 @@ export default function CampaignsPage() {
 
   return (
     <AdminShell active="/admin/campaigns">
+      <div className="flex gap-2 mb-6">
+        {(["email", "whatsapp"] as const).map((c) => (
+          <button
+            key={c}
+            onClick={() => setChannel(c)}
+            className={`text-sm px-4 py-2 rounded-full border transition-colors ${
+              channel === c ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted hover:text-fg"
+            }`}
+          >
+            {c === "email" ? "Email" : "WhatsApp"}
+          </button>
+        ))}
+      </div>
+
+      {channel === "whatsapp" && <WhatsAppBroadcastPanel />}
+
+      {channel === "email" && (
+      <>
       <div className="mb-6">
         <h2 className="font-serif text-2xl">Campaigns</h2>
         <p className="text-muted text-sm mt-1">
@@ -169,7 +189,7 @@ export default function CampaignsPage() {
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
           placeholder="e.g. A quick update ahead of Day 7"
-          className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-4 focus:outline-none focus:border-gold"
+          className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-4 focus:outline-none focus:border-gold"
         />
 
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Message</label>
@@ -178,7 +198,7 @@ export default function CampaignsPage() {
           onChange={(e) => setBody(e.target.value)}
           rows={7}
           placeholder="Type the message everyone in this segment will get. A blank line starts a new paragraph."
-          className="w-full bg-black/30 border border-border rounded-lg px-4 py-3 text-sm mb-2 focus:outline-none focus:border-gold font-mono"
+          className="w-full bg-inputbg border border-border rounded-lg px-4 py-3 text-sm mb-2 focus:outline-none focus:border-gold font-mono"
         />
         <p className="text-xs text-muted mb-5">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize.
@@ -312,6 +332,8 @@ export default function CampaignsPage() {
             automatically. Campaigns sent before this update show zeros here.
           </p>
         </div>
+      )}
+      </>
       )}
     </AdminShell>
   );

@@ -42,6 +42,13 @@ const ACTION_LABELS: Record<string, string> = {
   "admin.password_change": "Changed admin password",
   "admin.archive": "Archived admin",
   "admin.restore": "Restored admin",
+  "prospect.update": "Updated prospect",
+  "prospect.convert": "Converted prospect to registration",
+  "prospect.source_create": "Connected prospect sheet",
+  "prospect.source_update": "Edited prospect sheet",
+  "prospect.source_delete": "Disconnected prospect sheet",
+  "whatsapp.send": "Sent WhatsApp message",
+  "whatsapp.broadcast": "Sent WhatsApp broadcast",
   "data.clear": "Cleared data",
 };
 
@@ -52,6 +59,8 @@ const CATEGORIES: { value: string; label: string }[] = [
   { value: "payment_proof", label: "Receipts" },
   { value: "brochure", label: "Brochure requests" },
   { value: "campaign", label: "Campaigns" },
+  { value: "prospect", label: "Prospects" },
+  { value: "whatsapp", label: "WhatsApp" },
   { value: "seat", label: "Seats" },
   { value: "template", label: "Templates" },
   { value: "settings", label: "Settings" },

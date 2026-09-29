@@ -12,14 +12,17 @@ replacing the `code.gs` Google Apps Script + Sheets setup. Next.js 15
 | Google Sheets rows                      | Postgres tables (`Registration`, `BrochureRequest`) |
 | Hardcoded `CONFIG` block                | `Setting` table, editable at `/admin/settings`     |
 | Hardcoded email HTML in `code.gs`       | `EmailTemplate` table, editable at `/admin/templates` |
-| `MailApp.sendEmail`, no delivery data   | Resend, with delivery/open/bounce tracking          |
+| `MailApp.sendEmail`, no delivery data   | Gmail (transactional) + Brevo (campaigns, with delivery/open/bounce tracking) |
 | Anyone with the `/exec` link has access | Session-based admin login, owner/admin roles       |
 
 ## Stack
 
 - **Next.js 15** (App Router) — API routes + the admin dashboard UI in one deployable app
 - **Prisma + Postgres** — schema in `prisma/schema.prisma`
-- **Resend** — transactional email with delivery webhooks (falls back to console logging if unconfigured)
+- **Gmail** — transactional email (confirmations, reminders, seat invites)
+- **Brevo** — campaign/broadcast email with delivery webhooks (falls back to console logging outside production if unconfigured)
+- **Google Sheets** (service account) — the Prospects module
+- **WhatsApp Business Cloud API (Meta)** — the WhatsApp module and WhatsApp broadcasts
 - **jose + bcryptjs** — signed session cookies, hashed passwords
 - **Tailwind CSS** — matches the black-and-gold RIDGE brand
 
@@ -45,7 +48,7 @@ See `.env.example` for the full list with comments. The two you cannot skip:
 - `DATABASE_URL` — a Postgres connection string (Neon, Supabase, Railway, RDS, etc. all work)
 - `SESSION_SECRET` — any random string 32+ characters (`openssl rand -base64 32`)
 
-`RESEND_API_KEY` is optional for local development — without it, emails are
+`BREVO_API_KEY` is optional for local development — without it, emails are
 logged to the console instead of sent, so you can test the full registration
 flow without live email credentials.
 
@@ -90,10 +93,32 @@ For the brochure modal in `index.html`, same idea against
    build step, or a one-off local run pointed at production).
 5. Run `npm run seed` once (locally, pointed at production `DATABASE_URL`, or as a
    one-off script) to create your first admin login.
-6. In Resend, add a webhook pointed at `https://your-domain.com/api/webhooks/resend`
-   for `email.delivered`, `email.opened`, `email.bounced`, `email.complained` — this is
-   what populates the Delivered/Opened/Bounced stats on the dashboard. Copy the
-   webhook's signing secret into `RESEND_WEBHOOK_SECRET`.
+6. In Brevo (Transactional > Settings > Webhooks), add a webhook pointed at
+   `https://your-domain.com/api/webhooks/brevo` for Delivered, Opened, Hard bounce,
+   Soft bounce, Blocked, Invalid email and Spam. This populates the
+   Delivered/Opened/Bounced stats on the dashboard. Set an authentication token on the
+   webhook and put the same value in `BREVO_WEBHOOK_SECRET`. `EMAIL_FROM` must be a
+   sender or domain you have verified in Brevo.
+
+### Prospects (Google Sheets)
+
+1. In Google Cloud, create a service account, enable the Google Sheets API, and create a
+   JSON key. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the whole key file (or set
+   `GOOGLE_SERVICE_ACCOUNT_EMAIL` and `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`).
+2. Share your Prospects sheet with the service account's email as **Editor**.
+3. In the dashboard: Prospects > Sheets > connect the sheet (link + tab name). The first
+   row of the tab must be the column headings. A `RIDGE ID` column is added on the right
+   so rows can be found again after sorting.
+4. If a sheet uses different column names (for example a digital marketing leads sheet),
+   use **Match columns** to pick the right column for each field.
+
+### WhatsApp (Meta Cloud API)
+
+Set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`,
+`WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN`. In the Meta developer console, set the
+webhook to `https://your-domain.com/api/webhooks/whatsapp` with your verify token and
+subscribe to the `messages` field. Broadcasts and first messages use approved templates
+(WhatsApp rules); free-text replies work within 24 hours of a person's last message.
 
 ## Importing existing registrations
 
@@ -133,9 +158,9 @@ Honest status, not a blanket "it works":
   `npx prisma generate && npx prisma migrate dev` locally is the first real
   test of the schema against a live database — if anything's off, that's
   where it'll surface, and it's a fast loop to fix from there.
-- **Not verified: actual Resend delivery/webhook round-trip** — the email
-  code follows Resend's documented request/webhook shape, but hasn't sent a
-  real email or received a real webhook in this environment.
+- **Not verified: live Brevo, Google Sheets and WhatsApp calls** — the code follows
+  each provider's documented request/webhook shape, but none of them has been called
+  with real credentials in this environment.
 
 ## Project structure
 
@@ -144,12 +169,16 @@ prisma/schema.prisma          Database schema
 prisma/seed.ts                 Default templates/settings + first admin
 src/lib/prisma.ts              Prisma client singleton
 src/lib/auth.ts                Sessions, password hashing
-src/lib/email.ts               Branded HTML rendering + Resend sending
+src/lib/email.ts               Branded HTML rendering + Gmail/Brevo sending
 src/lib/notifications.ts       Orchestrates confirmation + internal emails
 src/lib/settings.ts            Business config defaults + template merging
 src/middleware.ts              Protects /admin and /api/admin routes
 src/app/api/public/            Registration + brochure form submission
 src/app/api/admin/             Admin-only: registrations, templates, settings, admins
-src/app/api/webhooks/resend/   Delivery/open/bounce tracking
+src/app/api/webhooks/brevo/    Delivery/open/bounce tracking
+src/app/api/webhooks/whatsapp/ WhatsApp incoming messages + delivery status
+src/lib/google-sheets.ts       Service-account Sheets client
+src/lib/prospects.ts           Sheet sync + write-back
+src/lib/whatsapp.ts            WhatsApp Cloud API client + webhook handling
 src/app/admin/                 The dashboard UI itself
 ```

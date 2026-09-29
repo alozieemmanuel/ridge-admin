@@ -2,6 +2,9 @@
 
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Logo from "@/components/Logo";
+import PasswordInput from "@/components/PasswordInput";
+import ThemeToggle from "@/components/ThemeToggle";
 
 function LoginForm() {
   const router = useRouter();
@@ -35,11 +38,14 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
+    <div className="min-h-screen flex items-center justify-center px-4 relative">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-sm bg-cardbg border border-border rounded-2xl p-10">
-        <h1 className="font-serif text-2xl text-center mb-1">
-          RIDGE<span className="text-gold">.</span>
-        </h1>
+        <div className="flex justify-center mb-3">
+          <Logo className="h-14 w-auto" />
+        </div>
         <p className="text-muted text-sm text-center mb-8">Sign in to the admin dashboard</p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -50,18 +56,17 @@ function LoginForm() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold"
+              className="w-full bg-inputbg border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold"
               placeholder="you@pertinencegroup.com"
             />
           </div>
           <div>
             <label className="block text-xs uppercase tracking-wider text-muted mb-2">Password</label>
-            <input
-              type="password"
+            <PasswordInput
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold"
+              className="w-full bg-inputbg border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold"
               placeholder="••••••••"
             />
           </div>

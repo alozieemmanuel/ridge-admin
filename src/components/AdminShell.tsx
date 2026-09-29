@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Logo from "@/components/Logo";
+import ThemeToggle from "@/components/ThemeToggle";
 
 interface AdminSession {
   name: string;
@@ -12,10 +14,12 @@ interface AdminSession {
 
 const TABS: { href: string; label: string; ownerOnly?: boolean }[] = [
   { href: "/admin", label: "Registrations" },
+  { href: "/admin/prospects", label: "Prospects" },
   { href: "/admin/payments", label: "Payments" },
   { href: "/admin/brochure-requests", label: "Brochure Requests" },
   { href: "/admin/seats", label: "Day 7 Seating" },
   { href: "/admin/campaigns", label: "Campaigns" },
+  { href: "/admin/whatsapp", label: "WhatsApp" },
   { href: "/admin/audit", label: "Audit Log", ownerOnly: true },
   { href: "/admin/admins", label: "Manage Admins" },
 ];
@@ -47,22 +51,28 @@ export default function AdminShell({
     <div className="min-h-screen">
       <header className="border-b border-border">
         <div className="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="font-serif text-3xl">
-              RIDGE<span className="text-gold">.</span> Admin
-            </h1>
-            {session && (
-              <p className="text-muted text-sm mt-1">
-                Signed in as {session.name} ({session.role.toLowerCase()})
-              </p>
-            )}
+          <div className="flex items-center gap-4">
+            <Logo className="h-10 w-auto" showFallbackText={false} />
+            <div>
+              <h1 className="font-serif text-3xl">
+                RIDGE<span className="text-gold">.</span> Admin
+              </h1>
+              {session && (
+                <p className="text-muted text-sm mt-1">
+                  Signed in as {session.name} ({session.role.toLowerCase()})
+                </p>
+              )}
+            </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-sm px-4 py-2 rounded-full border border-border hover:border-gold transition-colors"
-          >
-            Log out
-          </button>
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <button
+              onClick={handleLogout}
+              className="text-sm px-4 py-2 rounded-full border border-border hover:border-gold transition-colors"
+            >
+              Log out
+            </button>
+          </div>
         </div>
         <nav className="max-w-6xl mx-auto px-6 flex gap-2 pb-4 flex-wrap">
           {TABS.filter((tab) => !tab.ownerOnly || session?.role === "OWNER").map((tab) => (

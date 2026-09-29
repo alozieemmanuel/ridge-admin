@@ -33,7 +33,8 @@ enum EmailEventType {
 
 enum EmailProvider {
   GMAIL // transactional mail: confirmations, reminders, seat invites, internal alerts
-  RESEND // campaigns (bulk sends)
+  RESEND // legacy: campaigns sent before the move to Brevo. Kept so old rows still read; never written now.
+  BREVO // campaigns (broadcast email)
 }
 
 enum ProofStatus {
@@ -91,6 +92,7 @@ model Registration {
   emailEvents   EmailEvent[]
   seat          Seat?
   paymentProofs PaymentProof[]
+  prospect      Prospect? // set when this registration was converted from a prospect
 
   @@index([createdAt])
 }
@@ -123,11 +125,11 @@ model EmailEvent {
   type              EmailEventType
   audience          EmailAudience  @default(ATTENDEE)
   kind              String? // "confirmation" | "seat_invite" | "payment_reminder" | "payment_confirmation" | "brochure" | "campaign" | "internal"; null on older rows
-  providerMessageId String? // Resend's email id, used to correlate webhook events
+  providerMessageId String? // the provider's message id (Brevo's messageId), used to correlate webhook events
   errorMessage      String? // why a send FAILED (provider's message), shown on hover in the dashboard
   occurredAt        DateTime       @default(now())
 
-  provider EmailProvider? // which service sent it (null on rows from before this column = Resend)
+  provider EmailProvider? // which service sent it (null on rows from before this column = the old campaign provider)
   subject  String? // the subject as sent
 
   @@index([registrationId])
@@ -276,4 +278,132 @@ model PaymentProof {
   createdAt      DateTime     @default(now())
 
   @@index([registrationId])
+}
+
+// ---------------------------------------------------------------------------
+// Prospects: people who asked to be called before registering. Rows live in a
+// Google Sheet (one ProspectSource per sheet/tab) and are mirrored here.
+// ---------------------------------------------------------------------------
+
+model ProspectSource {
+  id            String    @id @default(cuid())
+  name          String // shown in the UI, e.g. "Prospects" or "Digital marketing leads"
+  spreadsheetId String
+  sheetTab      String // the tab name inside the spreadsheet
+  columnMap     Json? // manual column overrides: { fieldKey: "Header text in the sheet" }
+  active        Boolean   @default(true)
+  lastSyncedAt  DateTime?
+  lastSyncError String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  prospects Prospect[]
+}
+
+model Prospect {
+  id         String         @id @default(cuid())
+  sourceId   String
+  source     ProspectSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  externalId String // the value in the sheet's "RIDGE ID" column; how we find the row again
+  sheetRow   Int? // last known row number; null = no longer in the sheet
+
+  fullName String
+  email    String?
+  phone    String?
+
+  callRequested    String? // dropdown value, e.g. Yes / No
+  callSchedule     String? // as typed in the sheet
+  callCompleted    Boolean @default(false)
+  callFeedback     String? @db.Text
+  followUpRequired Boolean @default(false)
+  confirmation     String?
+
+  extra Json? // any other columns in the sheet (campaign, ad name, ...) kept as-is
+
+  dirty          Boolean @default(false) // an edit made here hasn't reached the sheet yet
+  writeBackError String?
+
+  registrationId String?       @unique
+  registration   Registration? @relation(fields: [registrationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceId, externalId])
+  @@index([sourceId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp (Meta WhatsApp Business Cloud API)
+// ---------------------------------------------------------------------------
+
+enum WhatsAppDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED // inbound messages
+}
+
+// One thread per phone number.
+model WhatsAppConversation {
+  id             String    @id @default(cuid())
+  waId           String    @unique // digits only, international format, e.g. 2348012345678
+  contactName    String? // profile name WhatsApp gave us, if any
+  registrationId String? // soft links (no foreign key) to who this number belongs to
+  prospectId     String?
+  lastMessageAt  DateTime  @default(now())
+  lastInboundAt  DateTime? // start of the 24-hour window in which free-text replies are allowed
+  unreadCount    Int       @default(0)
+  createdAt      DateTime  @default(now())
+
+  messages WhatsAppMessage[]
+
+  @@index([lastMessageAt])
+}
+
+model WhatsAppMessage {
+  id             String               @id @default(cuid())
+  conversationId String
+  conversation   WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      WhatsAppDirection
+  type           String               @default("text") // text | template | image | audio | document | ...
+  body           String?              @db.Text
+  templateName   String?
+  status         WhatsAppStatus
+  errorMessage   String?
+  waMessageId    String?              @unique // Meta's message id (wamid...), used to match status updates
+  sentByName     String?
+  broadcastId    String?
+  broadcast      WhatsAppBroadcast?   @relation(fields: [broadcastId], references: [id], onDelete: SetNull)
+  createdAt      DateTime             @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([broadcastId])
+}
+
+// A one-off template message sent to many people from Campaigns > WhatsApp.
+model WhatsAppBroadcast {
+  id               String   @id @default(cuid())
+  audience         String // "ALL" | "PAID" | ... | "PROSPECTS_ALL" (see src/lib/whatsapp-audience.ts)
+  templateName     String
+  templateLanguage String
+  templateParams   Json? // string[]; may contain {{first_name}} / {{full_name}} merge tokens
+  previewText      String   @db.Text // the template body as sent (with the first recipient's values)
+  recipientCount   Int      @default(0)
+  sentCount        Int      @default(0)
+  failedCount      Int      @default(0)
+  sentAt           DateTime @default(now())
+  sentByName       String?
+
+  messages WhatsAppMessage[]
+
+  @@index([sentAt])
 }

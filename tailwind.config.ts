@@ -4,15 +4,18 @@ const config: Config = {
   content: ["./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      // Colors come from CSS variables (see globals.css) so the same class
+      // names work in dark, light and system themes.
       colors: {
-        pagebg: "#0A0806",
-        cardbg: "#15110B",
-        fg: "#F5EFE0",
-        muted: "#A89977",
-        border: "rgba(201, 151, 46, 0.22)",
-        gold: "#C9972E",
-        golddark: "#9C7220",
-        goldlight: "#F1C866",
+        pagebg: "rgb(var(--c-pagebg) / <alpha-value>)",
+        cardbg: "rgb(var(--c-cardbg) / <alpha-value>)",
+        inputbg: "rgb(var(--c-inputbg) / <alpha-value>)",
+        fg: "rgb(var(--c-fg) / <alpha-value>)",
+        muted: "rgb(var(--c-muted) / <alpha-value>)",
+        border: "rgb(var(--c-border) / <alpha-value>)",
+        gold: "rgb(var(--c-gold) / <alpha-value>)",
+        golddark: "rgb(var(--c-golddark) / <alpha-value>)",
+        goldlight: "rgb(var(--c-goldlight) / <alpha-value>)",
       },
       fontFamily: {
         serif: ["Georgia", "Times New Roman", "serif"],

@@ -109,7 +109,7 @@ function DangerZone() {
           value={confirmText}
           onChange={(e) => setConfirmText(e.target.value)}
           placeholder="DELETE"
-          className="bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-400"
+          className="bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-400"
         />
         <button
           onClick={handleClear}
@@ -172,7 +172,7 @@ export default function SettingsPage() {
               <input
                 value={values[field.key] ?? ""}
                 onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
-                className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
+                className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
               />
               {field.hint && <p className="text-xs text-muted mt-1.5">{field.hint}</p>}
             </div>

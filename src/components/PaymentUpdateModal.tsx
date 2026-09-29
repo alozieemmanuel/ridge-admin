@@ -150,7 +150,7 @@ export function PaymentUpdateModal({
               value={amountText}
               onChange={(e) => setAmountText(e.target.value)}
               placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
+              className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
             />
             <p className="text-xs text-muted mb-4">
               Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to date
@@ -166,7 +166,7 @@ export function PaymentUpdateModal({
               onChange={(e) => setNote(e.target.value)}
               rows={2}
               placeholder="e.g. bank transfer ref, part of a split payment…"
-              className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
+              className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
             />
 
             {error && <p className="text-sm text-red-400 mt-3">{error}</p>}

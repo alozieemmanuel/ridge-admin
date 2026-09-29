@@ -18,7 +18,7 @@ const emptyCounts = (): StatCounts => ({ delivered: 0, opened: 0, bounced: 0, co
 /**
  * Returns campaigns with per-campaign delivery/open/bounce counts, plus overall
  * totals for the stats strip. Counts are per recipient: someone who opens the
- * same email five times counts as one open. These numbers come from Resend's
+ * same email five times counts as one open. These numbers come from Brevo's
  * webhook, which only exists for campaigns (everything else is sent via Gmail).
  */
 export async function GET() {
@@ -74,7 +74,7 @@ export async function GET() {
  * Sends a one-off broadcast (subject + plain-text body) to every registration
  * matching the chosen audience segment. Sends are batched with a small
  * concurrency limit rather than all at once, since a large audience (500+)
- * could otherwise trip Resend's rate limit. Each recipient's outcome is
+ * could otherwise trip Brevo's rate limit. Each recipient's outcome is
  * recorded as its own EmailEvent (source: CAMPAIGN, tagged with campaignId),
  * and a Campaign row summarizes the whole run for the history list.
  *

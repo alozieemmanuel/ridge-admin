@@ -30,7 +30,7 @@ async function getTemplate(key: string) {
 
 /**
  * A template's Reply-To can contain {{tokens}} (the seeded default is
- * {{contact_email}}). Those must be merged BEFORE sending — Resend rejects a
+ * {{contact_email}}). Those must be merged BEFORE sending — the email providers reject a
  * literal "{{contact_email}}" as an invalid address, which fails the whole email.
  * Empty means "reply to the sending address"; an unusable value is dropped
  * (and logged) rather than blocking the email.
@@ -49,7 +49,7 @@ async function recordEvent(params: {
   id: string;
   type: "SENT" | "FAILED";
   kind?: EmailKind;
-  provider?: "GMAIL" | "RESEND";
+  provider?: "GMAIL" | "BREVO";
   subject?: string;
   providerMessageId?: string;
   errorMessage?: string;
@@ -78,7 +78,7 @@ async function recordEvent(params: {
  * recorded as FAILED with the reason, so the dashboard shows "Failed" and why,
  * instead of a silent "Not sent".
  *
- * `kind` picks the channel: "campaign" goes through Resend, everything else
+ * `kind` picks the channel: "campaign" goes through Brevo, everything else
  * goes through Gmail (see sendEmail in email.ts).
  */
 async function deliverAttendeeEmail(opts: {
@@ -440,7 +440,7 @@ export async function sendPaymentReminder(registration: Registration): Promise<v
  * Never throws — the outcome (sent/failed) is recorded and returned so the
  * caller can tally results across the whole audience.
  *
- * This is the only path that uses Resend (kind: "campaign").
+ * This is the only path that uses Brevo (kind: "campaign").
  */
 export async function sendCampaignEmail(
   registration: Registration,

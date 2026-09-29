@@ -95,3 +95,92 @@ export const sendCampaignSchema = z.object({
   body: z.string().trim().min(1, "Message can't be empty.").max(20000),
 });
 
+
+
+// ---------------------------------------------------------------------------
+// Prospects
+// ---------------------------------------------------------------------------
+
+const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
+
+// Only the fields admins edit here (and that are written back to the sheet).
+export const updateProspectSchema = z
+  .object({
+    callRequested: optionalText(100),
+    callSchedule: optionalText(200),
+    callCompleted: z.boolean().optional(),
+    callFeedback: optionalText(5000),
+    followUpRequired: z.boolean().optional(),
+    confirmation: optionalText(200),
+  })
+  .strict();
+
+export const convertProspectSchema = z.object({
+  email: z.string().trim().email("A valid email is required.").max(320),
+  phone: z.string().trim().min(5, "A valid phone number is required.").max(40),
+  country: z.string().trim().min(2, "Country is required.").max(100),
+  organization: z.string().trim().max(200).optional().or(z.literal("")),
+  notes: z.string().trim().max(2000).optional().or(z.literal("")),
+  regType: z.enum(["early_bird", "late"]).default("early_bird"),
+  sendConfirmation: z.boolean().default(false),
+});
+
+export const createProspectSourceSchema = z.object({
+  name: z.string().trim().min(2, "Give the sheet a name.").max(100),
+  spreadsheet: z.string().trim().min(5, "Paste the Google Sheet link or its id.").max(500),
+  sheetTab: z.string().trim().min(1, "Enter the tab name.").max(100),
+});
+
+export const updateProspectSourceSchema = z
+  .object({
+    name: z.string().trim().min(2).max(100).optional(),
+    sheetTab: z.string().trim().min(1).max(100).optional(),
+    active: z.boolean().optional(),
+    // { fieldKey: "Header in the sheet" }; an empty string clears that override.
+    columnMap: z.record(z.string(), z.string().max(200)).optional(),
+  })
+  .strict();
+
+
+// ---------------------------------------------------------------------------
+// WhatsApp
+// ---------------------------------------------------------------------------
+
+export const startConversationSchema = z.object({
+  phone: z.string().trim().min(5, "Enter a phone number.").max(40),
+  name: z.string().trim().max(200).optional(),
+});
+
+export const sendWhatsAppMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    body: z.string().trim().min(1, "Write a message first.").max(4096, "Message is too long (max 4,096 characters)."),
+  }),
+  z.object({
+    type: z.literal("template"),
+    templateName: z.string().trim().min(1).max(512),
+    language: z.string().trim().min(2).max(20),
+    params: z.array(z.string().max(1024)).max(20).default([]),
+  }),
+]);
+
+export const WHATSAPP_AUDIENCES = [
+  "ALL",
+  "EARLY_BIRD",
+  "LATE",
+  "NOT_PAID",
+  "PARTIAL",
+  "PAID",
+  "CHECKED_IN",
+  "NOT_CHECKED_IN",
+  "PROSPECTS_ALL",
+  "PROSPECTS_NOT_REGISTERED",
+  "PROSPECTS_FOLLOW_UP",
+] as const;
+
+export const sendWhatsAppBroadcastSchema = z.object({
+  audience: z.enum(WHATSAPP_AUDIENCES),
+  templateName: z.string().trim().min(1, "Pick a template.").max(512),
+  language: z.string().trim().min(2).max(20),
+  params: z.array(z.string().max(1024)).max(20).default([]),
+});

@@ -61,7 +61,7 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
           value={replyTo}
           onChange={(e) => setReplyTo(e.target.value)}
           placeholder="Leave empty to reply to the sending address"
-          className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
+          className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
         />
         <p className="text-xs text-muted mt-2">
           An email address, or {"{{contact_email}}"} to use the Contact Email from Settings. Replies to this email go here.
@@ -73,7 +73,7 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
         <input
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
-          className="w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
+          className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
         />
       </div>
 
@@ -83,7 +83,7 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
           value={body}
           onChange={(e) => setBody(e.target.value)}
           rows={8}
-          className="w-full bg-black/30 border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold font-mono"
+          className="w-full bg-inputbg border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-gold font-mono"
         />
         <p className="text-xs text-muted mt-2">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize. A blank line starts a new

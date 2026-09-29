@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import PasswordInput from "@/components/PasswordInput";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
 interface AdminRow {
@@ -19,7 +20,7 @@ type Dialog =
   | null;
 
 const inputClass =
-  "w-full bg-black/30 border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold";
+  "w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold";
 const labelClass = "block text-xs uppercase tracking-wider text-muted mb-2";
 const goldButton =
   "text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60";
@@ -271,7 +272,7 @@ function AddAdminForm({ onAdded, onError }: { onAdded: () => void; onError: (mes
         </div>
         <div>
           <label className={labelClass}>Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} />
+          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} />
         </div>
         <div>
           <label className={labelClass}>Role</label>
@@ -381,9 +382,11 @@ function PasswordDialog({
         <p className="text-xs uppercase tracking-wider text-muted mb-1">Change password</p>
         <h3 className="font-serif text-xl mb-5">{admin.name}</h3>
         <label className={labelClass}>New password</label>
-        <input autoFocus type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={`${inputClass} mb-4`} />
+        <div className="mb-4">
+          <PasswordInput autoFocus value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} />
+        </div>
         <label className={labelClass}>Confirm password</label>
-        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} className={inputClass} />
+        <PasswordInput value={confirm} onChange={(e) => setConfirm(e.target.value)} className={inputClass} />
         <p className="text-xs text-muted mt-3">Share the new password with them privately. It isn&apos;t emailed.</p>
         {error && <p className="text-sm text-red-400 mt-4">{error}</p>}
         <div className="flex items-center justify-end gap-3 mt-6">

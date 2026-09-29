@@ -31,6 +31,13 @@ export type AuditAction =
   | "admin.password_change"
   | "admin.archive"
   | "admin.restore"
+  | "prospect.update"
+  | "prospect.convert"
+  | "prospect.source_create"
+  | "prospect.source_update"
+  | "prospect.source_delete"
+  | "whatsapp.send"
+  | "whatsapp.broadcast"
   | "data.clear";
 
 export interface AuditEntry {
@@ -44,6 +51,10 @@ export interface AuditEntry {
     | "template"
     | "admin"
     | "reply"
+    | "prospect"
+    | "prospect_source"
+    | "whatsapp"
+    | "whatsapp_broadcast"
     | "data";
   entityId?: string;
   /** Human-readable label, e.g. the participant's name, so the log reads without joins. */
