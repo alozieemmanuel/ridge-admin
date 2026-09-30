@@ -5,6 +5,7 @@ import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
+import { STATUS_OPTIONS, interpretStatus } from "@/lib/prospect-columns";
 
 interface Prospect {
   id: string;
@@ -57,6 +58,8 @@ const ghostButton = "text-sm px-4 py-2.5 rounded-full border border-border text-
 const DEFAULT_CALL_OPTIONS = ["Yes", "No"];
 
 function isYes(value: string | null): boolean {
+  const status = interpretStatus(value);
+  if (status) return status.requested;
   return ["yes", "y", "true", "requested"].includes((value ?? "").trim().toLowerCase());
 }
 
@@ -127,6 +130,9 @@ export default function ProspectsPage() {
 
   // Keep in step with the sheet while the tab is open (the server skips syncs that are too close together).
   useAutoRefresh(() => sync(false), 60_000);
+
+  // True when the sheet uses a STATUS dropdown (Text sent, Call Scheduled, ...) instead of Yes/No.
+  const statusMode = useMemo(() => prospects.some((p) => interpretStatus(p.callRequested) !== null), [prospects]);
 
   const callOptions = useMemo(() => {
     const set = new Set(DEFAULT_CALL_OPTIONS);
@@ -238,6 +244,8 @@ export default function ProspectsPage() {
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Full Name</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap">Phone Number</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap">Status</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Request for Call</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Time Schedule for Call</th>
                 <th className="px-5 py-3 font-medium whitespace-nowrap">Call Completed</th>
@@ -250,14 +258,14 @@ export default function ProspectsPage() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
+                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && visible.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
+                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
                     {prospects.length === 0 ? "No prospects yet. Connect a sheet under Sheets." : "Nobody matches these filters."}
                   </td>
                 </tr>
@@ -268,9 +276,7 @@ export default function ProspectsPage() {
                     <button onClick={() => setViewing(p)} className="font-medium hover:text-goldlight text-left">
                       {p.fullName}
                     </button>
-                    <div className="text-xs text-muted mt-0.5">
-                      {[p.phone, sources.length > 1 ? sourceName.get(p.sourceId) : null].filter(Boolean).join(" · ")}
-                    </div>
+                    {sources.length > 1 && <div className="text-xs text-muted mt-0.5">{sourceName.get(p.sourceId)}</div>}
                     {p.dirty && (
                       <div className="text-xs text-amber-300 mt-1" title={p.writeBackError ?? ""}>
                         Not saved to the sheet yet
@@ -278,7 +284,21 @@ export default function ProspectsPage() {
                     )}
                     {!p.inSheet && <div className="text-xs text-muted mt-1">Removed from the sheet</div>}
                   </td>
-                  <td className="px-5 py-4 whitespace-nowrap">{p.callRequested || <span className="text-muted">-</span>}</td>
+                  <td className="px-5 py-4 whitespace-nowrap">{p.phone || <span className="text-muted">-</span>}</td>
+                  <td className="px-5 py-4 whitespace-nowrap">
+                    {interpretStatus(p.callRequested) ? p.callRequested : <span className="text-muted">-</span>}
+                  </td>
+                  <td className="px-5 py-4 whitespace-nowrap">
+                    {interpretStatus(p.callRequested) ? (
+                      isYes(p.callRequested) ? (
+                        "Yes"
+                      ) : (
+                        <span className="text-muted">No</span>
+                      )
+                    ) : (
+                      p.callRequested || <span className="text-muted">-</span>
+                    )}
+                  </td>
                   <td className="px-5 py-4 whitespace-nowrap text-muted">{p.callSchedule || "-"}</td>
                   <td className="px-5 py-4 whitespace-nowrap">
                     {p.callCompleted ? <span className="text-emerald-400">Yes</span> : <span className="text-muted">No</span>}
@@ -323,6 +343,7 @@ export default function ProspectsPage() {
         <EditDialog
           prospect={editing}
           callOptions={callOptions}
+          statusMode={statusMode}
           onClose={() => setEditing(null)}
           onSaved={(n) => {
             setEditing(null);
@@ -372,7 +393,7 @@ function Modal({ title, eyebrow, children, wide }: { title: string; eyebrow: str
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="flex items-center gap-3 text-sm cursor-pointer">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[#C9972E]" />
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[#EB3C34]" />
       {label}
     </label>
   );
@@ -413,11 +434,13 @@ function DetailsDialog({ prospect, sourceName, onClose }: { prospect: Prospect; 
 function EditDialog({
   prospect,
   callOptions,
+  statusMode,
   onClose,
   onSaved,
 }: {
   prospect: Prospect;
   callOptions: string[];
+  statusMode: boolean;
   onClose: () => void;
   onSaved: (notice: { text: string; ok: boolean }) => void;
 }) {
@@ -429,6 +452,15 @@ function EditDialog({
   const [confirmation, setConfirmation] = useState(prospect.confirmation ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function changeStatus(value: string) {
+    setCallRequested(value);
+    const meaning = interpretStatus(value);
+    if (meaning) {
+      setCallCompleted(meaning.completed);
+      setFollowUpRequired(meaning.followUp);
+    }
+  }
 
   async function save() {
     setSubmitting(true);
@@ -460,10 +492,14 @@ function EditDialog({
     <Modal eyebrow="Update prospect" title={prospect.fullName} wide>
       <div className="grid gap-4 md:grid-cols-2 mb-4">
         <div>
-          <label className={labelClass}>Request for Call</label>
-          <select value={callRequested} onChange={(e) => setCallRequested(e.target.value)} className={inputClass}>
+          <label className={labelClass}>{statusMode ? "Status" : "Request for Call"}</label>
+          <select
+            value={callRequested}
+            onChange={(e) => (statusMode ? changeStatus(e.target.value) : setCallRequested(e.target.value))}
+            className={inputClass}
+          >
             <option value="">Not set</option>
-            {callOptions.map((o) => (
+            {(statusMode ? STATUS_OPTIONS : callOptions).map((o) => (
               <option key={o} value={o}>
                 {o}
               </option>
@@ -483,10 +519,14 @@ function EditDialog({
         <label className={labelClass}>Confirmation</label>
         <input value={confirmation} onChange={(e) => setConfirmation(e.target.value)} className={inputClass} />
       </div>
-      <div className="flex gap-8 flex-wrap mb-2">
-        <Toggle label="Call completed" checked={callCompleted} onChange={setCallCompleted} />
-        <Toggle label="Follow-up call required" checked={followUpRequired} onChange={setFollowUpRequired} />
-      </div>
+      {statusMode ? (
+        <p className="text-xs text-muted mb-2">Call completed and follow-up are set from the status.</p>
+      ) : (
+        <div className="flex gap-8 flex-wrap mb-2">
+          <Toggle label="Call completed" checked={callCompleted} onChange={setCallCompleted} />
+          <Toggle label="Follow-up call required" checked={followUpRequired} onChange={setFollowUpRequired} />
+        </div>
+      )}
       {error && <p className="text-sm text-red-400 mt-4">{error}</p>}
       <div className="flex items-center justify-end gap-3 mt-6">
         <button onClick={onClose} disabled={submitting} className={ghostButton}>

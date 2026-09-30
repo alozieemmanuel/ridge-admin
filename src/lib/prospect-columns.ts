@@ -60,7 +60,18 @@ export const PROSPECT_FIELDS: ProspectField[] = [
     key: "callRequested",
     label: "Request for Call",
     editable: true,
-    aliases: ["request for call", "call request", "request call", "call requested", "request a call", "requested call", "wants a call"],
+    aliases: [
+      "request for call",
+      "call request",
+      "request call",
+      "call requested",
+      "request a call",
+      "requested call",
+      "wants a call",
+      "status",
+      "lead status",
+      "prospect status",
+    ],
   },
   {
     key: "callSchedule",
@@ -179,6 +190,8 @@ export function resolveColumns(headers: string[], manual?: ManualColumnMap | nul
     let bestScore = 0;
     normalized.forEach((h, i) => {
       if (usedColumns.has(i) || h.length < 6) return;
+      // A "FOLLOW-UP DATE" column is a date, not a yes/no answer, so never guess it into another field.
+      if (field.key !== "callSchedule" && /date|time/.test(h)) return;
       for (const a of aliases) {
         if (h.includes(a) || a.includes(h)) {
           const score = Math.min(a.length, h.length);
@@ -205,6 +218,34 @@ const TRUTHY = new Set(["true", "yes", "y", "1", "done", "completed", "complete"
 export function parseBool(value: string | null | undefined): boolean {
   if (!value) return false;
   return TRUTHY.has(value.trim().toLowerCase());
+}
+
+/**
+ * Sheets that use one STATUS column (a dropdown of words) instead of separate
+ * yes/no columns. The STATUS word is stored in "Request for Call" and the other
+ * yes/no answers are worked out from it. Unknown words are left alone.
+ */
+export const STATUS_OPTIONS = ["Text sent", "Call Scheduled", "Call Completed", "Follow Up", "Not Interested", "Registered"];
+
+export interface StatusMeaning {
+  requested: boolean;
+  completed: boolean;
+  followUp: boolean;
+}
+
+const STATUS_MEANING: Record<string, StatusMeaning> = {
+  textsent: { requested: false, completed: false, followUp: false },
+  callscheduled: { requested: true, completed: false, followUp: false },
+  callcompleted: { requested: true, completed: true, followUp: false },
+  followup: { requested: true, completed: true, followUp: true },
+  notinterested: { requested: false, completed: false, followUp: false },
+  registered: { requested: true, completed: true, followUp: false },
+};
+
+/** Returns what a STATUS word means, or null if the text is not one of the known status words. */
+export function interpretStatus(value: string | null | undefined): StatusMeaning | null {
+  if (!value) return null;
+  return STATUS_MEANING[normalizeHeader(value)] ?? null;
 }
 
 /**

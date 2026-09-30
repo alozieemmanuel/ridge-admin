@@ -6,6 +6,7 @@ import { readSheet, updateCells, type CellUpdate } from "@/lib/google-sheets";
 import {
   RIDGE_ID_HEADER,
   formatBoolForSheet,
+  interpretStatus,
   parseBool,
   resolveColumns,
   type ManualColumnMap,
@@ -99,8 +100,10 @@ async function doSync(sourceId: string, opts: { force?: boolean }): Promise<Sync
 
     for (let r = 1; r < values.length; r++) {
       const row = values[r];
-      const fullName = cell(row, mapping.fullName);
-      if (!fullName) continue; // blank or spacer row
+      // Skip only rows that are completely empty (spacers). A row with details but no name is kept and shown with a dash.
+      const hasDetails = row.some((v, i) => i !== idCol && (v ?? "").trim() !== "");
+      if (!hasDetails) continue;
+      const fullName = cell(row, mapping.fullName) || "-";
 
       let externalId = cell(row, idCol);
       if (!externalId || seen.has(externalId)) {
@@ -116,15 +119,24 @@ async function doSync(sourceId: string, opts: { force?: boolean }): Promise<Sync
         if (h && v && !mappedColumns.has(i)) extra[h] = v;
       });
 
+      // A STATUS word (Call Completed, Follow Up, ...) also answers the yes/no questions,
+      // but only when the sheet has no column of its own for them.
+      const requestedText = cell(row, mapping.callRequested);
+      const status = interpretStatus(requestedText);
+
       const fields = {
         fullName,
         email: cell(row, mapping.email).toLowerCase() || null,
         phone: cell(row, mapping.phone) || null,
-        callRequested: cell(row, mapping.callRequested) || null,
+        callRequested: requestedText || null,
         callSchedule: cell(row, mapping.callSchedule) || null,
-        callCompleted: parseBool(cell(row, mapping.callCompleted)),
+        callCompleted:
+          mapping.callCompleted !== undefined ? parseBool(cell(row, mapping.callCompleted)) : (status?.completed ?? false),
         callFeedback: cell(row, mapping.callFeedback) || null,
-        followUpRequired: parseBool(cell(row, mapping.followUpRequired)),
+        followUpRequired:
+          mapping.followUpRequired !== undefined
+            ? parseBool(cell(row, mapping.followUpRequired))
+            : (status?.followUp ?? false),
         confirmation: cell(row, mapping.confirmation) || null,
       };
       const extraJson = Object.keys(extra).length > 0 ? extra : null;
@@ -232,10 +244,13 @@ export async function writeBackProspect(prospect: Prospect, sourceArg?: Prospect
     const updates: CellUpdate[] = [];
     const missingColumns: string[] = [];
 
-    const push = (key: ProspectFieldKey, label: string, value: string) => {
+    // When the sheet only has a STATUS column, the yes/no answers come from it and are not written back.
+    const statusDriven = interpretStatus(prospect.callRequested) !== null;
+
+    const push = (key: ProspectFieldKey, label: string, value: string, derivedFromStatus = false) => {
       const col = mapping[key];
       if (col === undefined) {
-        missingColumns.push(label);
+        if (!(derivedFromStatus && statusDriven)) missingColumns.push(label);
         return;
       }
       if ((row[col] ?? "") === value) return; // unchanged
@@ -244,9 +259,9 @@ export async function writeBackProspect(prospect: Prospect, sourceArg?: Prospect
 
     push("callRequested", "Request for Call", prospect.callRequested ?? "");
     push("callSchedule", "Time Schedule for Call", prospect.callSchedule ?? "");
-    push("callCompleted", "Call Completed", formatBoolForSheet(prospect.callCompleted, row[mapping.callCompleted ?? -1]));
+    push("callCompleted", "Call Completed", formatBoolForSheet(prospect.callCompleted, row[mapping.callCompleted ?? -1]), true);
     push("callFeedback", "Feedback from Call", prospect.callFeedback ?? "");
-    push("followUpRequired", "Follow-up Call Required?", formatBoolForSheet(prospect.followUpRequired, row[mapping.followUpRequired ?? -1]));
+    push("followUpRequired", "Follow-up Call Required?", formatBoolForSheet(prospect.followUpRequired, row[mapping.followUpRequired ?? -1]), true);
     push("confirmation", "Confirmation", prospect.confirmation ?? "");
 
     await updateCells(source.spreadsheetId, source.sheetTab, updates);
