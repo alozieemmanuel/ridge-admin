@@ -44,7 +44,7 @@ function LoginForm() {
       </div>
       <div className="w-full max-w-sm bg-cardbg border border-border rounded-2xl p-10">
         <div className="flex justify-center mb-3">
-          <Logo className="h-14 w-auto" />
+          <Logo className="h-7 w-auto" />
         </div>
         <p className="text-muted text-sm text-center mb-8">Sign in to the admin dashboard</p>
 

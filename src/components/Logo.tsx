@@ -3,14 +3,13 @@
 import { useState } from "react";
 
 /**
- * RIDGE logo. Drop your logo file into the /public folder as `ridge-logo.png`
- * (or change LOGO_SRC below). Until that file exists, this falls back to the
- * text wordmark, so nothing looks broken in the meantime.
+ * ridge-logo.png       white logo, shown in dark mode
+ * ridge-logo-dark.png  dark logo, shown in light mode
+ * If the dark file is missing, the white logo is turned solid black in light mode.
  */
-export const LOGO_SRC = "/ridge-logo.png";
-
 export default function Logo({ className = "h-10 w-auto", showFallbackText = true }: { className?: string; showFallbackText?: boolean }) {
   const [missing, setMissing] = useState(false);
+  const [lightMissing, setLightMissing] = useState(false);
 
   if (missing) {
     if (!showFallbackText) return null;
@@ -22,7 +21,23 @@ export default function Logo({ className = "h-10 w-auto", showFallbackText = tru
   }
 
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src={LOGO_SRC} alt="RIDGE" className={className} onError={() => setMissing(true)} />
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/ridge-logo.png"
+        alt="RIDGE"
+        className={`${className} ${lightMissing ? "logo-flatten" : "logo-swap-dark"}`}
+        onError={() => setMissing(true)}
+      />
+      {!lightMissing && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src="/ridge-logo-dark.png"
+          alt="RIDGE"
+          className={`${className} logo-swap-light`}
+          onError={() => setLightMissing(true)}
+        />
+      )}
+    </>
   );
 }

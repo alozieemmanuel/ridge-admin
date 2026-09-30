@@ -2,30 +2,41 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Brand palette
+  Black #000000  ->  0 0 0
+  Grey  #404040  ->  64 64 64
+  White #FEFEFE  ->  254 254 254
+  Red   #EB3C34  ->  235 60 52
+
+  The variable and class names still say "gold" so tailwind.config.js and every
+  component keep working. The values are now the brand red.
+*/
+
 :root {
   /* Dark (default) */
-  --c-pagebg: 10 8 6;
-  --c-cardbg: 21 17 11;
-  --c-inputbg: 14 11 8; /* the old black/30 over the card color, as a solid */
-  --c-fg: 245 239 224;
-  --c-muted: 168 153 119;
-  --c-border: 52 39 15;
-  --c-gold: 201 151 46;
-  --c-golddark: 156 114 32;
-  --c-goldlight: 241 200 102;
+  --c-pagebg: 0 0 0;
+  --c-cardbg: 0 0 0;
+  --c-inputbg: 0 0 0;
+  --c-fg: 254 254 254;
+  --c-muted: 173 173 173; /* white at about 68% on black, as a solid */
+  --c-border: 64 64 64;
+  --c-gold: 235 60 52;
+  --c-golddark: 196 47 40; /* hover shade, a step darker than the brand red */
+  --c-goldlight: 235 60 52;
   color-scheme: dark;
 }
 
 :root[data-theme="light"] {
-  --c-pagebg: 250 247 240;
-  --c-cardbg: 255 255 255;
-  --c-inputbg: 255 255 255;
-  --c-fg: 31 26 18;
-  --c-muted: 107 94 69;
-  --c-border: 229 213 178;
-  --c-gold: 201 151 46;
-  --c-golddark: 156 114 32;
-  --c-goldlight: 241 200 102;
+  --c-pagebg: 254 254 254;
+  --c-cardbg: 254 254 254;
+  --c-inputbg: 254 254 254;
+  --c-fg: 0 0 0;
+  --c-muted: 64 64 64;
+  --c-border: 222 222 222; /* light tint so borders stay soft on white */
+  --c-gold: 235 60 52;
+  --c-golddark: 196 47 40;
+  --c-goldlight: 235 60 52;
   color-scheme: light;
 }
 
@@ -40,7 +51,7 @@ body {
 }
 
 ::selection {
-  background: rgba(201, 151, 46, 0.35);
+  background: rgba(235, 60, 52, 0.35);
 }
 
 input,
@@ -49,9 +60,9 @@ select {
   color-scheme: inherit;
 }
 
-/* Gold TEXT needs to be darker on a light page; the gold button gradients keep the bright value. */
+/* Brand-red TEXT needs to be darker on a light page; the red buttons keep the bright value. */
 :root[data-theme="light"] .text-goldlight {
-  color: #8a6114;
+  color: #c42f28;
 }
 
 /* Status colors are tuned for dark backgrounds; darken them in light mode. */
@@ -67,11 +78,11 @@ select {
   color: #b45309;
 }
 
-/* Slim, gold-tinted horizontal scrollbar for wide tables (Registrations,
+/* Slim, red-tinted horizontal scrollbar for wide tables (Registrations,
    Payments) instead of the bulky default OS scrollbar. */
 .table-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(201, 151, 46, 0.45) transparent;
+  scrollbar-color: rgba(235, 60, 52, 0.45) transparent;
 }
 .table-scroll::-webkit-scrollbar {
   height: 8px;
@@ -80,9 +91,24 @@ select {
   background: transparent;
 }
 .table-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(201, 151, 46, 0.45);
+  background-color: rgba(235, 60, 52, 0.45);
   border-radius: 9999px;
 }
 .table-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(201, 151, 46, 0.7);
+  background-color: rgba(235, 60, 52, 0.7);
+}
+
+/* Logo: show the white logo in dark mode and the dark logo in light mode. */
+.logo-swap-light {
+  display: none;
+}
+:root[data-theme="light"] .logo-swap-dark {
+  display: none;
+}
+:root[data-theme="light"] .logo-swap-light {
+  display: block;
+}
+/* Fallback when there is no dark logo file: turn the white logo solid black in light mode. */
+:root[data-theme="light"] .logo-flatten {
+  filter: brightness(0);
 }

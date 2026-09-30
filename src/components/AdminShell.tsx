@@ -55,7 +55,7 @@ export default function AdminShell({
             <Logo className="h-10 w-auto" showFallbackText={false} />
             <div>
               <h1 className="font-serif text-3xl">
-                RIDGE<span className="text-gold">.</span> Admin
+                Admin
               </h1>
               {session && (
                 <p className="text-muted text-sm mt-1">

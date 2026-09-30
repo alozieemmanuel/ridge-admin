@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
-import { renderBrandedEmail, sendEmail, escapeHtml, isValidEmailAddress } from "@/lib/email";
+import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress } from "@/lib/email";
 import type { SendEmailResult, EmailKind } from "@/lib/email";
+import { buildReceiptLines, usdText } from "@/lib/receipt";
 import type { Registration, BrochureRequest } from "@prisma/client";
 
 type Settings = Record<string, string>;
@@ -479,8 +480,6 @@ export async function sendCampaignEmail(
 export async function sendPaymentConfirmation(registration: Registration): Promise<void> {
   if (registration.paymentStatus === "NOT_PAID") return;
   const settings = await getSettingsMap();
-  const currency = settings.currency || "USD";
-  const fmt = (n: number) => `${currency} ${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
   const feeRaw = parseFloat(
     registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
   );
@@ -489,12 +488,29 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
   const paidInFull = registration.paymentStatus === "PAID";
   const balance = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;
 
+  // Each receipt an admin approved, in the currency it was actually paid in.
+  // The USD equivalent uses the rate implied by the fee the participant was
+  // quoted in that currency (their local fee divided by the USD fee).
+  const proofs = await prisma.paymentProof.findMany({
+    where: { registrationId: registration.id, status: "APPROVED" },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const { lines, anyForeign } = buildReceiptLines(proofs, fee, registration.amountPaid, registration.paymentUpdatedAt);
+
+  const issued = registration.paymentUpdatedAt ?? new Date();
+  const receiptNo = `RCT-${issued.toISOString().slice(0, 10).replace(/-/g, "")}-${registration.id.slice(-5).toUpperCase()}`;
+
   const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
-  const bodyText = paidInFull
-    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
-    : `Hi ${first},\n\nWe've confirmed your payment of ${fmt(registration.amountPaid)} for ${settings.programme_name}.${
-        balance !== null ? ` The remaining balance is ${fmt(balance)}, which you can pay using the details in your registration email.` : ""
+  const intro = paidInFull
+    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
+    : `Hi ${first},\n\nWe've confirmed your payment of ${usdText(registration.amountPaid)} for ${settings.programme_name}. Your receipt is below.${
+        balance !== null && balance > 0 ? ` The remaining balance is ${usdText(balance)}, which you can pay using the details in your registration email.` : ""
       }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
+
+  const footnote = anyForeign
+    ? "Payments made in another currency are converted to USD at the rate shown, which is based on the registration fee quoted to you in that currency. Total paid is the amount confirmed by RIDGE."
+    : "Total paid is the amount confirmed by RIDGE.";
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -504,20 +520,31 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
       to: registration.email,
       build: async () => ({
         subject,
-        html: renderBrandedEmail({
-          eyebrow: settings.event_caption,
+        html: renderReceiptEmail({
+          eyebrow: "Payment Receipt",
           heading: subject,
-          bodyText,
-          summaryBlocks: [
-            {
-              heading: "Payment Summary",
-              rows: [
-                ["Amount confirmed", fmt(registration.amountPaid)],
-                ...(fee !== null ? ([["Registration fee", fmt(fee)]] as [string, string][]) : []),
-                ["Status", paidInFull ? "Paid in full" : "Part payment"],
-              ],
-            },
-          ],
+          intro,
+          receiptNo,
+          issuedOn: formatLongDate(issued),
+          paidInFull,
+          billedTo: {
+            name: registration.fullName,
+            email: registration.email,
+            phone: registration.phone,
+            country: registration.country,
+          },
+          forWhat: {
+            programme: settings.programme_name,
+            registrationType: registration.regType === "LATE" ? "Late" : "Early Bird",
+            dates: settings.cohort_dates,
+          },
+          lines,
+          totals: {
+            fee: fee !== null ? usdText(fee) : null,
+            paid: usdText(registration.amountPaid),
+            balance: balance !== null && balance > 0.005 ? usdText(balance) : null,
+          },
+          footnote,
         }),
       }),
     })
