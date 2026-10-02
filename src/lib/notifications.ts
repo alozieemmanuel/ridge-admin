@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
-import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress } from "@/lib/email";
+import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
+import { makeProofToken, makeSeatToken } from "@/lib/proof-token";
 import type { SendEmailResult, EmailKind } from "@/lib/email";
 import { buildReceiptLines, usdText } from "@/lib/receipt";
 import type { Registration, BrochureRequest } from "@prisma/client";
@@ -211,15 +212,23 @@ function registrationVars(registration: Registration, settings: Settings): Setti
   };
 }
 
-const PAYMENT_DETAILS_BLOCK = (settings: Settings) => ({
-  heading: "Payment / Account Details",
-  rows: [
-    ["Account Name", settings.payment_account_name],
-    ["Bank", settings.payment_bank_name],
-    ["Account Number", settings.payment_account_number],
-    ["Currency", settings.currency],
-  ] as [string, string][],
-});
+/** Link to the payment page for this person, with their secure token so the page can pick up where they left off. */
+export function paymentPageLink(registration: Registration, settings: Settings): string {
+  const base = (settings.payment_page_url || "https://theridgecircle.com/register").trim();
+  return `${base}${base.includes("?") ? "&" : "?"}pay=${encodeURIComponent(makeProofToken(registration.id))}`;
+}
+
+/**
+ * Link to the seat selection page. The page lives on this dashboard's own
+ * address. If the Settings value is still the old placeholder (or empty) that
+ * built-in page is used; a custom address you set on purpose is respected.
+ */
+export function seatSelectionLink(registration: Registration, settings: Settings): string {
+  const custom = (settings.seat_selection_url || "").trim();
+  const isPlaceholder = !custom || /theridgecircle\.com\/select-seat\/?$/i.test(custom);
+  const base = isPlaceholder ? `${appBaseUrl()}/select-seat` : custom;
+  return `${base}${base.includes("?") ? "&" : "?"}t=${encodeURIComponent(makeSeatToken(registration.id))}`;
+}
 
 async function buildRegistrationConfirmation(registration: Registration, settings: Settings): Promise<BuiltEmail> {
   const vars = registrationVars(registration, settings);
@@ -292,7 +301,7 @@ async function buildSeatInvite(registration: Registration, settings: Settings): 
     heading: subject,
     bodyText,
     ctaLabel: "Choose Your Seat",
-    ctaUrl: `${settings.seat_selection_url}?rid=${registration.id}`,
+    ctaUrl: seatSelectionLink(registration, settings),
   });
 
   return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
@@ -308,7 +317,8 @@ async function buildPaymentReminder(registration: Registration, settings: Settin
     eyebrow: settings.event_caption,
     heading: subject,
     bodyText,
-    summaryBlocks: [PAYMENT_DETAILS_BLOCK(settings)],
+    ctaLabel: "Complete My Payment",
+    ctaUrl: paymentPageLink(registration, settings),
   });
 
   return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
@@ -605,8 +615,8 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
 export async function sendPayLaterReminder(registration: Registration): Promise<void> {
   const settings = await getSettingsMap();
   const first = firstNameOf(registration.fullName);
-  const subject = "Your RIDGE 2026 payment reminder";
-  const bodyText = `Hi ${first},\n\nYou asked us to remind you about your payment for RIDGE 2026, so here it is.\n\nYour seat is secured once payment is received. Use the details below, and upload your proof of payment on the registration page or send the receipt to us on WhatsApp.`;
+  const subject = "A gentle reminder about your RIDGE registration";
+  const bodyText = `Dear ${first},\n\nWe hope you are keeping well.\n\nYou asked us to remind you about your payment for ${settings.programme_name}, so here is a gentle note. We would be delighted to have you with us from ${settings.cohort_dates}.\n\nThe button below takes you back to the payment page, where you can choose the currency you prefer and the payment method that suits you. If you have already paid, thank you, and you are welcome to upload your receipt there.\n\nIf you have any questions, simply reply to this email or reach us on WhatsApp. We are always happy to help.\n\nWarm regards,\nThe RIDGE Team`;
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -620,9 +630,8 @@ export async function sendPayLaterReminder(registration: Registration): Promise<
           eyebrow: settings.event_caption,
           heading: subject,
           bodyText,
-          summaryBlocks: [PAYMENT_DETAILS_BLOCK(settings)],
-          ctaLabel: "Contact The RIDGE Team",
-          ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
+          ctaLabel: "Complete My Payment",
+          ctaUrl: paymentPageLink(registration, settings),
         }),
       }),
     })
@@ -632,4 +641,80 @@ export async function sendPayLaterReminder(registration: Registration): Promise<
     where: { id: registration.id },
     data: { payLaterReminderAt: new Date() },
   });
+}
+
+/** Sent when a participant picks (or changes to) a seat on the seat selection page. */
+export async function sendSeatConfirmation(registration: Registration, seat: { label: string; tableLabel: string }): Promise<void> {
+  const settings = await getSettingsMap();
+  const first = firstNameOf(registration.fullName);
+  const subject = "Your RIDGE Day 7 seat is confirmed";
+  const bodyText = `Hi ${first},\n\nYour seat for the Day 7 Graduation and Investor's Dinner is confirmed. The details are below.\n\nIf you would like a different seat, you can change it with the button below at any time before the event.`;
+
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "seat_confirmation",
+      id: registration.id,
+      to: registration.email,
+      build: async () => ({
+        subject,
+        html: renderBrandedEmail({
+          eyebrow: settings.event_caption,
+          heading: subject,
+          bodyText,
+          summaryBlocks: [
+            {
+              heading: "Your Seat",
+              rows: [
+                ["Guest", registration.fullName],
+                ["Seat", seat.label],
+                ["Table", seat.tableLabel],
+                ["Date", settings.day7_date],
+                ["Venue", settings.day7_venue],
+              ],
+            },
+          ],
+          ctaLabel: "Change My Seat",
+          ctaUrl: seatSelectionLink(registration, settings),
+        }),
+      }),
+    })
+  );
+}
+
+/** Sent when a participant chooses to attend Day 7 online instead of taking a seat. */
+export async function sendOnlineConfirmation(registration: Registration): Promise<void> {
+  const settings = await getSettingsMap();
+  const first = firstNameOf(registration.fullName);
+  const subject = "You are attending RIDGE Day 7 online";
+  const bodyText = `Hi ${first},\n\nThank you for letting us know. We have noted that you will join the Day 7 Graduation and Investor's Dinner online. We will send you the joining details before the day.\n\nIf your plans change and you would like a seat at the venue instead, you can choose one with the button below.`;
+
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "online_confirmation",
+      id: registration.id,
+      to: registration.email,
+      build: async () => ({
+        subject,
+        html: renderBrandedEmail({
+          eyebrow: settings.event_caption,
+          heading: subject,
+          bodyText,
+          summaryBlocks: [
+            {
+              heading: "Your Choice",
+              rows: [
+                ["Guest", registration.fullName],
+                ["Attending", "Online"],
+                ["Date", settings.day7_date],
+              ],
+            },
+          ],
+          ctaLabel: "Choose A Seat Instead",
+          ctaUrl: seatSelectionLink(registration, settings),
+        }),
+      }),
+    })
+  );
 }

@@ -125,8 +125,17 @@ export async function GET(request: NextRequest) {
   }
   const regTypeCounts = { all: earlyBirdCount + lateCount, earlyBird: earlyBirdCount, late: lateCount };
 
+  const REMINDER_KINDS = new Set(["payment_reminder", "pay_later_reminder"]);
+
   const rows = registrations.map((r) => {
     const { status, error } = confirmationStatus(r.emailEvents ?? []);
+    // Most recent payment reminder that was actually sent (manual or the automatic pay-later one).
+    let lastReminder: Date | null = null;
+    for (const e of r.emailEvents ?? []) {
+      if (e.type === "SENT" && e.kind && REMINDER_KINDS.has(e.kind) && (!lastReminder || e.occurredAt > lastReminder)) {
+        lastReminder = e.occurredAt;
+      }
+    }
     return {
       id: r.id,
       fullName: r.fullName,
@@ -139,11 +148,13 @@ export async function GET(request: NextRequest) {
       deliveryStatus: status,
       deliveryError: status === "FAILED" ? error : null,
       seatLabel: r.seat?.label ?? null,
+      attendanceMode: r.attendanceMode,
       paymentStatus: r.paymentStatus,
       paymentNote: r.paymentNote,
       amountPaid: r.amountPaid,
       paymentUpdatedAt: r.paymentUpdatedAt ? r.paymentUpdatedAt.toISOString() : null,
       seatInviteSentAt: r.seatInviteSentAt ? r.seatInviteSentAt.toISOString() : null,
+      lastReminderAt: lastReminder ? lastReminder.toISOString() : null,
       proofs: r.paymentProofs.map((p) => ({
         id: p.id,
         fileName: p.fileName,

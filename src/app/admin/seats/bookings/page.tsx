@@ -32,6 +32,7 @@ interface Booking {
 
 export default function SeatBookingsPage() {
   const [tables, setTables] = useState<TableData[]>([]);
+  const [online, setOnline] = useState<{ id: string; fullName: string; email: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
@@ -40,6 +41,7 @@ export default function SeatBookingsPage() {
     if (res.ok) {
       const data = await res.json();
       setTables(data.tables);
+      setOnline(data.online ?? []);
     }
     setLoading(false);
   }, []);
@@ -82,7 +84,7 @@ export default function SeatBookingsPage() {
       <div className="mb-6">
         <h2 className="font-serif text-2xl">Seats</h2>
         <p className="text-muted text-sm mt-1">
-          {bookings.length} seats booked
+          {bookings.length} seats booked · {online.length} attending online
         </p>
       </div>
 
@@ -148,6 +150,24 @@ export default function SeatBookingsPage() {
           </table>
         </div>
       </div>
+
+      {online.length > 0 && (
+        <div className="mt-10">
+          <h3 className="font-serif text-xl mb-3">Attending online</h3>
+          <div className="border border-border rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <tbody>
+                {online.map((o) => (
+                  <tr key={o.id} className="border-b border-border/50 last:border-b-0">
+                    <td className="px-5 py-4 font-medium whitespace-nowrap">{o.fullName}</td>
+                    <td className="px-5 py-4 text-muted whitespace-nowrap">{o.email}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </AdminShell>
   );
 }

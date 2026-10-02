@@ -26,6 +26,8 @@ export async function runRegistrationAction(
 interface Props {
   paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
   seatInviteSentAt: string | null;
+  /** "Seat A4" or "Attending online" once the person has chosen, otherwise null. */
+  seatChoice?: string | null;
   onAction: (action: RegistrationAction) => void;
   /** Opens the "Update payment" dialog. */
   onUpdatePayment?: () => void;
@@ -41,6 +43,7 @@ const MENU_HEIGHT_ESTIMATE = 330;
 export default function RegistrationActionsMenu({
   paymentStatus,
   seatInviteSentAt,
+  seatChoice,
   onAction,
   onUpdatePayment,
   onResetPayment,
@@ -117,9 +120,18 @@ export default function RegistrationActionsMenu({
           {/* Seat selection is always clickable. If the person hasn't paid in
               full the server refuses and the page shows why, rather than the
               option silently being greyed out. */}
-          <button onClick={() => choose("send_seat_invite")} className={itemClass}>
+          <button
+            onClick={() => choose("send_seat_invite")}
+            disabled={Boolean(seatChoice)}
+            title={seatChoice ? `Already chosen: ${seatChoice}` : undefined}
+            className={itemClass}
+          >
             {seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
-            {paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>}
+            {seatChoice ? (
+              <span className="block text-xs text-muted mt-0.5">Already chosen: {seatChoice}</span>
+            ) : (
+              paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>
+            )}
           </button>
           <button
             onClick={() => choose("send_payment_reminder")}

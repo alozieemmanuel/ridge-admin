@@ -60,6 +60,11 @@ enum SeatStatus {
   BLOCKED
 }
 
+enum AttendanceMode {
+  IN_PERSON // has a seat at the Day 7 venue
+  ONLINE // will join Day 7 online instead
+}
+
 enum PaymentStatus {
   NOT_PAID
   PARTIAL
@@ -85,6 +90,8 @@ model Registration {
   payLaterReminderAt DateTime? // when the scheduled reminder was actually sent
   seatInviteSentAt DateTime? // last time the "pick your seat" email was sent
   checkedInAt      DateTime? // when the attendee was marked as arrived on Day 7 (attendance)
+  attendanceMode     AttendanceMode? // set when the participant picks a seat (IN_PERSON) or chooses to attend online (ONLINE)
+  attendanceChosenAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

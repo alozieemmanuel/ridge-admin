@@ -53,7 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid action." }, { status: 400 });
   }
 
-  const registration = await prisma.registration.findUnique({ where: { id } });
+  const registration = await prisma.registration.findUnique({ where: { id }, include: { seat: { select: { label: true } } } });
   if (!registration) {
     return NextResponse.json({ error: "Registration not found." }, { status: 404 });
   }
@@ -71,6 +71,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
       request
     );
+
+  // Someone who has already chosen a seat, or chosen to attend online, doesn't
+  // need another seat invite. Refuse it so it can't be sent by mistake.
+  if (action === "send_seat_invite" && (registration.seat || registration.attendanceMode === "ONLINE")) {
+    const choice = registration.seat ? `seat ${registration.seat.label}` : "to attend online";
+    const error = `${registration.fullName} has already chosen ${choice}, so no seat invite was sent.`;
+    await audit("blocked", { reason: "already chose" });
+    return NextResponse.json({ error }, { status: 409 });
+  }
 
   // The seat-invite email says "your payment has been confirmed", and a
   // reminder for someone who has paid in full would be wrong, so guard both.

@@ -35,6 +35,13 @@ const FIELDS: { key: string; label: string; hint?: string }[] = [
   },
   { key: "contact_whatsapp_number", label: "WhatsApp Number", hint: "Digits only, country code, no plus sign." },
   { key: "contact_whatsapp_message", label: "WhatsApp Pre-filled Message" },
+  {
+    key: "payment_page_url",
+    label: "Payment Page Link (reminder emails)",
+    hint: "The page the \"Complete My Payment\" button opens. The person's secure token is added to the end as ?pay=...",
+  },
+  { key: "day7_date", label: "Day 7 Date (seat emails)" },
+  { key: "day7_venue", label: "Day 7 Venue (seat emails)" },
 ];
 
 type ClearTarget = "registrations" | "brochure_requests" | "all";

@@ -25,9 +25,14 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   notification_email: "ridge@pertinencegroup.com",
   contact_whatsapp_number: "2348149774237",
   contact_whatsapp_message: "Hi RIDGE team, I'd like some help with my registration.",
-  // Placeholder until the public seat-picker page exists — the registration
-  // id is appended as a query param when the invite email is sent.
+  // Seat picker page. Left as the old placeholder address it is ignored and the
+  // built-in page on this dashboard's own address (/select-seat) is used instead.
   seat_selection_url: "https://theridgecircle.com/select-seat",
+  // The public payment page the reminder emails send people to. The person's
+  // signed token is added as ?pay=... so the page can pick up where they left off.
+  payment_page_url: "https://theridgecircle.com/register",
+  day7_date: "Saturday 14th November, 2026",
+  day7_venue: "Marriott Hotel",
 };
 
 export async function getSettingsMap(): Promise<Record<string, string>> {

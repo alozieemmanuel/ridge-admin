@@ -20,12 +20,17 @@ const BRAND = {
 /**
  * Public address of this app, used for the logo in emails (mail apps need a
  * full https:// link, not a relative path). The logo file is
- * /public/ridge-logo.png, the white version. Set APP_BASE_URL in the environment
+ * /public/ridge-logo-email.png (a small white version made for email). Set APP_BASE_URL in the environment
  * if the dashboard is served from a different address.
  */
+export function appBaseUrl(): string {
+  return (process.env.APP_BASE_URL || "https://admin.theridgecircle.com").replace(/\/+$/, "");
+}
+
 export function emailLogoUrl(): string {
-  const base = (process.env.APP_BASE_URL || "https://admin.theridgecircle.com").replace(/\/+$/, "");
-  return `${base}/ridge-logo.png`;
+  // A small (540px wide, about 30 KB) copy made for email. The full-size logo used
+  // on the dashboard is far too heavy for mail apps to fetch quickly.
+  return `${appBaseUrl()}/ridge-logo-email.png`;
 }
 
 export function escapeHtml(value: string | null | undefined): string {
@@ -79,7 +84,7 @@ function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string })
   return `<div style="background:${BRAND.pageBg};padding:40px 16px;font-family:Georgia,'Times New Roman',serif;">
     <div style="max-width:${opts.maxWidth}px;margin:0 auto;background:${BRAND.cardBg};border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
       <div style="padding:36px 40px 0;text-align:center;">
-        <img src="${emailLogoUrl()}" alt="RIDGE" width="180" style="display:inline-block;width:180px;max-width:70%;height:auto;border:0;outline:none;text-decoration:none;" />
+        <img src="${emailLogoUrl()}" alt="RIDGE" width="180" height="42" style="display:inline-block;width:180px;max-width:70%;height:auto;border:0;outline:none;text-decoration:none;" />
       </div>
       ${inner}
       <div style="padding:28px 40px 40px;text-align:center;">
@@ -271,6 +276,8 @@ export type EmailKind =
   | "payment_confirmation"
   | "pay_later_ack"
   | "pay_later_reminder"
+  | "seat_confirmation"
+  | "online_confirmation"
   | "internal"
   | "campaign";
 

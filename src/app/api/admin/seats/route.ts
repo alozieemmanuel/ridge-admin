@@ -18,5 +18,11 @@ export async function GET() {
     },
   });
 
-  return NextResponse.json({ tables });
+  const online = await prisma.registration.findMany({
+    where: { attendanceMode: "ONLINE" },
+    orderBy: { attendanceChosenAt: "desc" },
+    select: { id: true, fullName: true, email: true, attendanceChosenAt: true },
+  });
+
+  return NextResponse.json({ tables, online });
 }

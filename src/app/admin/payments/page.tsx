@@ -19,6 +19,9 @@ interface RegistrationRow {
   amountPaid: number;
   paymentUpdatedAt: string | null;
   seatInviteSentAt: string | null;
+  lastReminderAt?: string | null;
+  seatLabel?: string | null;
+  attendanceMode?: "IN_PERSON" | "ONLINE" | null;
   proofs: ProofInfo[];
 }
 
@@ -53,6 +56,10 @@ export default function PaymentsPage() {
   const [activeRow, setActiveRow] = useState<RegistrationRow | null>(null);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const isOwner = useIsOwner();
+  // Per-person state of the payment reminder button: "sending" while the email goes out, "sent" briefly after.
+  const [reminderState, setReminderState] = useState<Record<string, "sending" | "sent">>({});
+  // The new "last reminder" time shown straight away, before the list reloads.
+  const [reminderSentAt, setReminderSentAt] = useState<Record<string, string>>({});
   const requestId = useRef(0);
   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -110,10 +117,51 @@ export default function PaymentsPage() {
   }
 
   async function handleEmailAction(id: string, action: RegistrationAction) {
-    flash("Sending…", true);
+    const isReminder = action === "send_payment_reminder";
+    // Ignore a second click while this person's reminder is already going out.
+    if (isReminder && reminderState[id]) return;
+
+    if (isReminder) setReminderState((s) => ({ ...s, [id]: "sending" }));
+    else flash("Sending…", true);
+
     const result = await runRegistrationAction(id, action);
-    flash(result.message, result.ok);
+
+    if (isReminder) {
+      if (result.ok) {
+        setReminderSentAt((s) => ({ ...s, [id]: new Date().toISOString() }));
+        setReminderState((s) => ({ ...s, [id]: "sent" }));
+        setTimeout(() => {
+          setReminderState((s) => {
+            const next = { ...s };
+            delete next[id];
+            return next;
+          });
+        }, 2500);
+      } else {
+        setReminderState((s) => {
+          const next = { ...s };
+          delete next[id];
+          return next;
+        });
+        flash(result.message, false);
+      }
+    } else {
+      flash(result.message, result.ok);
+    }
     load(true);
+  }
+
+  function lastReminderLabel(row: RegistrationRow): string {
+    const times = [row.lastReminderAt, reminderSentAt[row.id]].filter((t): t is string => Boolean(t));
+    if (times.length === 0) return "No reminder sent yet";
+    const latest = times.reduce((a, b) => (new Date(a) > new Date(b) ? a : b));
+    return `Last reminder: ${new Date(latest).toLocaleString([], {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
   }
 
   async function handleReset(row: RegistrationRow) {
@@ -304,7 +352,11 @@ export default function PaymentsPage() {
                           </button>
                           {/* The most useful next email for this person: chase the balance,
                               or once they've paid in full, invite them to pick a seat. */}
-                          {r.paymentStatus === "PAID" ? (
+                          {r.paymentStatus === "PAID" && (r.seatLabel || r.attendanceMode === "ONLINE") ? (
+                            <span className="text-xs px-3.5 py-2 rounded-full border border-border text-muted whitespace-nowrap">
+                              {r.seatLabel ? `Seat ${r.seatLabel} booked` : "Attending online"}
+                            </span>
+                          ) : r.paymentStatus === "PAID" ? (
                             <button
                               onClick={() => handleEmailAction(r.id, "send_seat_invite")}
                               className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
@@ -312,16 +364,32 @@ export default function PaymentsPage() {
                               {r.seatInviteSentAt ? "Resend seat invite" : "Send seat invite"}
                             </button>
                           ) : (
-                            <button
-                              onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
-                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
-                            >
-                              Send payment reminder
-                            </button>
+                            <div className="flex flex-col items-center">
+                              <button
+                                onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
+                                disabled={reminderState[r.id] === "sending"}
+                                aria-live="polite"
+                                className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap min-w-[10.5rem] transition-colors ${
+                                  reminderState[r.id] === "sent"
+                                    ? "border-emerald-400/60 text-emerald-400"
+                                    : reminderState[r.id] === "sending"
+                                      ? "border-gold/60 text-goldlight opacity-80 cursor-wait"
+                                      : "border-border text-fg hover:border-gold"
+                                }`}
+                              >
+                                {reminderState[r.id] === "sending"
+                                  ? "Sending…"
+                                  : reminderState[r.id] === "sent"
+                                    ? "Sent ✓"
+                                    : "Send payment reminder"}
+                              </button>
+                              <span className="text-[11px] text-muted mt-1.5 whitespace-nowrap">{lastReminderLabel(r)}</span>
+                            </div>
                           )}
                           <RegistrationActionsMenu
                             paymentStatus={r.paymentStatus}
                             seatInviteSentAt={r.seatInviteSentAt}
+                            seatChoice={r.seatLabel ? `Seat ${r.seatLabel}` : r.attendanceMode === "ONLINE" ? "Attending online" : null}
                             onAction={(action) => handleEmailAction(r.id, action)}
                             onUpdatePayment={() => setActiveRow(r)}
                             onResetPayment={() => handleReset(r)}

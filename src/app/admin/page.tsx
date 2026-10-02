@@ -23,6 +23,7 @@ interface RegistrationRow {
   amountPaid: number;
   proofs: ProofInfo[];
   seatLabel: string | null;
+  attendanceMode: "IN_PERSON" | "ONLINE" | null;
   seatInviteSentAt: string | null;
   createdAt: string;
 }
@@ -275,6 +276,8 @@ export default function RegistrationsPage() {
                         <span className="px-2.5 py-1 rounded-full border border-gold/40 text-goldlight text-xs font-semibold whitespace-nowrap">
                           {r.seatLabel}
                         </span>
+                      ) : r.attendanceMode === "ONLINE" ? (
+                        <span className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap">Online</span>
                       ) : (
                         <span className="text-muted text-xs">—</span>
                       )}
@@ -289,6 +292,7 @@ export default function RegistrationsPage() {
                       <RegistrationActionsMenu
                         paymentStatus={r.paymentStatus}
                         seatInviteSentAt={r.seatInviteSentAt}
+                        seatChoice={r.seatLabel ? `Seat ${r.seatLabel}` : r.attendanceMode === "ONLINE" ? "Attending online" : null}
                         onAction={(action) => handleAction(r.id, action)}
                         onUpdatePayment={() => setPaymentRow(r)}
                         onResetPayment={() => handleReset(r)}

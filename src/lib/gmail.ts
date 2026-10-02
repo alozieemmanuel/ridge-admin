@@ -24,14 +24,22 @@ function getTransporter(): Transporter | null {
   if (!user || !pass) return null;
 
   if (!transporter) {
+    // Port 465 (secure from the start) is the default. If a network blocks 465,
+    // set GMAIL_SMTP_PORT=587 to use the other standard Gmail port (STARTTLS).
+    const port = Number(process.env.GMAIL_SMTP_PORT) === 587 ? 587 : 465;
     transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
+      port,
+      secure: port === 465,
+      requireTLS: port === 587,
       auth: { user, pass },
       pool: true,
       maxConnections: 3,
       maxMessages: 100,
+      // Fail in seconds, not half a minute, when Gmail can't be reached.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
     });
   }
   return transporter;
@@ -68,10 +76,25 @@ export async function sendViaGmail(
     });
     return { ok: true, id: info.messageId };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[gmail] Send failed:", message);
-    return { ok: false, error: message };
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error("[gmail] Send failed:", raw);
+    return { ok: false, error: friendlyGmailError(err, raw) };
   }
+}
+
+/** Turns low-level network errors into something an admin can act on. */
+function friendlyGmailError(err: unknown, raw: string): string {
+  const code = (err as { code?: string } | null)?.code ?? "";
+  if (["ETIMEDOUT", "ECONNREFUSED", "ECONNECTION", "ESOCKET", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET"].includes(code) || /ETIMEDOUT|ECONNREFUSED/.test(raw)) {
+    return "Couldn't reach Gmail's mail server. Your network, firewall or antivirus may be blocking it (try GMAIL_SMTP_PORT=587), or the internet connection is down.";
+  }
+  if (code === "ENOTFOUND" || /ENOTFOUND/.test(raw)) {
+    return "Couldn't find Gmail's mail server. Please check the internet connection.";
+  }
+  if (code === "EAUTH" || /Invalid login|Username and Password not accepted/i.test(raw)) {
+    return "Gmail rejected the login. Check GMAIL_USER and that GMAIL_APP_PASSWORD is a valid app password.";
+  }
+  return raw;
 }
 
 function stripHtml(html: string): string {
