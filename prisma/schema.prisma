@@ -100,6 +100,7 @@ model Registration {
   seat          Seat?
   paymentProofs PaymentProof[]
   prospect      Prospect? // set when this registration was converted from a prospect
+  paymentRecords PaymentRecord[]
 
   @@index([createdAt])
 }
@@ -413,4 +414,23 @@ model WhatsAppBroadcast {
   messages WhatsAppMessage[]
 
   @@index([sentAt])
+}
+
+
+// One confirmed payment, in the currency it was actually received in. The
+// registration's amountPaid (USD) is the running total of these (plus anything
+// recorded before this table existed). The receipt email is built from them.
+model PaymentRecord {
+  id             String       @id @default(cuid())
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  currency       String // USD | USD_NG | CAD | NGN
+  amount         Float // exact amount received, in `currency`
+  rate           Float // units of `currency` per 1 USD (1 for USD)
+  usdAmount      Float // the USD equivalent counted towards the fee
+  note           String?
+  receivedAt     DateTime     @default(now())
+  recordedByName String?
+
+  @@index([registrationId])
 }

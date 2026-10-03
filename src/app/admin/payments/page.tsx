@@ -117,32 +117,30 @@ export default function PaymentsPage() {
   }
 
   async function handleEmailAction(id: string, action: RegistrationAction) {
-    const isReminder = action === "send_payment_reminder";
-    // Ignore a second click while this person's reminder is already going out.
-    if (isReminder && reminderState[id]) return;
+    // The reminder and seat-invite buttons show their own progress on the button itself.
+    const tracked = action === "send_payment_reminder" || action === "send_seat_invite";
+    const key = `${action}:${id}`;
+    // Ignore a second click while this person's email is already going out.
+    if (tracked && reminderState[key]) return;
 
-    if (isReminder) setReminderState((s) => ({ ...s, [id]: "sending" }));
+    if (tracked) setReminderState((s) => ({ ...s, [key]: "sending" }));
     else flash("Sending…", true);
 
     const result = await runRegistrationAction(id, action);
 
-    if (isReminder) {
-      if (result.ok) {
-        setReminderSentAt((s) => ({ ...s, [id]: new Date().toISOString() }));
-        setReminderState((s) => ({ ...s, [id]: "sent" }));
-        setTimeout(() => {
-          setReminderState((s) => {
-            const next = { ...s };
-            delete next[id];
-            return next;
-          });
-        }, 2500);
-      } else {
+    if (tracked) {
+      const clear = () =>
         setReminderState((s) => {
           const next = { ...s };
-          delete next[id];
+          delete next[key];
           return next;
         });
+      if (result.ok) {
+        if (action === "send_payment_reminder") setReminderSentAt((s) => ({ ...s, [id]: new Date().toISOString() }));
+        setReminderState((s) => ({ ...s, [key]: "sent" }));
+        setTimeout(clear, 2500);
+      } else {
+        clear();
         flash(result.message, false);
       }
     } else {
@@ -209,7 +207,7 @@ export default function PaymentsPage() {
     id: string,
     amountPaid: number,
     note: string,
-    opts: { sendConfirmation: boolean; approveProofIds: string[] }
+    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: { currency: string; amount: number; rate: number } }
   ) {
     const res = await fetch(`/api/admin/registrations/${id}`, {
       method: "PATCH",
@@ -359,27 +357,41 @@ export default function PaymentsPage() {
                           ) : r.paymentStatus === "PAID" ? (
                             <button
                               onClick={() => handleEmailAction(r.id, "send_seat_invite")}
-                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
+                              disabled={reminderState[`send_seat_invite:${r.id}`] === "sending"}
+                              aria-live="polite"
+                              className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap min-w-[8.5rem] transition-colors ${
+                                reminderState[`send_seat_invite:${r.id}`] === "sent"
+                                  ? "border-emerald-400/60 text-emerald-400"
+                                  : reminderState[`send_seat_invite:${r.id}`] === "sending"
+                                    ? "border-gold/60 text-goldlight opacity-80 cursor-wait"
+                                    : "border-border text-fg hover:border-gold"
+                              }`}
                             >
-                              {r.seatInviteSentAt ? "Resend seat invite" : "Send seat invite"}
+                              {reminderState[`send_seat_invite:${r.id}`] === "sending"
+                                ? "Sending…"
+                                : reminderState[`send_seat_invite:${r.id}`] === "sent"
+                                  ? "Sent ✓"
+                                  : r.seatInviteSentAt
+                                    ? "Resend seat invite"
+                                    : "Send seat invite"}
                             </button>
                           ) : (
                             <div className="flex flex-col items-center">
                               <button
                                 onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
-                                disabled={reminderState[r.id] === "sending"}
+                                disabled={reminderState[`send_payment_reminder:${r.id}`] === "sending"}
                                 aria-live="polite"
                                 className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap min-w-[10.5rem] transition-colors ${
-                                  reminderState[r.id] === "sent"
+                                  reminderState[`send_payment_reminder:${r.id}`] === "sent"
                                     ? "border-emerald-400/60 text-emerald-400"
-                                    : reminderState[r.id] === "sending"
+                                    : reminderState[`send_payment_reminder:${r.id}`] === "sending"
                                       ? "border-gold/60 text-goldlight opacity-80 cursor-wait"
                                       : "border-border text-fg hover:border-gold"
                                 }`}
                               >
-                                {reminderState[r.id] === "sending"
+                                {reminderState[`send_payment_reminder:${r.id}`] === "sending"
                                   ? "Sending…"
-                                  : reminderState[r.id] === "sent"
+                                  : reminderState[`send_payment_reminder:${r.id}`] === "sent"
                                     ? "Sent ✓"
                                     : "Send payment reminder"}
                               </button>

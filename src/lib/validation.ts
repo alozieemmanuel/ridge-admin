@@ -64,6 +64,14 @@ export const confirmPaymentSchema = z.object({
   // Approving uploaded receipts: mark them approved, and optionally email the participant.
   approveProofIds: z.array(z.string()).max(20).optional(),
   sendConfirmation: z.boolean().optional(),
+  // A payment recorded in the currency it was received in. When present it is ADDED to what is on file.
+  payment: z
+    .object({
+      currency: z.enum(["USD", "USD_NG", "CAD", "NGN"]),
+      amount: z.coerce.number().positive("Enter the amount received.").max(1_000_000_000, "That amount looks too large. Double check it."),
+      rate: z.coerce.number().positive("Enter a valid exchange rate.").max(1_000_000),
+    })
+    .optional(),
 });
 
 export const sendReplySchema = z.object({

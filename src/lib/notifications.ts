@@ -2,8 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
 import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
 import { makeProofToken, makeSeatToken } from "@/lib/proof-token";
-import type { SendEmailResult, EmailKind } from "@/lib/email";
-import { buildReceiptLines, usdText } from "@/lib/receipt";
+import type { SendEmailResult, EmailKind, ReceiptLine } from "@/lib/email";
+import { buildReceiptLines, buildLedgerLines, paidText, usdText } from "@/lib/receipt";
 import type { Registration, BrochureRequest } from "@prisma/client";
 
 type Settings = Record<string, string>;
@@ -498,23 +498,37 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
   const paidInFull = registration.paymentStatus === "PAID";
   const balance = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;
 
-  // Each receipt an admin approved, in the currency it was actually paid in.
-  // The USD equivalent uses the rate implied by the fee the participant was
-  // quoted in that currency (their local fee divided by the USD fee).
-  const proofs = await prisma.paymentProof.findMany({
-    where: { registrationId: registration.id, status: "APPROVED" },
-    orderBy: { createdAt: "asc" },
+  // Payments an admin recorded, each in the currency it was actually received in. Registrations
+  // confirmed before payments were recorded this way fall back to the receipts the participant uploaded.
+  const records = await prisma.paymentRecord.findMany({
+    where: { registrationId: registration.id },
+    orderBy: { receivedAt: "asc" },
   });
 
-  const { lines, anyForeign } = buildReceiptLines(proofs, fee, registration.amountPaid, registration.paymentUpdatedAt);
+  let lines: ReceiptLine[];
+  let anyForeign: boolean;
+  if (records.length > 0) {
+    ({ lines, anyForeign } = buildLedgerLines(records, registration.amountPaid));
+  } else {
+    // The USD equivalent of an uploaded receipt uses the rate implied by the fee the participant was quoted.
+    const proofs = await prisma.paymentProof.findMany({
+      where: { registrationId: registration.id, status: "APPROVED" },
+      orderBy: { createdAt: "asc" },
+    });
+    ({ lines, anyForeign } = buildReceiptLines(proofs, fee, registration.amountPaid, registration.paymentUpdatedAt));
+  }
+  const latest = records.length > 0 ? records[records.length - 1] : null;
+  const latestText = latest ? `${paidText(latest.currency, latest.amount)}, which is ${usdText(latest.usdAmount)}` : usdText(registration.amountPaid);
 
   const issued = registration.paymentUpdatedAt ?? new Date();
   const receiptNo = `RCT-${issued.toISOString().slice(0, 10).replace(/-/g, "")}-${registration.id.slice(-5).toUpperCase()}`;
 
   const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
   const intro = paidInFull
-    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
-    : `Hi ${first},\n\nWe've confirmed your payment of ${usdText(registration.amountPaid)} for ${settings.programme_name}. Your receipt is below.${
+    ? latest
+      ? `Hi ${first},\n\nWe've confirmed your payment of ${latestText} for ${settings.programme_name}. Your registration is now paid in full, and your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
+      : `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
+    : `Hi ${first},\n\nWe've confirmed your payment of ${latestText} for ${settings.programme_name}. Your receipt is below.${
         balance !== null && balance > 0 ? ` The remaining balance is ${usdText(balance)}, which you can pay using the details in your registration email.` : ""
       }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
 

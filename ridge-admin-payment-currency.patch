@@ -1,0 +1,807 @@
+diff --git a/prisma/migrations/20261002120000_payment_records/migration.sql b/prisma/migrations/20261002120000_payment_records/migration.sql
+new file mode 100644
+index 0000000..702f28b
+--- /dev/null
++++ b/prisma/migrations/20261002120000_payment_records/migration.sql
+@@ -0,0 +1,21 @@
++CREATE TABLE IF NOT EXISTS "PaymentRecord" (
++    "id" TEXT NOT NULL,
++    "registrationId" TEXT NOT NULL,
++    "currency" TEXT NOT NULL,
++    "amount" DOUBLE PRECISION NOT NULL,
++    "rate" DOUBLE PRECISION NOT NULL,
++    "usdAmount" DOUBLE PRECISION NOT NULL,
++    "note" TEXT,
++    "receivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "recordedByName" TEXT,
++
++    CONSTRAINT "PaymentRecord_pkey" PRIMARY KEY ("id")
++);
++
++CREATE INDEX IF NOT EXISTS "PaymentRecord_registrationId_idx" ON "PaymentRecord"("registrationId");
++
++DO $$ BEGIN
++  ALTER TABLE "PaymentRecord" ADD CONSTRAINT "PaymentRecord_registrationId_fkey" FOREIGN KEY ("registrationId") REFERENCES "Registration"("id") ON DELETE CASCADE ON UPDATE CASCADE;
++EXCEPTION
++  WHEN duplicate_object THEN NULL;
++END $$;
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index dbae2fb..04e5ec1 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -100,6 +100,7 @@ model Registration {
+   seat          Seat?
+   paymentProofs PaymentProof[]
+   prospect      Prospect? // set when this registration was converted from a prospect
++  paymentRecords PaymentRecord[]
+ 
+   @@index([createdAt])
+ }
+@@ -414,3 +415,22 @@ model WhatsAppBroadcast {
+ 
+   @@index([sentAt])
+ }
++
++
++// One confirmed payment, in the currency it was actually received in. The
++// registration's amountPaid (USD) is the running total of these (plus anything
++// recorded before this table existed). The receipt email is built from them.
++model PaymentRecord {
++  id             String       @id @default(cuid())
++  registrationId String
++  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
++  currency       String // USD | USD_NG | CAD | NGN
++  amount         Float // exact amount received, in `currency`
++  rate           Float // units of `currency` per 1 USD (1 for USD)
++  usdAmount      Float // the USD equivalent counted towards the fee
++  note           String?
++  receivedAt     DateTime     @default(now())
++  recordedByName String?
++
++  @@index([registrationId])
++}
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index 0dfe0e6..4ef987f 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -111,7 +111,7 @@ export default function RegistrationsPage() {
+     id: string,
+     amountPaid: number,
+     note: string,
+-    opts: { sendConfirmation: boolean; approveProofIds: string[] }
++    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: { currency: string; amount: number; rate: number } }
+   ) {
+     const res = await fetch(`/api/admin/registrations/${id}`, {
+       method: "PATCH",
+diff --git a/src/app/admin/payments/page.tsx b/src/app/admin/payments/page.tsx
+index e178d63..6dd9243 100644
+--- a/src/app/admin/payments/page.tsx
++++ b/src/app/admin/payments/page.tsx
+@@ -117,32 +117,30 @@ export default function PaymentsPage() {
+   }
+ 
+   async function handleEmailAction(id: string, action: RegistrationAction) {
+-    const isReminder = action === "send_payment_reminder";
+-    // Ignore a second click while this person's reminder is already going out.
+-    if (isReminder && reminderState[id]) return;
++    // The reminder and seat-invite buttons show their own progress on the button itself.
++    const tracked = action === "send_payment_reminder" || action === "send_seat_invite";
++    const key = `${action}:${id}`;
++    // Ignore a second click while this person's email is already going out.
++    if (tracked && reminderState[key]) return;
+ 
+-    if (isReminder) setReminderState((s) => ({ ...s, [id]: "sending" }));
++    if (tracked) setReminderState((s) => ({ ...s, [key]: "sending" }));
+     else flash("Sending…", true);
+ 
+     const result = await runRegistrationAction(id, action);
+ 
+-    if (isReminder) {
+-      if (result.ok) {
+-        setReminderSentAt((s) => ({ ...s, [id]: new Date().toISOString() }));
+-        setReminderState((s) => ({ ...s, [id]: "sent" }));
+-        setTimeout(() => {
+-          setReminderState((s) => {
+-            const next = { ...s };
+-            delete next[id];
+-            return next;
+-          });
+-        }, 2500);
+-      } else {
++    if (tracked) {
++      const clear = () =>
+         setReminderState((s) => {
+           const next = { ...s };
+-          delete next[id];
++          delete next[key];
+           return next;
+         });
++      if (result.ok) {
++        if (action === "send_payment_reminder") setReminderSentAt((s) => ({ ...s, [id]: new Date().toISOString() }));
++        setReminderState((s) => ({ ...s, [key]: "sent" }));
++        setTimeout(clear, 2500);
++      } else {
++        clear();
+         flash(result.message, false);
+       }
+     } else {
+@@ -209,7 +207,7 @@ export default function PaymentsPage() {
+     id: string,
+     amountPaid: number,
+     note: string,
+-    opts: { sendConfirmation: boolean; approveProofIds: string[] }
++    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: { currency: string; amount: number; rate: number } }
+   ) {
+     const res = await fetch(`/api/admin/registrations/${id}`, {
+       method: "PATCH",
+@@ -359,27 +357,41 @@ export default function PaymentsPage() {
+                           ) : r.paymentStatus === "PAID" ? (
+                             <button
+                               onClick={() => handleEmailAction(r.id, "send_seat_invite")}
+-                              className="text-xs px-3.5 py-2 rounded-full border border-border text-fg hover:border-gold whitespace-nowrap"
++                              disabled={reminderState[`send_seat_invite:${r.id}`] === "sending"}
++                              aria-live="polite"
++                              className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap min-w-[8.5rem] transition-colors ${
++                                reminderState[`send_seat_invite:${r.id}`] === "sent"
++                                  ? "border-emerald-400/60 text-emerald-400"
++                                  : reminderState[`send_seat_invite:${r.id}`] === "sending"
++                                    ? "border-gold/60 text-goldlight opacity-80 cursor-wait"
++                                    : "border-border text-fg hover:border-gold"
++                              }`}
+                             >
+-                              {r.seatInviteSentAt ? "Resend seat invite" : "Send seat invite"}
++                              {reminderState[`send_seat_invite:${r.id}`] === "sending"
++                                ? "Sending…"
++                                : reminderState[`send_seat_invite:${r.id}`] === "sent"
++                                  ? "Sent ✓"
++                                  : r.seatInviteSentAt
++                                    ? "Resend seat invite"
++                                    : "Send seat invite"}
+                             </button>
+                           ) : (
+                             <div className="flex flex-col items-center">
+                               <button
+                                 onClick={() => handleEmailAction(r.id, "send_payment_reminder")}
+-                                disabled={reminderState[r.id] === "sending"}
++                                disabled={reminderState[`send_payment_reminder:${r.id}`] === "sending"}
+                                 aria-live="polite"
+                                 className={`text-xs px-3.5 py-2 rounded-full border whitespace-nowrap min-w-[10.5rem] transition-colors ${
+-                                  reminderState[r.id] === "sent"
++                                  reminderState[`send_payment_reminder:${r.id}`] === "sent"
+                                     ? "border-emerald-400/60 text-emerald-400"
+-                                    : reminderState[r.id] === "sending"
++                                    : reminderState[`send_payment_reminder:${r.id}`] === "sending"
+                                       ? "border-gold/60 text-goldlight opacity-80 cursor-wait"
+                                       : "border-border text-fg hover:border-gold"
+                                 }`}
+                               >
+-                                {reminderState[r.id] === "sending"
++                                {reminderState[`send_payment_reminder:${r.id}`] === "sending"
+                                   ? "Sending…"
+-                                  : reminderState[r.id] === "sent"
++                                  : reminderState[`send_payment_reminder:${r.id}`] === "sent"
+                                     ? "Sent ✓"
+                                     : "Send payment reminder"}
+                               </button>
+diff --git a/src/app/admin/settings/page.tsx b/src/app/admin/settings/page.tsx
+index a3459c1..a884da6 100644
+--- a/src/app/admin/settings/page.tsx
++++ b/src/app/admin/settings/page.tsx
+@@ -40,6 +40,8 @@ const FIELDS: { key: string; label: string; hint?: string }[] = [
+     label: "Payment Page Link (reminder emails)",
+     hint: "The page the \"Complete My Payment\" button opens. The person's secure token is added to the end as ?pay=...",
+   },
++  { key: "rate_ngn_per_usd", label: "Exchange Rate: Naira per 1 USD", hint: "Used as the starting rate when you record a payment made in Naira. You can change it for each payment." },
++  { key: "rate_cad_per_usd", label: "Exchange Rate: CAD per 1 USD", hint: "Used as the starting rate when you record a payment made in Canadian dollars." },
+   { key: "day7_date", label: "Day 7 Date (seat emails)" },
+   { key: "day7_venue", label: "Day 7 Venue (seat emails)" },
+ ];
+diff --git a/src/app/api/admin/registrations/[id]/payment/route.ts b/src/app/api/admin/registrations/[id]/payment/route.ts
+index dbe8217..9f89afc 100644
+--- a/src/app/api/admin/registrations/[id]/payment/route.ts
++++ b/src/app/api/admin/registrations/[id]/payment/route.ts
+@@ -19,10 +19,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
+     return NextResponse.json({ error: "Registration not found." }, { status: 404 });
+   }
+ 
+-  const registration = await prisma.registration.update({
+-    where: { id },
+-    data: { amountPaid: 0, paymentStatus: "NOT_PAID", paymentNote: null, paymentUpdatedAt: null },
+-  });
++  // The recorded payments go too, so a receipt sent after a reset only lists payments made afterwards.
++  const [, registration] = await prisma.$transaction([
++    prisma.paymentRecord.deleteMany({ where: { registrationId: id } }),
++    prisma.registration.update({
++      where: { id },
++      data: { amountPaid: 0, paymentStatus: "NOT_PAID", paymentNote: null, paymentUpdatedAt: null },
++    }),
++  ]);
+ 
+   await logAdminAction(
+     session,
+diff --git a/src/app/api/admin/registrations/[id]/route.ts b/src/app/api/admin/registrations/[id]/route.ts
+index f2f9962..7b5803d 100644
+--- a/src/app/api/admin/registrations/[id]/route.ts
++++ b/src/app/api/admin/registrations/[id]/route.ts
+@@ -47,19 +47,43 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+   );
+   const expectedFee = Number.isFinite(expectedFeeRaw) ? expectedFeeRaw : null;
+ 
+-  const { amountPaid } = parsed.data;
++  // A payment recorded in its own currency is ADDED to what is on file (its USD equivalent counts
++  // towards the fee). Without one, amountPaid is taken as the new total in USD (a correction).
++  const pay = parsed.data.payment;
++  const isUsd = pay ? pay.currency === "USD" || pay.currency === "USD_NG" : false;
++  const rate = pay ? (isUsd ? 1 : pay.rate) : 1;
++  const usdAmount = pay ? Math.round((pay.amount / rate) * 100) / 100 : 0;
++  const amountPaid = pay ? Math.round((existing.amountPaid + usdAmount) * 100) / 100 : parsed.data.amountPaid;
++
+   const paymentStatus =
+     amountPaid <= 0 ? "NOT_PAID" : expectedFee !== null && amountPaid >= expectedFee ? "PAID" : "PARTIAL";
+ 
+-  const registration = await prisma.registration.update({
+-    where: { id },
+-    data: {
+-      amountPaid,
+-      paymentStatus,
+-      paymentNote: parsed.data.note !== undefined ? parsed.data.note || null : undefined,
+-      paymentUpdatedAt: new Date(),
+-    },
+-  });
++  const [registration] = await prisma.$transaction([
++    prisma.registration.update({
++      where: { id },
++      data: {
++        amountPaid,
++        paymentStatus,
++        paymentNote: parsed.data.note !== undefined ? parsed.data.note || null : undefined,
++        paymentUpdatedAt: new Date(),
++      },
++    }),
++    ...(pay
++      ? [
++          prisma.paymentRecord.create({
++            data: {
++              registrationId: id,
++              currency: pay.currency,
++              amount: pay.amount,
++              rate,
++              usdAmount,
++              note: parsed.data.note || null,
++              recordedByName: session?.name ?? null,
++            },
++          }),
++        ]
++      : []),
++  ]);
+ 
+   // Receipts the admin approved with this payment.
+   const approveIds = parsed.data.approveProofIds ?? [];
+@@ -92,6 +116,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+         before: { amountPaid: existing.amountPaid, status: existing.paymentStatus },
+         after: { amountPaid, status: paymentStatus },
+         expectedFee,
++        ...(pay ? { payment: { currency: pay.currency, amount: pay.amount, rate, usdAmount } } : {}),
+         ...(parsed.data.note ? { note: parsed.data.note } : {}),
+         ...(approveIds.length ? { approvedReceipts: approveIds.length } : {}),
+         ...(wantsEmail ? { confirmationEmail: emailError ? `failed: ${emailError.slice(0, 200)}` : "sent" } : {}),
+diff --git a/src/components/PaymentUpdateModal.tsx b/src/components/PaymentUpdateModal.tsx
+index 954a161..1dad64e 100644
+--- a/src/components/PaymentUpdateModal.tsx
++++ b/src/components/PaymentUpdateModal.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { useEffect, useState } from "react";
+ import { claimedText, claimKind, type ProofInfo } from "@/components/ProofList";
++import { paidText, usdText } from "@/lib/receipt";
+ 
+ export type PaymentStatus = "NOT_PAID" | "PARTIAL" | "PAID";
+ 
+@@ -49,6 +50,41 @@ export function usePaymentSettings() {
+   return { currency, feeAmounts };
+ }
+ 
++export type PayCurrency = "USD" | "USD_NG" | "CAD" | "NGN";
++
++const CURRENCY_OPTIONS: { value: PayCurrency; label: string; code: string }[] = [
++  { value: "USD", label: "USD", code: "USD" },
++  { value: "USD_NG", label: "USD (Nigeria)", code: "USD" },
++  { value: "CAD", label: "CAD (Canadian dollar)", code: "CAD" },
++  { value: "NGN", label: "Naira (NGN)", code: "NGN" },
++];
++
++const isUsdCurrency = (c: PayCurrency) => c === "USD" || c === "USD_NG";
++
++/** Starting exchange rates (units per 1 USD) from Settings. */
++function useExchangeRates() {
++  const [rates, setRates] = useState<{ NGN: number; CAD: number }>({ NGN: 1400, CAD: 1.4 });
++  useEffect(() => {
++    fetch("/api/admin/settings")
++      .then((res) => (res.ok ? res.json() : Promise.reject()))
++      .then((data) => {
++        const ngn = parseFloat(data.settings.rate_ngn_per_usd);
++        const cad = parseFloat(data.settings.rate_cad_per_usd);
++        setRates({ NGN: Number.isFinite(ngn) && ngn > 0 ? ngn : 1400, CAD: Number.isFinite(cad) && cad > 0 ? cad : 1.4 });
++      })
++      .catch(() => {
++        // keep the built-in defaults
++      });
++  }, []);
++  return rates;
++}
++
++export interface ConfirmedPayment {
++  currency: PayCurrency;
++  amount: number;
++  rate: number;
++}
++
+ export function PaymentUpdateModal({
+   row,
+   currency,
+@@ -64,28 +100,59 @@ export function PaymentUpdateModal({
+   onClose: () => void;
+   /** Receipts waiting for approval; confirming this payment approves them. */
+   pendingProofs?: ProofInfo[];
+-  /** Pre-filled "new total amount received". */
++  /** Pre-filled total (USD) for the "correct the total" mode. */
+   initialAmount?: number;
+   onConfirm: (
+     amountPaid: number,
+     note: string,
+-    opts: { sendConfirmation: boolean; approveProofIds: string[] }
++    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: ConfirmedPayment }
+   ) => Promise<void>;
+ }) {
++  const rates = useExchangeRates();
++  const firstProof = pendingProofs.find((p) => p.amountClaimed !== null && CURRENCY_OPTIONS.some((o) => o.value === p.currency));
++
+   const [step, setStep] = useState<"input" | "confirm">("input");
+-  const [amountText, setAmountText] = useState(initialAmount !== undefined ? String(initialAmount) : "");
++  // "add": record a payment in the currency it was received in. "total": overwrite the USD total (a correction).
++  const [mode, setMode] = useState<"add" | "total">("add");
++  const [payCurrency, setPayCurrency] = useState<PayCurrency>((firstProof?.currency as PayCurrency) ?? "USD");
++  const [amountText, setAmountText] = useState(firstProof?.amountClaimed != null ? String(firstProof.amountClaimed) : "");
++  const [rateText, setRateText] = useState("");
++  const [rateTouched, setRateTouched] = useState(false);
++  const [totalText, setTotalText] = useState(initialAmount !== undefined ? String(initialAmount) : "");
+   // Approving a participant's receipt is the moment they get told their payment is confirmed.
+   const [sendConfirmation, setSendConfirmation] = useState(pendingProofs.length > 0);
+   const [note, setNote] = useState("");
+   const [error, setError] = useState<string | null>(null);
+   const [submitting, setSubmitting] = useState(false);
+ 
++  // Start from the rate in Settings for the chosen currency, until the admin edits it.
++  useEffect(() => {
++    if (rateTouched) return;
++    if (payCurrency === "NGN") setRateText(String(rates.NGN));
++    else if (payCurrency === "CAD") setRateText(String(rates.CAD));
++    else setRateText("1");
++  }, [payCurrency, rates, rateTouched]);
++
++  const usdCurrency = isUsdCurrency(payCurrency);
++  const code = CURRENCY_OPTIONS.find((o) => o.value === payCurrency)?.code ?? "USD";
+   const amount = parseFloat(amountText);
+-  const validAmount = amountText.trim() !== "" && !Number.isNaN(amount) && amount >= 0;
+-  const previewStatus = validAmount ? deriveStatus(amount, expectedFee) : null;
++  const rate = usdCurrency ? 1 : parseFloat(rateText);
++  const validAdd = amountText.trim() !== "" && amount > 0 && rate > 0;
++  const usdEquivalent = validAdd ? Math.round((amount / rate) * 100) / 100 : null;
++
++  const totalInput = parseFloat(totalText);
++  const validTotal = totalText.trim() !== "" && !Number.isNaN(totalInput) && totalInput >= 0;
++
++  const newTotal =
++    mode === "add" ? (usdEquivalent !== null ? Math.round((row.amountPaid + usdEquivalent) * 100) / 100 : null) : validTotal ? totalInput : null;
++  const previewStatus = newTotal !== null ? deriveStatus(newTotal, expectedFee) : null;
+ 
+   function handleContinue() {
+-    if (!validAmount) {
++    if (mode === "add" && !validAdd) {
++      setError(usdCurrency ? "Enter the amount received." : "Enter the amount received and a valid exchange rate.");
++      return;
++    }
++    if (mode === "total" && !validTotal) {
+       setError("Enter a valid amount (0 or more).");
+       return;
+     }
+@@ -94,12 +161,14 @@ export function PaymentUpdateModal({
+   }
+ 
+   async function handleConfirm() {
++    if (newTotal === null) return;
+     setSubmitting(true);
+     setError(null);
+     try {
+-      await onConfirm(amount, note, {
++      await onConfirm(newTotal, note, {
+         sendConfirmation: sendConfirmation && previewStatus !== "NOT_PAID",
+         approveProofIds: pendingProofs.map((p) => p.id),
++        ...(mode === "add" ? { payment: { currency: payCurrency, amount, rate } } : {}),
+       });
+     } catch (err) {
+       setError(err instanceof Error ? err.message : "Failed to update payment.");
+@@ -108,9 +177,12 @@ export function PaymentUpdateModal({
+     }
+   }
+ 
++  const inputClass = "w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold";
++  const labelClass = "block text-xs uppercase tracking-wider text-muted mb-2";
++
+   return (
+-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 px-4">
+-      <div className="w-full max-w-md bg-cardbg border border-border rounded-2xl p-6">
++    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 px-4 overflow-y-auto py-6">
++      <div className="w-full max-w-md bg-cardbg border border-border rounded-2xl p-6 my-auto">
+         <p className="text-xs uppercase tracking-wider text-muted mb-1">Update payment</p>
+         <h3 className="font-serif text-xl mb-5">{row.fullName}</h3>
+ 
+@@ -134,31 +206,91 @@ export function PaymentUpdateModal({
+                     </a>
+                   </p>
+                 ))}
+-                <p>
+-                  Check the receipt against your bank, then enter the total received in {currency}. Confirming approves
+-                  the receipt(s).
+-                </p>
++                <p>Check the receipt against your bank, then enter what you actually received. Confirming approves the receipt(s).</p>
+               </div>
+             )}
+ 
+-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
+-              Amount received ({currency})
+-            </label>
+-            <input
+-              autoFocus
+-              inputMode="decimal"
+-              value={amountText}
+-              onChange={(e) => setAmountText(e.target.value)}
+-              placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
+-              className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold"
+-            />
+-            <p className="text-xs text-muted mb-4">
+-              Currently on file: {formatMoney(row.amountPaid, currency)}. Enter the new total amount received to date
+-              for this registration
+-              {expectedFee !== null ? ` — expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
+-            </p>
++            {mode === "add" ? (
++              <>
++                <label className={labelClass}>Currency paid in</label>
++                <select
++                  value={payCurrency}
++                  onChange={(e) => {
++                    setPayCurrency(e.target.value as PayCurrency);
++                    setRateTouched(false);
++                  }}
++                  className={`${inputClass} mb-4`}
++                >
++                  {CURRENCY_OPTIONS.map((o) => (
++                    <option key={o.value} value={o.value}>
++                      {o.label}
++                    </option>
++                  ))}
++                </select>
++
++                <label className={labelClass}>Amount received ({code})</label>
++                <input
++                  autoFocus
++                  inputMode="decimal"
++                  value={amountText}
++                  onChange={(e) => setAmountText(e.target.value)}
++                  placeholder="0"
++                  className={`${inputClass} mb-3`}
++                />
+ 
+-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">
++                {!usdCurrency && (
++                  <div className="flex items-center gap-2 mb-2 text-sm text-muted">
++                    <span className="whitespace-nowrap">1 USD =</span>
++                    <input
++                      inputMode="decimal"
++                      value={rateText}
++                      onChange={(e) => {
++                        setRateText(e.target.value);
++                        setRateTouched(true);
++                      }}
++                      className="w-32 bg-inputbg border border-border rounded-lg px-3 py-2 text-sm text-fg focus:outline-none focus:border-gold"
++                    />
++                    <span>{code}</span>
++                  </div>
++                )}
++
++                <p className="text-xs text-muted mb-4">
++                  {usdEquivalent !== null && !usdCurrency ? (
++                    <>
++                      Equals <span className="text-fg">{usdText(usdEquivalent)}</span>.{" "}
++                    </>
++                  ) : null}
++                  On file: {formatMoney(row.amountPaid, currency)}.
++                  {newTotal !== null ? (
++                    <>
++                      {" "}
++                      After this payment: <span className="text-fg">{formatMoney(newTotal, currency)}</span>
++                      {expectedFee !== null ? ` of ${formatMoney(expectedFee, currency)}` : ""}.
++                    </>
++                  ) : expectedFee !== null ? (
++                    ` Expected fee is ${formatMoney(expectedFee, currency)}.`
++                  ) : null}
++                </p>
++              </>
++            ) : (
++              <>
++                <label className={labelClass}>Total received to date ({currency})</label>
++                <input
++                  autoFocus
++                  inputMode="decimal"
++                  value={totalText}
++                  onChange={(e) => setTotalText(e.target.value)}
++                  placeholder={row.amountPaid ? String(row.amountPaid) : "0"}
++                  className={`${inputClass} mb-1`}
++                />
++                <p className="text-xs text-muted mb-4">
++                  Currently on file: {formatMoney(row.amountPaid, currency)}. This replaces the total (use it to correct a mistake)
++                  {expectedFee !== null ? `. Expected fee is ${formatMoney(expectedFee, currency)}.` : "."}
++                </p>
++              </>
++            )}
++
++            <label className={labelClass}>
+               Note <span className="normal-case text-muted/70">(optional)</span>
+             </label>
+             <textarea
+@@ -166,16 +298,24 @@ export function PaymentUpdateModal({
+               onChange={(e) => setNote(e.target.value)}
+               rows={2}
+               placeholder="e.g. bank transfer ref, part of a split payment…"
+-              className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-1 focus:outline-none focus:border-gold resize-none"
++              className={`${inputClass} mb-2 resize-none`}
+             />
+ 
++            <button
++              type="button"
++              onClick={() => {
++                setMode(mode === "add" ? "total" : "add");
++                setError(null);
++              }}
++              className="text-xs text-muted underline underline-offset-4 hover:text-fg"
++            >
++              {mode === "add" ? "Correct the total instead" : "Record a payment instead"}
++            </button>
++
+             {error && <p className="text-sm text-red-400 mt-3">{error}</p>}
+ 
+             <div className="flex items-center justify-end gap-3 mt-6">
+-              <button
+-                onClick={onClose}
+-                className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg"
+-              >
++              <button onClick={onClose} className="text-sm px-4 py-2.5 rounded-full border border-border text-muted hover:text-fg">
+                 Cancel
+               </button>
+               <button
+@@ -188,13 +328,35 @@ export function PaymentUpdateModal({
+           </>
+         )}
+ 
+-        {step === "confirm" && previewStatus && (
++        {step === "confirm" && previewStatus && newTotal !== null && (
+           <>
+             <div className="border border-border rounded-xl p-4 mb-5 space-y-2">
+-              <div className="flex justify-between text-sm">
+-                <span className="text-muted">Amount received</span>
+-                <span>{formatMoney(amount, currency)}</span>
+-              </div>
++              {mode === "add" ? (
++                <>
++                  <div className="flex justify-between text-sm gap-4">
++                    <span className="text-muted">Payment received</span>
++                    <span className="text-right">{paidText(payCurrency, amount)}</span>
++                  </div>
++                  {!usdCurrency && usdEquivalent !== null && (
++                    <div className="flex justify-between text-sm gap-4">
++                      <span className="text-muted">USD equivalent</span>
++                      <span className="text-right">
++                        {usdText(usdEquivalent)}
++                        <span className="block text-xs text-muted">1 USD = {rate.toLocaleString("en-US", { maximumFractionDigits: 4 })} {code}</span>
++                      </span>
++                    </div>
++                  )}
++                  <div className="flex justify-between text-sm gap-4">
++                    <span className="text-muted">Total received to date</span>
++                    <span>{formatMoney(newTotal, currency)}</span>
++                  </div>
++                </>
++              ) : (
++                <div className="flex justify-between text-sm">
++                  <span className="text-muted">Total received (corrected)</span>
++                  <span>{formatMoney(newTotal, currency)}</span>
++                </div>
++              )}
+               {expectedFee !== null && (
+                 <div className="flex justify-between text-sm">
+                   <span className="text-muted">Expected fee</span>
+@@ -216,15 +378,11 @@ export function PaymentUpdateModal({
+ 
+             {previewStatus !== "NOT_PAID" && (
+               <label className="flex items-start gap-2 text-sm text-muted mb-5 normal-case tracking-normal font-normal cursor-pointer">
+-                <input
+-                  type="checkbox"
+-                  checked={sendConfirmation}
+-                  onChange={(e) => setSendConfirmation(e.target.checked)}
+-                  className="mt-1"
+-                />
++                <input type="checkbox" checked={sendConfirmation} onChange={(e) => setSendConfirmation(e.target.checked)} className="mt-1" />
+                 <span>
+                   Email <span className="text-fg">{row.fullName}</span> a payment confirmation
+-                  {pendingProofs.length === 0 ? " (off by default — no receipt is waiting)" : ""}
++                  {mode === "add" ? ` showing ${paidText(payCurrency, amount)}` : ""}
++                  {pendingProofs.length === 0 ? " (off by default, no receipt is waiting)" : ""}
+                 </span>
+               </label>
+             )}
+@@ -252,4 +410,4 @@ export function PaymentUpdateModal({
+       </div>
+     </div>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index 3551fa5..c92126b 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -2,8 +2,8 @@ import { prisma } from "@/lib/prisma";
+ import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
+ import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
+ import { makeProofToken, makeSeatToken } from "@/lib/proof-token";
+-import type { SendEmailResult, EmailKind } from "@/lib/email";
+-import { buildReceiptLines, usdText } from "@/lib/receipt";
++import type { SendEmailResult, EmailKind, ReceiptLine } from "@/lib/email";
++import { buildReceiptLines, buildLedgerLines, paidText, usdText } from "@/lib/receipt";
+ import type { Registration, BrochureRequest } from "@prisma/client";
+ 
+ type Settings = Record<string, string>;
+@@ -498,23 +498,37 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
+   const paidInFull = registration.paymentStatus === "PAID";
+   const balance = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;
+ 
+-  // Each receipt an admin approved, in the currency it was actually paid in.
+-  // The USD equivalent uses the rate implied by the fee the participant was
+-  // quoted in that currency (their local fee divided by the USD fee).
+-  const proofs = await prisma.paymentProof.findMany({
+-    where: { registrationId: registration.id, status: "APPROVED" },
+-    orderBy: { createdAt: "asc" },
++  // Payments an admin recorded, each in the currency it was actually received in. Registrations
++  // confirmed before payments were recorded this way fall back to the receipts the participant uploaded.
++  const records = await prisma.paymentRecord.findMany({
++    where: { registrationId: registration.id },
++    orderBy: { receivedAt: "asc" },
+   });
+ 
+-  const { lines, anyForeign } = buildReceiptLines(proofs, fee, registration.amountPaid, registration.paymentUpdatedAt);
++  let lines: ReceiptLine[];
++  let anyForeign: boolean;
++  if (records.length > 0) {
++    ({ lines, anyForeign } = buildLedgerLines(records, registration.amountPaid));
++  } else {
++    // The USD equivalent of an uploaded receipt uses the rate implied by the fee the participant was quoted.
++    const proofs = await prisma.paymentProof.findMany({
++      where: { registrationId: registration.id, status: "APPROVED" },
++      orderBy: { createdAt: "asc" },
++    });
++    ({ lines, anyForeign } = buildReceiptLines(proofs, fee, registration.amountPaid, registration.paymentUpdatedAt));
++  }
++  const latest = records.length > 0 ? records[records.length - 1] : null;
++  const latestText = latest ? `${paidText(latest.currency, latest.amount)}, which is ${usdText(latest.usdAmount)}` : usdText(registration.amountPaid);
+ 
+   const issued = registration.paymentUpdatedAt ?? new Date();
+   const receiptNo = `RCT-${issued.toISOString().slice(0, 10).replace(/-/g, "")}-${registration.id.slice(-5).toUpperCase()}`;
+ 
+   const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
+   const intro = paidInFull
+-    ? `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
+-    : `Hi ${first},\n\nWe've confirmed your payment of ${usdText(registration.amountPaid)} for ${settings.programme_name}. Your receipt is below.${
++    ? latest
++      ? `Hi ${first},\n\nWe've confirmed your payment of ${latestText} for ${settings.programme_name}. Your registration is now paid in full, and your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
++      : `Hi ${first},\n\nWe've confirmed your payment in full for ${settings.programme_name}. Your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
++    : `Hi ${first},\n\nWe've confirmed your payment of ${latestText} for ${settings.programme_name}. Your receipt is below.${
+         balance !== null && balance > 0 ? ` The remaining balance is ${usdText(balance)}, which you can pay using the details in your registration email.` : ""
+       }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
+ 
+diff --git a/src/lib/receipt.ts b/src/lib/receipt.ts
+index 60f4470..e039de5 100644
+--- a/src/lib/receipt.ts
++++ b/src/lib/receipt.ts
+@@ -84,3 +84,58 @@ export function buildReceiptLines(
+   }
+   return { lines, anyForeign };
+ }
++
++export interface LedgerRecordInput {
++  currency: string;
++  amount: number;
++  rate: number;
++  usdAmount: number;
++  receivedAt: Date;
++}
++
++/** "N2,800,000 (NGN)" style text for an amount in the currency it was paid in. */
++export function paidText(currency: string, amount: number): string {
++  const info = PAID_CURRENCY[currency] ?? { symbol: "", code: currency, usd: false };
++  return `${info.symbol}${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${info.code})`;
++}
++
++/**
++ * Receipt lines from the payments an admin recorded, each in the currency it was
++ * received in, with the rate and USD equivalent. If the registration total is
++ * more than these add up to (payments recorded before this existed), a line for
++ * the difference keeps the receipt adding up.
++ */
++export function buildLedgerLines(
++  records: LedgerRecordInput[],
++  amountPaid: number
++): { lines: ReceiptLine[]; anyForeign: boolean } {
++  const lines: ReceiptLine[] = [];
++  let sumUsd = 0;
++  let anyForeign = false;
++
++  for (const r of records) {
++    const info = PAID_CURRENCY[r.currency] ?? { symbol: "", code: r.currency, usd: false };
++    if (!info.usd) anyForeign = true;
++    sumUsd += r.usdAmount;
++    lines.push({
++      date: formatReceiptDate(r.receivedAt),
++      method: "Payment received",
++      paid: paidText(r.currency, r.amount),
++      rate: info.usd ? "-" : `1 USD = ${r.rate.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${info.code}`,
++      usd: usdText(r.usdAmount),
++    });
++  }
++
++  const diff = Math.round((amountPaid - sumUsd) * 100) / 100;
++  if (Math.abs(diff) > 0.5) {
++    const value = usdText(diff);
++    lines.unshift({
++      date: "Earlier",
++      method: diff > 0 ? "Payments recorded earlier" : "Adjustment",
++      paid: value,
++      rate: "-",
++      usd: value,
++    });
++  }
++  return { lines, anyForeign };
++}
+diff --git a/src/lib/settings.ts b/src/lib/settings.ts
+index 2de90f3..ec0821f 100644
+--- a/src/lib/settings.ts
++++ b/src/lib/settings.ts
+@@ -31,6 +31,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
+   // The public payment page the reminder emails send people to. The person's
+   // signed token is added as ?pay=... so the page can pick up where they left off.
+   payment_page_url: "https://theridgecircle.com/register",
++  // Rates used when recording a payment made in another currency. They match the fees shown
++  // on the register page ($2,000 = N2,800,000 = C$2,800). Editable per payment in the dialog.
++  rate_ngn_per_usd: "1400",
++  rate_cad_per_usd: "1.4",
+   day7_date: "Saturday 14th November, 2026",
+   day7_venue: "Marriott Hotel",
+ };
+diff --git a/src/lib/validation.ts b/src/lib/validation.ts
+index 1cda6ea..73cd512 100644
+--- a/src/lib/validation.ts
++++ b/src/lib/validation.ts
+@@ -64,6 +64,14 @@ export const confirmPaymentSchema = z.object({
+   // Approving uploaded receipts: mark them approved, and optionally email the participant.
+   approveProofIds: z.array(z.string()).max(20).optional(),
+   sendConfirmation: z.boolean().optional(),
++  // A payment recorded in the currency it was received in. When present it is ADDED to what is on file.
++  payment: z
++    .object({
++      currency: z.enum(["USD", "USD_NG", "CAD", "NGN"]),
++      amount: z.coerce.number().positive("Enter the amount received.").max(1_000_000_000, "That amount looks too large. Double check it."),
++      rate: z.coerce.number().positive("Enter a valid exchange rate.").max(1_000_000),
++    })
++    .optional(),
+ });
+ 
+ export const sendReplySchema = z.object({

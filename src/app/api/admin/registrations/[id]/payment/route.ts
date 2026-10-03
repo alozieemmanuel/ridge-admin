@@ -19,10 +19,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     return NextResponse.json({ error: "Registration not found." }, { status: 404 });
   }
 
-  const registration = await prisma.registration.update({
-    where: { id },
-    data: { amountPaid: 0, paymentStatus: "NOT_PAID", paymentNote: null, paymentUpdatedAt: null },
-  });
+  // The recorded payments go too, so a receipt sent after a reset only lists payments made afterwards.
+  const [, registration] = await prisma.$transaction([
+    prisma.paymentRecord.deleteMany({ where: { registrationId: id } }),
+    prisma.registration.update({
+      where: { id },
+      data: { amountPaid: 0, paymentStatus: "NOT_PAID", paymentNote: null, paymentUpdatedAt: null },
+    }),
+  ]);
 
   await logAdminAction(
     session,

@@ -84,3 +84,58 @@ export function buildReceiptLines(
   }
   return { lines, anyForeign };
 }
+
+export interface LedgerRecordInput {
+  currency: string;
+  amount: number;
+  rate: number;
+  usdAmount: number;
+  receivedAt: Date;
+}
+
+/** "N2,800,000 (NGN)" style text for an amount in the currency it was paid in. */
+export function paidText(currency: string, amount: number): string {
+  const info = PAID_CURRENCY[currency] ?? { symbol: "", code: currency, usd: false };
+  return `${info.symbol}${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${info.code})`;
+}
+
+/**
+ * Receipt lines from the payments an admin recorded, each in the currency it was
+ * received in, with the rate and USD equivalent. If the registration total is
+ * more than these add up to (payments recorded before this existed), a line for
+ * the difference keeps the receipt adding up.
+ */
+export function buildLedgerLines(
+  records: LedgerRecordInput[],
+  amountPaid: number
+): { lines: ReceiptLine[]; anyForeign: boolean } {
+  const lines: ReceiptLine[] = [];
+  let sumUsd = 0;
+  let anyForeign = false;
+
+  for (const r of records) {
+    const info = PAID_CURRENCY[r.currency] ?? { symbol: "", code: r.currency, usd: false };
+    if (!info.usd) anyForeign = true;
+    sumUsd += r.usdAmount;
+    lines.push({
+      date: formatReceiptDate(r.receivedAt),
+      method: "Payment received",
+      paid: paidText(r.currency, r.amount),
+      rate: info.usd ? "-" : `1 USD = ${r.rate.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${info.code}`,
+      usd: usdText(r.usdAmount),
+    });
+  }
+
+  const diff = Math.round((amountPaid - sumUsd) * 100) / 100;
+  if (Math.abs(diff) > 0.5) {
+    const value = usdText(diff);
+    lines.unshift({
+      date: "Earlier",
+      method: diff > 0 ? "Payments recorded earlier" : "Adjustment",
+      paid: value,
+      rate: "-",
+      usd: value,
+    });
+  }
+  return { lines, anyForeign };
+}

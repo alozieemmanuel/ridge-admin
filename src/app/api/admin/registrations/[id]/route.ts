@@ -47,19 +47,43 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   );
   const expectedFee = Number.isFinite(expectedFeeRaw) ? expectedFeeRaw : null;
 
-  const { amountPaid } = parsed.data;
+  // A payment recorded in its own currency is ADDED to what is on file (its USD equivalent counts
+  // towards the fee). Without one, amountPaid is taken as the new total in USD (a correction).
+  const pay = parsed.data.payment;
+  const isUsd = pay ? pay.currency === "USD" || pay.currency === "USD_NG" : false;
+  const rate = pay ? (isUsd ? 1 : pay.rate) : 1;
+  const usdAmount = pay ? Math.round((pay.amount / rate) * 100) / 100 : 0;
+  const amountPaid = pay ? Math.round((existing.amountPaid + usdAmount) * 100) / 100 : parsed.data.amountPaid;
+
   const paymentStatus =
     amountPaid <= 0 ? "NOT_PAID" : expectedFee !== null && amountPaid >= expectedFee ? "PAID" : "PARTIAL";
 
-  const registration = await prisma.registration.update({
-    where: { id },
-    data: {
-      amountPaid,
-      paymentStatus,
-      paymentNote: parsed.data.note !== undefined ? parsed.data.note || null : undefined,
-      paymentUpdatedAt: new Date(),
-    },
-  });
+  const [registration] = await prisma.$transaction([
+    prisma.registration.update({
+      where: { id },
+      data: {
+        amountPaid,
+        paymentStatus,
+        paymentNote: parsed.data.note !== undefined ? parsed.data.note || null : undefined,
+        paymentUpdatedAt: new Date(),
+      },
+    }),
+    ...(pay
+      ? [
+          prisma.paymentRecord.create({
+            data: {
+              registrationId: id,
+              currency: pay.currency,
+              amount: pay.amount,
+              rate,
+              usdAmount,
+              note: parsed.data.note || null,
+              recordedByName: session?.name ?? null,
+            },
+          }),
+        ]
+      : []),
+  ]);
 
   // Receipts the admin approved with this payment.
   const approveIds = parsed.data.approveProofIds ?? [];
@@ -92,6 +116,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         before: { amountPaid: existing.amountPaid, status: existing.paymentStatus },
         after: { amountPaid, status: paymentStatus },
         expectedFee,
+        ...(pay ? { payment: { currency: pay.currency, amount: pay.amount, rate, usdAmount } } : {}),
         ...(parsed.data.note ? { note: parsed.data.note } : {}),
         ...(approveIds.length ? { approvedReceipts: approveIds.length } : {}),
         ...(wantsEmail ? { confirmationEmail: emailError ? `failed: ${emailError.slice(0, 200)}` : "sent" } : {}),

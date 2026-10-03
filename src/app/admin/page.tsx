@@ -111,7 +111,7 @@ export default function RegistrationsPage() {
     id: string,
     amountPaid: number,
     note: string,
-    opts: { sendConfirmation: boolean; approveProofIds: string[] }
+    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: { currency: string; amount: number; rate: number } }
   ) {
     const res = await fetch(`/api/admin/registrations/${id}`, {
       method: "PATCH",

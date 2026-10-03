@@ -31,6 +31,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // The public payment page the reminder emails send people to. The person's
   // signed token is added as ?pay=... so the page can pick up where they left off.
   payment_page_url: "https://theridgecircle.com/register",
+  // Rates used when recording a payment made in another currency. They match the fees shown
+  // on the register page ($2,000 = N2,800,000 = C$2,800). Editable per payment in the dialog.
+  rate_ngn_per_usd: "1400",
+  rate_cad_per_usd: "1.4",
   day7_date: "Saturday 14th November, 2026",
   day7_venue: "Marriott Hotel",
 };

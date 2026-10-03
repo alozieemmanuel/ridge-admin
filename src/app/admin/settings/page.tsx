@@ -40,6 +40,8 @@ const FIELDS: { key: string; label: string; hint?: string }[] = [
     label: "Payment Page Link (reminder emails)",
     hint: "The page the \"Complete My Payment\" button opens. The person's secure token is added to the end as ?pay=...",
   },
+  { key: "rate_ngn_per_usd", label: "Exchange Rate: Naira per 1 USD", hint: "Used as the starting rate when you record a payment made in Naira. You can change it for each payment." },
+  { key: "rate_cad_per_usd", label: "Exchange Rate: CAD per 1 USD", hint: "Used as the starting rate when you record a payment made in Canadian dollars." },
   { key: "day7_date", label: "Day 7 Date (seat emails)" },
   { key: "day7_venue", label: "Day 7 Venue (seat emails)" },
 ];
