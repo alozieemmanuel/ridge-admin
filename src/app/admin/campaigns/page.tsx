@@ -6,6 +6,9 @@ import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
 import CategoryFilter from "@/components/CategoryFilter";
 import { categoryLabel } from "@/lib/categories";
+import { useIsOwner } from "@/lib/useIsOwner";
+import Pagination from "@/components/Pagination";
+import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
 
 type Audience =
   | "ALL"
@@ -66,7 +69,228 @@ function StatCard({ label, value, hint, tone }: { label: string; value: number; 
   );
 }
 
+interface Recipient {
+  registrationId: string;
+  fullName: string;
+  email: string;
+  status: "FAILED" | "SENT" | "DELIVERED" | "OPENED" | "BOUNCED" | "COMPLAINED";
+  sentAt: string | null;
+  deliveredAt: string | null;
+  openedAt: string | null;
+  error: string | null;
+}
+
+interface CampaignDetail extends Campaign {
+  body: string;
+}
+
+const STATUS_LABEL: Record<Recipient["status"], { text: string; tone: string }> = {
+  FAILED: { text: "Failed", tone: "text-red-400" },
+  SENT: { text: "Sent", tone: "text-muted" },
+  DELIVERED: { text: "Delivered", tone: "text-emerald-400" },
+  OPENED: { text: "Opened", tone: "text-goldlight" },
+  BOUNCED: { text: "Bounced", tone: "text-red-400" },
+  COMPLAINED: { text: "Marked as spam", tone: "text-red-400" },
+};
+
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "", label: "All" },
+  { value: "OPENED", label: "Opened" },
+  { value: "DELIVERED", label: "Delivered" },
+  { value: "SENT", label: "Sent only" },
+  { value: "BOUNCED", label: "Bounced" },
+  { value: "FAILED", label: "Failed" },
+];
+
+/** One campaign in full: the email that went out, how it performed, and what happened to each recipient. */
+function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<CampaignDetail | null>(null);
+  const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => Math.min(getStoredPageSize(), 50));
+  const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (query) params.set("search", query);
+      if (status) params.set("status", status);
+      const res = await fetch(`/api/admin/campaigns/${campaignId}?${params.toString()}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Couldn't load this campaign.");
+        return;
+      }
+      const data = await res.json();
+      setDetail(data.campaign);
+      setRecipients(data.recipients);
+      setTotal(data.total);
+      setError(null);
+    } catch {
+      setError("Couldn't reach the server.");
+    } finally {
+      setLoading(false);
+    }
+  }, [campaignId, page, pageSize, query, status]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Opens and bounces keep arriving after the send.
+  useAutoRefresh(() => load(), 15_000);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const delivered = detail?.delivered ?? 0;
+  const opened = detail?.opened ?? 0;
+  const bounced = detail?.bounced ?? 0;
+  const complained = detail?.complained ?? 0;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+      <div
+        className="bg-pagebg border border-border rounded-2xl w-full max-w-4xl my-8 p-6"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-start justify-between gap-4 mb-5">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wider text-muted mb-1">Campaign</p>
+            <h3 className="font-serif text-2xl break-words">{detail?.subject ?? (loading ? "Loading…" : "Campaign")}</h3>
+            {detail && (
+              <p className="text-sm text-muted mt-1">
+                {AUDIENCE_OPTIONS.find((o) => o.value === detail.audience)?.label ?? detail.audience}
+                {detail.category ? ` · ${categoryLabel(detail.category)}` : ""} · {new Date(detail.sentAt).toLocaleString()}
+                {detail.sentByName ? ` · by ${detail.sentByName}` : ""}
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-fg text-2xl leading-none" aria-label="Close">
+            ×
+          </button>
+        </div>
+
+        {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
+
+        {detail && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+              <StatCard label="Sent" value={detail.sentCount} hint={`of ${detail.recipientCount}${detail.failedCount ? ` · ${detail.failedCount} failed` : ""}`} tone="text-fg" />
+              <StatCard label="Delivered" value={delivered} hint={`${percent(delivered, detail.sentCount)} of sent`} tone="text-emerald-400" />
+              <StatCard label="Opened" value={opened} hint={`${percent(opened, delivered)} of delivered`} tone="text-emerald-400" />
+              <StatCard label="Bounced" value={bounced} hint={`${percent(bounced, detail.sentCount)} of sent`} tone="text-red-400" />
+              <StatCard label="Complained" value={complained} hint="Marked as spam" tone="text-red-400" />
+            </div>
+
+            <p className="text-xs uppercase tracking-wider text-muted mb-2">Message</p>
+            <div className="border border-border rounded-xl p-5 mb-2 max-h-72 overflow-y-auto">
+              <p className="text-sm font-medium mb-3">{detail.subject}</p>
+              <div className="text-sm text-muted whitespace-pre-wrap">{detail.body}</div>
+            </div>
+            <p className="text-xs text-muted mb-6">
+              Shown as written. {"{{first_name}}"} and {"{{full_name}}"} were filled in for each person.
+            </p>
+
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  onClick={() => {
+                    setStatus(f.value);
+                    setPage(1);
+                  }}
+                  className={`text-sm px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${
+                    status === f.value ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search name or email"
+                className="bg-inputbg border border-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-gold ml-auto max-w-[14rem] w-full"
+              />
+            </div>
+
+            <div className="border border-border rounded-xl overflow-hidden">
+              <div className="table-scroll overflow-auto max-h-[45vh]">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
+                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
+                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Email</th>
+                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Status</th>
+                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Opened</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recipients.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-5 py-8 text-center text-muted">
+                          {loading ? "Loading…" : "No recipients match."}
+                        </td>
+                      </tr>
+                    )}
+                    {recipients.map((r) => (
+                      <tr key={r.registrationId} className="border-b border-border/50 last:border-b-0">
+                        <td className="px-5 py-3 whitespace-nowrap font-medium">{r.fullName}</td>
+                        <td className="px-5 py-3 whitespace-nowrap text-muted">{r.email}</td>
+                        <td className={`px-5 py-3 whitespace-nowrap ${STATUS_LABEL[r.status].tone}`} title={r.error ?? ""}>
+                          {STATUS_LABEL[r.status].text}
+                        </td>
+                        <td className="px-5 py-3 whitespace-nowrap text-muted">
+                          {r.openedAt ? new Date(r.openedAt).toLocaleString() : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPage={setPage}
+                onPageSize={(n) => {
+                  storePageSize(n);
+                  setPageSize(n);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CampaignsPage() {
+  const isOwner = useIsOwner();
+  const [openCampaignId, setOpenCampaignId] = useState<string | null>(null);
   const [channel, setChannel] = useState<"email" | "whatsapp">("email");
   const [audience, setAudience] = useState<Audience>("ALL");
   const [subject, setSubject] = useState("");
@@ -117,6 +341,25 @@ export default function CampaignsPage() {
   const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
 
   const totalSent = campaigns.reduce((sum, c) => sum + c.sentCount, 0);
+
+  async function handleDelete(c: Campaign) {
+    if (
+      !window.confirm(
+        `Delete the campaign "${c.subject}"? Its results are removed from this dashboard. Emails already sent can't be recalled.`
+      )
+    ) {
+      return;
+    }
+    const res = await fetch(`/api/admin/campaigns/${c.id}`, { method: "DELETE" });
+    if (res.ok) {
+      if (openCampaignId === c.id) setOpenCampaignId(null);
+      setMessage({ text: "Campaign deleted.", ok: true });
+      load();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setMessage({ text: data.error || "Failed to delete.", ok: false });
+    }
+  }
 
   async function handleSend() {
     setSending(true);
@@ -307,6 +550,7 @@ export default function CampaignsPage() {
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Opened</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Bounced</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Date</th>
+                  <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
                 </tr>
               </thead>
               <tbody>
@@ -315,7 +559,11 @@ export default function CampaignsPage() {
                   const opened = c.opened ?? 0;
                   const bounced = c.bounced ?? 0;
                   return (
-                    <tr key={c.id} className="border-b border-border/50 last:border-b-0">
+                    <tr
+                      key={c.id}
+                      onClick={() => setOpenCampaignId(c.id)}
+                      className="border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-gold/5"
+                    >
                       <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
@@ -339,6 +587,16 @@ export default function CampaignsPage() {
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {new Date(c.sentAt).toLocaleString()}
                       </td>
+                      <td className="px-5 py-4 whitespace-nowrap text-right space-x-4" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => setOpenCampaignId(c.id)} className="text-goldlight hover:underline">
+                          View
+                        </button>
+                        {isOwner && (
+                          <button onClick={() => handleDelete(c)} className="text-red-400 hover:underline">
+                            Delete
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -353,6 +611,7 @@ export default function CampaignsPage() {
       )}
       </>
       )}
+      {openCampaignId && <CampaignDialog campaignId={openCampaignId} onClose={() => setOpenCampaignId(null)} />}
     </AdminShell>
   );
 }

@@ -21,6 +21,7 @@ export type AuditAction =
   | "payment_proof.reject"
   | "brochure.delete"
   | "campaign.send"
+  | "campaign.delete"
   | "reply.send"
   | "seat.update"
   | "template.update"

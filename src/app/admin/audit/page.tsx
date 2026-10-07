@@ -33,6 +33,7 @@ const ACTION_LABELS: Record<string, string> = {
   "payment_proof.reject": "Rejected receipt",
   "brochure.delete": "Deleted brochure request",
   "campaign.send": "Sent campaign",
+  "campaign.delete": "Deleted campaign",
   "seat.update": "Changed seat",
   "template.update": "Edited email template",
   "settings.update": "Changed settings",
@@ -88,6 +89,8 @@ function summarize(row: LogRow): string {
       return d.checkedIn ? "Marked as arrived" : "Check-in undone";
     case "registration.delete":
       return `${d.email ?? ""}${d.amountPaid ? ` · had paid ${d.amountPaid}` : ""}`;
+    case "campaign.delete":
+      return `${d.audience ?? ""}: had sent ${d.sentCount ?? 0} of ${d.recipientCount ?? 0}`;
     case "campaign.send":
       return `${d.audience ?? ""}: ${d.sentCount ?? 0} sent, ${d.failedCount ?? 0} failed of ${d.recipientCount ?? 0}`;
     case "seat.update":
