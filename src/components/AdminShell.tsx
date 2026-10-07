@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
+import { cacheClear, cacheGet, fetchAndCache } from "@/lib/clientCache";
+import { warmAdminCache } from "@/lib/adminData";
 
 interface AdminSession {
   name: string;
@@ -31,18 +33,20 @@ export default function AdminShell({
   active: string;
   children: React.ReactNode;
 }) {
-  const [session, setSession] = useState<AdminSession | null>(null);
+  // The signed-in admin is remembered between modules, so the header doesn't flash empty on every switch.
+  const [session, setSession] = useState<AdminSession | null>(
+    () => cacheGet<{ admin: AdminSession }>("/api/admin/me")?.admin ?? null
+  );
   const router = useRouter();
 
   useEffect(() => {
-    fetch("/api/admin/me")
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then((data) => setSession(data.admin))
-      .catch(() => setSession(null));
+    fetchAndCache<{ admin: AdminSession }>("/api/admin/me").then((data) => setSession(data?.admin ?? null));
+    warmAdminCache();
   }, []);
 
   async function handleLogout() {
     await fetch("/api/admin/logout", { method: "POST" });
+    cacheClear();
     router.push("/admin/login");
     router.refresh();
   }

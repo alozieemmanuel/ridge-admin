@@ -9,7 +9,7 @@ class SeatTakenError extends Error {}
 
 /**
  * Books a seat. The claim is a single guarded update (only if the seat is
- * still OPEN), inside a transaction that first releases the person's previous
+ * still OPEN and has been unveiled), inside a transaction that first releases the person's previous
  * seat, so two people can never end up with the same seat and a failed
  * change leaves them with the seat they had.
  */
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
         await tx.seat.update({ where: { id: registration.seat.id }, data: { status: "OPEN", registrationId: null } });
       }
       const claimed = await tx.seat.updateMany({
-        where: { id: seatId, status: "OPEN" },
+        where: { id: seatId, status: "OPEN", released: true },
         data: { status: "TAKEN", registrationId: registration.id, holdExpiresAt: null },
       });
       if (claimed.count !== 1) throw new SeatTakenError();

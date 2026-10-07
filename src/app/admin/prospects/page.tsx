@@ -1,11 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
+import Pagination from "@/components/Pagination";
 import { STATUS_OPTIONS, interpretStatus } from "@/lib/prospect-columns";
+import { isYes, type ProspectStats } from "@/lib/prospect-filters";
+import { cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { prospectsUrl } from "@/lib/adminData";
+
+interface ProspectsResponse {
+  configured: boolean;
+  serviceAccountEmail: string | null;
+  sources: Source[];
+  total: number;
+  totalAll: number;
+  stats: ProspectStats;
+  statusMode: boolean;
+  callOptions: string[];
+  prospects: Prospect[];
+}
+
+const EMPTY_STATS: ProspectStats = { completed: 0, requested: 0, textSent: 0, followUp: 0, dueToday: 0, doneToday: 0, overdue: 0, unscheduled: 0 };
 
 interface Prospect {
   id: string;
@@ -38,10 +56,11 @@ interface Source {
   lastSyncError: string | null;
 }
 
-type Filter = "ALL" | "CALL_REQUESTED" | "TO_CALL" | "FOLLOW_UP" | "CONVERTED";
+type Filter = "ALL" | "CALL_REQUESTED" | "TO_CALL" | "DUE_TODAY" | "CALL_DONE" | "TEXT_SENT" | "FOLLOW_UP" | "CONVERTED";
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "ALL", label: "All" },
+  { value: "DUE_TODAY", label: "Calls due today" },
   { value: "CALL_REQUESTED", label: "Wants a call" },
   { value: "TO_CALL", label: "Call not done" },
   { value: "FOLLOW_UP", label: "Follow-up needed" },
@@ -57,25 +76,60 @@ const ghostButton = "text-sm px-4 py-2.5 rounded-full border border-border text-
 
 const DEFAULT_CALL_OPTIONS = ["Yes", "No"];
 
-function isYes(value: string | null): boolean {
-  const status = interpretStatus(value);
-  if (status) return status.requested;
-  return ["yes", "y", "true", "requested"].includes((value ?? "").trim().toLowerCase());
+function StatCard({
+  label,
+  value,
+  tone,
+  hint,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+  hint?: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-left border rounded-xl px-5 py-4 flex-1 min-w-[150px] transition-colors ${
+        active ? "border-gold bg-gold/10" : "border-border hover:border-gold/60"
+      }`}
+    >
+      <p className="text-xs uppercase tracking-wider text-muted mb-1.5">{label}</p>
+      <p className={`text-2xl font-serif ${tone}`}>{value}</p>
+      {hint && <p className="text-xs text-muted mt-1">{hint}</p>}
+    </button>
+  );
 }
 
 export default function ProspectsPage() {
   const isOwner = useIsOwner();
-  const [prospects, setProspects] = useState<Prospect[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
-  const [configured, setConfigured] = useState(true);
-  const [serviceEmail, setServiceEmail] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null);
-
+  const [pageSize, setPageSize] = useState(() => getStoredPageSize());
+  const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<Filter>("ALL");
   const [sourceFilter, setSourceFilter] = useState("");
-  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState(""); // the search text, after the typing pause
+
+  // What this page showed last time is on screen straight away; fresh data replaces it a moment later.
+  const firstUrl = prospectsUrl({ page: 1, pageSize, filter: "ALL" });
+  const [initial] = useState(() => cacheGet<ProspectsResponse>(firstUrl));
+  const [prospects, setProspects] = useState<Prospect[]>(initial?.prospects ?? []);
+  const [sources, setSources] = useState<Source[]>(initial?.sources ?? []);
+  const [total, setTotal] = useState(initial?.total ?? 0);
+  const [totalAll, setTotalAll] = useState(initial?.totalAll ?? 0);
+  const [stats, setStats] = useState<ProspectStats>(initial?.stats ?? EMPTY_STATS);
+  const [statusMode, setStatusMode] = useState(initial?.statusMode ?? false);
+  const [serverCallOptions, setServerCallOptions] = useState<string[]>(initial?.callOptions ?? []);
+  const [configured, setConfigured] = useState(initial?.configured ?? true);
+  const [serviceEmail, setServiceEmail] = useState<string | null>(initial?.serviceAccountEmail ?? null);
+  const [loading, setLoading] = useState(!initial);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null);
+  const requestId = useRef(0);
 
   const [editing, setEditing] = useState<Prospect | null>(null);
   const [converting, setConverting] = useState<Prospect | null>(null);
@@ -83,21 +137,65 @@ export default function ProspectsPage() {
   const [mappingFor, setMappingFor] = useState<Source | null>(null);
   const [showSources, setShowSources] = useState(false);
 
+  // Wait a moment after typing before searching.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  function changeFilter(f: Filter) {
+    setFilter(f);
+    setPage(1);
+  }
+  function changeSource(id: string) {
+    setSourceFilter(id);
+    setPage(1);
+  }
+  function changePageSize(n: number) {
+    storePageSize(n);
+    setPageSize(n);
+    setPage(1);
+  }
+
   const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/admin/prospects");
-      if (!res.ok) return;
-      const data = await res.json();
+    const myRequest = ++requestId.current;
+    const url = prospectsUrl({ page, pageSize, search: query, filter, sourceId: sourceFilter });
+    const apply = (data: ProspectsResponse) => {
       setProspects(data.prospects);
       setSources(data.sources);
+      setTotal(data.total);
+      setTotalAll(data.totalAll);
+      setStats(data.stats);
+      setStatusMode(data.statusMode);
+      setServerCallOptions(data.callOptions);
       setConfigured(data.configured);
       setServiceEmail(data.serviceAccountEmail);
+    };
+    const cached = cacheGet<ProspectsResponse>(url);
+    if (cached) {
+      apply(cached);
+      setLoading(false);
+    }
+    try {
+      const res = await fetch(url);
+      if (res.ok && myRequest === requestId.current) {
+        const data: ProspectsResponse = await res.json();
+        cacheSet(url, data);
+        apply(data);
+        // Removing the last row of the last page leaves an empty page: step back.
+        if (data.prospects.length === 0 && page > 1 && data.total > 0) {
+          setPage(Math.max(1, Math.ceil(data.total / pageSize)));
+        }
+      }
     } catch {
       // keep showing the last data; the next poll retries
     } finally {
-      setLoading(false);
+      if (myRequest === requestId.current) setLoading(false);
     }
-  }, []);
+  }, [page, pageSize, query, filter, sourceFilter]);
 
   const sync = useCallback(
     async (force = false) => {
@@ -131,29 +229,10 @@ export default function ProspectsPage() {
   // Keep in step with the sheet while the tab is open (the server skips syncs that are too close together).
   useAutoRefresh(() => sync(false), 60_000);
 
-  // True when the sheet uses a STATUS dropdown (Text sent, Call Scheduled, ...) instead of Yes/No.
-  const statusMode = useMemo(() => prospects.some((p) => interpretStatus(p.callRequested) !== null), [prospects]);
-
-  const callOptions = useMemo(() => {
-    const set = new Set(DEFAULT_CALL_OPTIONS);
-    prospects.forEach((p) => p.callRequested && set.add(p.callRequested));
-    return Array.from(set);
-  }, [prospects]);
+  const callOptions = useMemo(() => Array.from(new Set([...DEFAULT_CALL_OPTIONS, ...serverCallOptions])), [serverCallOptions]);
 
   const sourceName = useMemo(() => new Map(sources.map((s) => [s.id, s.name])), [sources]);
-
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return prospects.filter((p) => {
-      if (sourceFilter && p.sourceId !== sourceFilter) return false;
-      if (filter === "CALL_REQUESTED" && !isYes(p.callRequested)) return false;
-      if (filter === "TO_CALL" && (p.callCompleted || !isYes(p.callRequested))) return false;
-      if (filter === "FOLLOW_UP" && !p.followUpRequired) return false;
-      if (filter === "CONVERTED" && !p.registrationId) return false;
-      if (q && ![p.fullName, p.email, p.phone].some((v) => (v ?? "").toLowerCase().includes(q))) return false;
-      return true;
-    });
-  }, [prospects, filter, sourceFilter, query]);
+  const visible = prospects;
 
   const lastSynced = sources.map((s) => s.lastSyncedAt).filter(Boolean).sort().pop();
   const syncError = sources.find((s) => s.lastSyncError)?.lastSyncError;
@@ -206,11 +285,38 @@ export default function ProspectsPage() {
         />
       )}
 
+      <div className="border border-gold/40 bg-gold/5 rounded-xl px-5 py-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-muted mb-1">Today&apos;s calls</p>
+          <p className="text-sm text-muted">
+            {new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}
+          </p>
+        </div>
+        <button onClick={() => changeFilter("DUE_TODAY")} className="text-left">
+          <span className="font-serif text-4xl text-goldlight">{stats.dueToday}</span>
+          <span className="ml-3 text-sm text-muted">
+            to call today
+            {stats.doneToday > 0 && ` · ${stats.doneToday} done of ${stats.dueToday + stats.doneToday}`}
+          </span>
+        </button>
+        <div className="text-xs text-muted space-y-1">
+          <p className={stats.overdue > 0 ? "text-amber-300" : ""}>{stats.overdue} overdue from earlier days</p>
+          <p>{stats.unscheduled} wanting a call with no date set</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-4 mb-6">
+        <StatCard label="Calls completed" value={stats.completed} tone="text-emerald-300" active={filter === "CALL_DONE"} onClick={() => changeFilter(filter === "CALL_DONE" ? "ALL" : "CALL_DONE")} />
+        <StatCard label="Calls requested" value={stats.requested} tone="text-goldlight" active={filter === "CALL_REQUESTED"} onClick={() => changeFilter(filter === "CALL_REQUESTED" ? "ALL" : "CALL_REQUESTED")} />
+        <StatCard label="Text sent" value={stats.textSent} tone="text-sky-300" active={filter === "TEXT_SENT"} onClick={() => changeFilter(filter === "TEXT_SENT" ? "ALL" : "TEXT_SENT")} />
+        <StatCard label="Follow-up call" value={stats.followUp} tone="text-amber-300" active={filter === "FOLLOW_UP"} onClick={() => changeFilter(filter === "FOLLOW_UP" ? "ALL" : "FOLLOW_UP")} />
+      </div>
+
       <div className="flex gap-2 mb-4 flex-wrap items-center">
         {FILTERS.map((f) => (
           <button
             key={f.value}
-            onClick={() => setFilter(f.value)}
+            onClick={() => changeFilter(f.value)}
             className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
               filter === f.value ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
             }`}
@@ -221,13 +327,13 @@ export default function ProspectsPage() {
       </div>
       <div className="flex gap-3 mb-6 flex-wrap">
         <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name, email or phone"
           className={`${inputClass} max-w-xs`}
         />
         {sources.length > 1 && (
-          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} className={`${inputClass} max-w-[14rem]`}>
+          <select value={sourceFilter} onChange={(e) => changeSource(e.target.value)} className={`${inputClass} max-w-[14rem]`}>
             <option value="">All sheets</option>
             {sources.map((s) => (
               <option key={s.id} value={s.id}>
@@ -239,20 +345,20 @@ export default function ProspectsPage() {
       </div>
 
       <div className="border border-border rounded-xl overflow-hidden">
-        <div className="table-scroll overflow-x-auto">
+        <div className="table-scroll overflow-auto max-h-[70vh]">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Full Name</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Phone Number</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Status</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Request for Call</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Time Schedule for Call</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Call Completed</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Feedback from Call</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Follow-up Call Required?</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Confirmation</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Full Name</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Phone Number</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Status</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Request for Call</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Time Schedule for Call</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Call Completed</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Feedback from Call</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Follow-up Call Required?</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg">Confirmation</th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap sticky top-0 z-20 bg-pagebg"></th>
               </tr>
             </thead>
             <tbody>
@@ -266,7 +372,7 @@ export default function ProspectsPage() {
               {!loading && visible.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-5 py-8 text-center text-muted">
-                    {prospects.length === 0 ? "No prospects yet. Connect a sheet under Sheets." : "Nobody matches these filters."}
+                    {totalAll === 0 ? "No prospects yet. Connect a sheet under Sheets." : "Nobody matches these filters."}
                   </td>
                 </tr>
               )}
@@ -336,6 +442,7 @@ export default function ProspectsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={changePageSize} />
       </div>
 
       {viewing && <DetailsDialog prospect={viewing} sourceName={sourceName.get(viewing.sourceId)} onClose={() => setViewing(null)} />}

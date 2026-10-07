@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { categoryLabel } from "@/lib/categories";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,7 @@ export async function GET() {
     "Email",
     "Phone",
     "Country",
+    "Category",
     "Organization",
     "Notes",
     "Registration Type",
@@ -40,6 +42,7 @@ export async function GET() {
         csvEscape(r.email),
         csvEscape(r.phone),
         csvEscape(r.country),
+        csvEscape(r.categories.map(categoryLabel).join("; ")),
         csvEscape(r.organization),
         csvEscape(r.notes),
         csvEscape(r.regType),

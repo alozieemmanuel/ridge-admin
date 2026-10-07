@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
 import { sendWhatsAppBroadcastSchema } from "@/lib/validation";
+import { isCategory } from "@/lib/categories";
 import { getOrCreateConversation, fillTemplateBody, listApprovedTemplates, recordOutbound, sendWhatsAppTemplate } from "@/lib/whatsapp";
 import { resolveWhatsAppAudience, whatsappAudienceCounts, WHATSAPP_AUDIENCE_LABELS, type WhatsAppAudience } from "@/lib/whatsapp-audience";
 
@@ -10,13 +11,14 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /** Past broadcasts plus how many people each audience has a usable number for. */
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
+  const categoryParam = request.nextUrl.searchParams.get("category");
   const [broadcasts, counts] = await Promise.all([
     prisma.whatsAppBroadcast.findMany({ orderBy: { sentAt: "desc" }, take: 50 }),
-    whatsappAudienceCounts(),
+    whatsappAudienceCounts(isCategory(categoryParam) ? categoryParam : null),
   ]);
 
   const ids = broadcasts.map((b) => b.id);
@@ -42,6 +44,7 @@ export async function GET() {
     broadcasts: broadcasts.map((b) => ({
       id: b.id,
       audience: b.audience,
+      category: b.category,
       templateName: b.templateName,
       previewText: b.previewText,
       recipientCount: b.recipientCount,
@@ -77,6 +80,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
   }
   const { audience, templateName, language, params } = parsed.data;
+  const category = parsed.data.category || null;
 
   let template;
   try {
@@ -91,7 +95,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Fill in all ${template.variableCount} template variable(s).` }, { status: 400 });
   }
 
-  const all = await resolveWhatsAppAudience(audience as WhatsAppAudience);
+  const all = await resolveWhatsAppAudience(audience as WhatsAppAudience, category);
   const recipients = all.filter((r): r is typeof r & { waId: string } => Boolean(r.waId));
   if (recipients.length === 0) {
     return NextResponse.json({ error: "Nobody in that audience has a usable phone number." }, { status: 400 });
@@ -100,6 +104,7 @@ export async function POST(request: NextRequest) {
   const broadcast = await prisma.whatsAppBroadcast.create({
     data: {
       audience,
+      category,
       templateName,
       templateLanguage: language,
       templateParams: params,
@@ -152,7 +157,7 @@ export async function POST(request: NextRequest) {
       entityType: "whatsapp_broadcast",
       entityId: broadcast.id,
       entityLabel: templateName,
-      details: { audience, recipients: recipients.length, sent: sentCount, failed: failedCount },
+      details: { audience, category, recipients: recipients.length, sent: sentCount, failed: failedCount },
     },
     request
   );

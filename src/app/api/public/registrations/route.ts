@@ -4,6 +4,7 @@ import { registrationSchema } from "@/lib/validation";
 import { sendRegistrationEmails } from "@/lib/notifications";
 import { jsonWithCors, preflight } from "@/lib/cors";
 import { makeProofToken } from "@/lib/proof-token";
+import { normalizeCategories, parseCategoriesFromNotes } from "@/lib/categories";
 
 export const runtime = "nodejs";
 
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest) {
   const data = parsed.data;
   const regType = data.regType === "late" ? "LATE" : "EARLY_BIRD";
   const normalizedEmail = data.email.toLowerCase();
+  const categories = normalizeCategories(data.categories?.length ? data.categories : parseCategoriesFromNotes(data.notes));
 
   // Upsert on email: prevents duplicate rows if someone double-submits or
   // resubmits after updating their details.
@@ -43,6 +45,7 @@ export async function POST(request: NextRequest) {
       organization: data.organization || null,
       notes: data.notes || null,
       regType,
+      categories,
     },
     create: {
       fullName: data.fullName,
@@ -52,6 +55,7 @@ export async function POST(request: NextRequest) {
       organization: data.organization || null,
       notes: data.notes || null,
       regType,
+      categories,
     },
   });
 

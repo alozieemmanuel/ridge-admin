@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
+import CategoryFilter from "@/components/CategoryFilter";
+import { categoryLabel } from "@/lib/categories";
 
 type Audience =
   | "ALL"
@@ -30,6 +32,7 @@ interface Campaign {
   id: string;
   subject: string;
   audience: Audience;
+  category?: string | null;
   recipientCount: number;
   sentCount: number;
   failedCount: number;
@@ -68,7 +71,9 @@ export default function CampaignsPage() {
   const [audience, setAudience] = useState<Audience>("ALL");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [category, setCategory] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stats, setStats] = useState<CampaignStats>({ delivered: 0, opened: 0, bounced: 0, complained: 0 });
   const [loading, setLoading] = useState(true);
@@ -78,11 +83,17 @@ export default function CampaignsPage() {
 
   const load = useCallback(async () => {
     try {
+      const params = new URLSearchParams({ audience });
+      if (category) params.set("category", category);
       const [countsRes, campaignsRes] = await Promise.all([
-        fetch("/api/admin/campaigns/audience-counts"),
+        fetch(`/api/admin/campaigns/audience-counts?${params.toString()}`),
         fetch("/api/admin/campaigns"),
       ]);
-      if (countsRes.ok) setCounts((await countsRes.json()).counts);
+      if (countsRes.ok) {
+        const data = await countsRes.json();
+        setCounts(data.counts);
+        setCategoryCounts(data.categoryCounts ?? {});
+      }
       if (campaignsRes.ok) {
         const data = await campaignsRes.json();
         setCampaigns(data.campaigns);
@@ -93,7 +104,7 @@ export default function CampaignsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [audience, category]);
 
   useEffect(() => {
     load();
@@ -114,7 +125,7 @@ export default function CampaignsPage() {
       const res = await fetch("/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audience, subject, body }),
+        body: JSON.stringify({ audience, category, subject, body }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -184,6 +195,11 @@ export default function CampaignsPage() {
           ))}
         </div>
 
+        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Category</label>
+        <div className="mb-5">
+          <CategoryFilter value={category} onChange={setCategory} counts={categoryCounts} allLabel="Any category" />
+        </div>
+
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Subject</label>
         <input
           value={subject}
@@ -222,7 +238,8 @@ export default function CampaignsPage() {
           <div className="border border-gold/30 rounded-xl p-4">
             <p className="text-sm mb-4">
               This will send to <span className="text-goldlight">{recipientCount}</span>{" "}
-              {AUDIENCE_OPTIONS.find((o) => o.value === audience)?.label.toLowerCase()}. Continue?
+              {AUDIENCE_OPTIONS.find((o) => o.value === audience)?.label.toLowerCase()}
+              {category ? ` (${categoryLabel(category)})` : ""}. Continue?
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -302,6 +319,7 @@ export default function CampaignsPage() {
                       <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
+                        {c.category ? ` · ${categoryLabel(c.category)}` : ""}
                       </td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {c.sentCount} of {c.recipientCount}

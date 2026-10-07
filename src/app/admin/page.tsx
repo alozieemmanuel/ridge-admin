@@ -5,8 +5,11 @@ import AdminShell from "@/components/AdminShell";
 import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
-import ProofList, { suggestedTotal, type ProofInfo } from "@/components/ProofList";
-import { PaymentUpdateModal, PAYMENT_META, formatMoney, usePaymentSettings } from "@/components/PaymentUpdateModal";
+import CategoryFilter from "@/components/CategoryFilter";
+import { categoryLabel } from "@/lib/categories";
+import Pagination from "@/components/Pagination";
+import { cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { registrationsUrl } from "@/lib/adminData";
 
 interface RegistrationRow {
   id: string;
@@ -14,51 +17,61 @@ interface RegistrationRow {
   email: string;
   phone: string;
   country: string;
-  organization: string | null;
+  categories: string[];
   regType: "EARLY_BIRD" | "LATE";
-  deliveryStatus: string;
-  deliveryError: string | null;
-  paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
-  paymentNote: string | null;
-  amountPaid: number;
-  proofs: ProofInfo[];
-  seatLabel: string | null;
-  attendanceMode: "IN_PERSON" | "ONLINE" | null;
-  seatInviteSentAt: string | null;
   createdAt: string;
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  SENT: "text-emerald-400",
-  FAILED: "text-red-400",
-  NOT_SENT: "text-muted",
-};
-
-function StatusDot({ status, title }: { status: string; title?: string | null }) {
-  return (
-    <span
-      title={title || undefined}
-      className={`inline-flex items-center gap-1.5 text-sm whitespace-nowrap ${STATUS_STYLES[status] ?? "text-muted"} ${title ? "cursor-help" : ""}`}
-    >
-      <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />
-      {status === "SENT" ? "Sent" : status === "FAILED" ? "Failed" : "Not sent"}
-    </span>
-  );
+interface RegistrationsResponse {
+  registrations: RegistrationRow[];
+  total: number;
+  regTypeCounts?: { all: number; earlyBird: number; late: number };
+  categoryCounts?: Record<string, number>;
 }
 
 export default function RegistrationsPage() {
-  const [rows, setRows] = useState<RegistrationRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [regTypeCounts, setRegTypeCounts] = useState<{ all: number; earlyBird: number; late: number } | null>(null);
+  const [pageSize, setPageSize] = useState(() => getStoredPageSize());
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState(""); // the search text, after the typing pause
   const [regType, setRegType] = useState<string>("ALL");
-  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState<string>("");
+
+  // What this page showed last time is on screen straight away; fresh data replaces it a moment later.
+  const firstUrl = registrationsUrl({ page: 1, pageSize, regType: "ALL" });
+  const [initial] = useState(() => cacheGet<RegistrationsResponse>(firstUrl));
+  const [rows, setRows] = useState<RegistrationRow[]>(initial?.registrations ?? []);
+  const [total, setTotal] = useState(initial?.total ?? 0);
+  const [regTypeCounts, setRegTypeCounts] = useState<RegistrationsResponse["regTypeCounts"] | null>(initial?.regTypeCounts ?? null);
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number> | null>(initial?.categoryCounts ?? null);
+  const [loading, setLoading] = useState(!initial);
   const [actionMessage, setActionMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const isOwner = useIsOwner();
-  const { currency, feeAmounts } = usePaymentSettings();
-  const [paymentRow, setPaymentRow] = useState<RegistrationRow | null>(null);
   const requestId = useRef(0);
   const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Wait a moment after typing before searching.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  function changeType(v: string) {
+    setRegType(v);
+    setPage(1);
+  }
+  function changeCategory(v: string) {
+    setCategory(v);
+    setPage(1);
+  }
+  function changePageSize(n: number) {
+    storePageSize(n);
+    setPageSize(n);
+    setPage(1);
+  }
 
   // `silent` refreshes (the auto-refresh poll) update the rows in place without
   // flashing the "Loading…" state. The counter drops stale responses so a slow
@@ -66,17 +79,32 @@ export default function RegistrationsPage() {
   const load = useCallback(
     async (silent = false) => {
       const myRequest = ++requestId.current;
-      if (!silent) setLoading(true);
+      const url = registrationsUrl({ page, pageSize, search: query, regType, category });
+      const apply = (data: RegistrationsResponse) => {
+        setRows(data.registrations);
+        setTotal(data.total);
+        if (data.regTypeCounts) setRegTypeCounts(data.regTypeCounts);
+        if (data.categoryCounts) setCategoryCounts(data.categoryCounts);
+      };
+      if (!silent) {
+        const cached = cacheGet<RegistrationsResponse>(url);
+        if (cached) {
+          apply(cached);
+          setLoading(false);
+        } else {
+          setLoading(true);
+        }
+      }
       try {
-        const params = new URLSearchParams();
-        if (search) params.set("search", search);
-        if (regType !== "ALL") params.set("regType", regType);
-        const res = await fetch(`/api/admin/registrations?${params.toString()}`);
+        const res = await fetch(url);
         if (res.ok && myRequest === requestId.current) {
-          const data = await res.json();
-          setRows(data.registrations);
-          setTotal(data.total);
-          setRegTypeCounts(data.regTypeCounts);
+          const data: RegistrationsResponse = await res.json();
+          cacheSet(url, data);
+          apply(data);
+          // Deleting the last row of the last page leaves an empty page: step back.
+          if (data.registrations.length === 0 && page > 1 && data.total > 0) {
+            setPage(Math.max(1, Math.ceil(data.total / pageSize)));
+          }
         }
       } catch {
         // Network hiccup: keep showing the last data; the next poll will retry.
@@ -84,12 +112,11 @@ export default function RegistrationsPage() {
         if (myRequest === requestId.current) setLoading(false);
       }
     },
-    [search, regType]
+    [page, pageSize, query, regType, category]
   );
 
   useEffect(() => {
-    const t = setTimeout(() => load(), 250);
-    return () => clearTimeout(t);
+    load();
   }, [load]);
 
   useAutoRefresh(() => load(true), 10_000);
@@ -105,55 +132,6 @@ export default function RegistrationsPage() {
     const result = await runRegistrationAction(id, action);
     flash(result.message, result.ok);
     load(true);
-  }
-
-  async function handleConfirmPayment(
-    id: string,
-    amountPaid: number,
-    note: string,
-    opts: { sendConfirmation: boolean; approveProofIds: string[]; payment?: { currency: string; amount: number; rate: number } }
-  ) {
-    const res = await fetch(`/api/admin/registrations/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amountPaid, note, ...opts }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "Failed to update payment.");
-    setPaymentRow(null);
-    if (data.emailError) flash(`Payment updated, but the confirmation email failed: ${data.emailError}`, false);
-    else flash(data.emailSent ? "Payment updated and confirmation emailed." : "Payment updated.", true);
-    load(true);
-  }
-
-  async function handleRejectProof(proof: ProofInfo) {
-    if (!window.confirm("Reject this receipt? The participant is not emailed.")) return;
-    const res = await fetch(`/api/admin/payment-proofs/${proof.id}`, { method: "PATCH" });
-    if (res.ok) {
-      flash("Receipt rejected.", true);
-      load(true);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      flash(data.error || "Failed to reject receipt.", false);
-    }
-  }
-
-  async function handleReset(row: RegistrationRow) {
-    if (
-      !window.confirm(
-        `Reset ${row.fullName}'s payment? This clears the recorded amount (${formatMoney(row.amountPaid, currency)}), note and date and marks them as not paid.`
-      )
-    ) {
-      return;
-    }
-    const res = await fetch(`/api/admin/registrations/${row.id}/payment`, { method: "DELETE" });
-    if (res.ok) {
-      flash("Payment reset.", true);
-      load(true);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      flash(data.error || "Failed to reset payment.", false);
-    }
   }
 
   async function handleDelete(row: RegistrationRow) {
@@ -176,7 +154,7 @@ export default function RegistrationsPage() {
         <div>
           <h2 className="font-serif text-2xl">Registrations</h2>
           <p className="text-muted text-sm mt-1">
-            {total} total
+            {total.toLocaleString()} total
             {actionMessage && (
               <span className={`ml-3 ${actionMessage.ok ? "text-goldlight" : "text-red-400"}`}>{actionMessage.text}</span>
             )}
@@ -197,7 +175,7 @@ export default function RegistrationsPage() {
           return (
             <button
               key={rt}
-              onClick={() => setRegType(rt)}
+              onClick={() => changeType(rt)}
               className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
                 regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
               }`}
@@ -209,6 +187,10 @@ export default function RegistrationsPage() {
         })}
       </div>
 
+      <div className="mb-4">
+        <CategoryFilter value={category} onChange={changeCategory} counts={categoryCounts} />
+      </div>
+
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
@@ -217,33 +199,31 @@ export default function RegistrationsPage() {
       />
 
       <div className="border border-border rounded-xl overflow-hidden">
-        <div className="table-scroll overflow-x-auto">
+        <div className="table-scroll overflow-auto max-h-[70vh]">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-                <th className="sticky left-0 z-10 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Email</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Phone</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Country</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Type</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Payment</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Seat</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Confirmation</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap">Registered</th>
-                <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
+                <th className="sticky left-0 top-0 z-30 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Email</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Phone</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Category</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Country</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Type</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Registered</th>
+                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
+                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-8 text-center text-muted">
+                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
                     No registrations found.
                   </td>
                 </tr>
@@ -256,46 +236,38 @@ export default function RegistrationsPage() {
                     </td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">{r.email}</td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">{r.phone}</td>
+                    <td className="px-5 py-4">
+                      {r.categories.length === 0 ? (
+                        <span className="text-muted text-xs">—</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5 max-w-[16rem]">
+                          {r.categories.map((c) => (
+                            <span
+                              key={c}
+                              title={c}
+                              className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap"
+                            >
+                              {categoryLabel(c)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">{r.country}</td>
                     <td className="px-5 py-4 whitespace-nowrap">
                       <span className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap">
                         {r.regType === "LATE" ? "Late" : "Early Bird"}
                       </span>
                     </td>
-                    <td className="px-5 py-4 whitespace-nowrap">
-                      <span
-                        title={r.paymentNote || undefined}
-                        className={`text-xs rounded-full border px-2.5 py-1 ${PAYMENT_META[r.paymentStatus].className}`}
-                      >
-                        {PAYMENT_META[r.paymentStatus].label}
-                      </span>
-                      <ProofList proofs={r.proofs} onReject={handleRejectProof} />
-                    </td>
-                    <td className="px-5 py-4 whitespace-nowrap">
-                      {r.seatLabel ? (
-                        <span className="px-2.5 py-1 rounded-full border border-gold/40 text-goldlight text-xs font-semibold whitespace-nowrap">
-                          {r.seatLabel}
-                        </span>
-                      ) : r.attendanceMode === "ONLINE" ? (
-                        <span className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap">Online</span>
-                      ) : (
-                        <span className="text-muted text-xs">—</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-4 whitespace-nowrap">
-                      <StatusDot status={r.deliveryStatus} title={r.deliveryError} />
-                    </td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
                     <td className="px-5 py-4 whitespace-nowrap">
                       <RegistrationActionsMenu
-                        paymentStatus={r.paymentStatus}
-                        seatInviteSentAt={r.seatInviteSentAt}
-                        seatChoice={r.seatLabel ? `Seat ${r.seatLabel}` : r.attendanceMode === "ONLINE" ? "Attending online" : null}
+                        variant="registration"
+                        phone={r.phone}
+                        fullName={r.fullName}
                         onAction={(action) => handleAction(r.id, action)}
-                        onUpdatePayment={() => setPaymentRow(r)}
-                        onResetPayment={() => handleReset(r)}
                         onDelete={isOwner ? () => handleDelete(r) : undefined}
                       />
                     </td>
@@ -304,19 +276,9 @@ export default function RegistrationsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={changePageSize} />
       </div>
 
-      {paymentRow && (
-        <PaymentUpdateModal
-          row={paymentRow}
-          currency={currency}
-          expectedFee={paymentRow.regType === "LATE" ? feeAmounts.late : feeAmounts.early}
-          pendingProofs={paymentRow.proofs.filter((p) => p.status === "PENDING")}
-          initialAmount={suggestedTotal(paymentRow.amountPaid, paymentRow.proofs)}
-          onClose={() => setPaymentRow(null)}
-          onConfirm={(amountPaid, note, opts) => handleConfirmPayment(paymentRow.id, amountPaid, note, opts)}
-        />
-      )}
     </AdminShell>
   );
 }

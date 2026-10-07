@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { cacheGet, fetchAndCache } from "@/lib/clientCache";
+
+interface Me {
+  admin?: { role?: string } | null;
+}
 
 /** True when the signed-in admin has the OWNER role (used to show delete controls). */
 export function useIsOwner(): boolean {
-  const [isOwner, setIsOwner] = useState(false);
+  const [isOwner, setIsOwner] = useState(() => cacheGet<Me>("/api/admin/me")?.admin?.role === "OWNER");
 
   useEffect(() => {
-    fetch("/api/admin/me")
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then((data) => setIsOwner(data.admin?.role === "OWNER"))
-      .catch(() => setIsOwner(false));
+    fetchAndCache<Me>("/api/admin/me").then((data) => setIsOwner(data?.admin?.role === "OWNER"));
   }, []);
 
   return isOwner;

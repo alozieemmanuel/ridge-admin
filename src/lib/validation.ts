@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isValidEmailAddress } from "@/lib/email";
+import { CATEGORY_VALUES } from "@/lib/categories";
 
 export const registrationSchema = z.object({
   fullName: z.string().trim().min(2, "Full name is required.").max(200),
@@ -9,6 +10,9 @@ export const registrationSchema = z.object({
   organization: z.string().trim().max(200).optional().or(z.literal("")),
   notes: z.string().trim().max(2000).optional().or(z.literal("")),
   regType: z.enum(["early_bird", "late"]).optional().default("early_bird"),
+  // Optional: the "What best describes you?" answers. When the register page doesn't send them,
+  // they are read from the first line of the notes ("Describes self as: ...").
+  categories: z.array(z.string().trim().max(100)).max(20).optional(),
 });
 
 export const brochureRequestSchema = z.object({
@@ -48,9 +52,26 @@ export const updateTemplateSchema = z.object({
 
 export const updateSettingsSchema = z.record(z.string(), z.string().max(2000));
 
-export const updateSeatStatusSchema = z.object({
-  status: z.enum(["OPEN", "RESERVED", "TAKEN", "BLOCKED"]),
+export const updateSeatStatusSchema = z
+  .object({
+    status: z.enum(["OPEN", "RESERVED", "TAKEN", "BLOCKED"]).optional(),
+    // Unveil (true) or hide (false) this seat on the public seat page.
+    released: z.boolean().optional(),
+  })
+  .refine((v) => v.status !== undefined || v.released !== undefined, { message: "Nothing to update." });
+
+// Bulk unveiling from /admin/seats.
+export const seatReleaseSchema = z.object({
+  action: z.enum(["unveil_next", "unveil_all", "hide_open"]),
+  count: z.coerce.number().int().min(1, "Enter at least 1 seat.").max(1000).optional(),
 });
+
+// An optional category filter for campaigns and broadcasts. Empty means "any category".
+const categoryFilter = z
+  .string()
+  .trim()
+  .refine((v) => v === "" || CATEGORY_VALUES.includes(v), "Unknown category.")
+  .optional();
 
 // Admins confirm a payment by amount only — NOT_PAID / PARTIAL / PAID is
 // derived server-side by comparing amountPaid against the registration's
@@ -99,6 +120,7 @@ export const sendCampaignSchema = z.object({
     "CHECKED_IN",
     "NOT_CHECKED_IN",
   ]),
+  category: categoryFilter,
   subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
   body: z.string().trim().min(1, "Message can't be empty.").max(20000),
 });
@@ -188,6 +210,7 @@ export const WHATSAPP_AUDIENCES = [
 
 export const sendWhatsAppBroadcastSchema = z.object({
   audience: z.enum(WHATSAPP_AUDIENCES),
+  category: categoryFilter,
   templateName: z.string().trim().min(1, "Pick a template.").max(512),
   language: z.string().trim().min(2).max(20),
   params: z.array(z.string().max(1024)).max(20).default([]),

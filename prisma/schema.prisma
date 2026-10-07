@@ -80,6 +80,7 @@ model Registration {
   organization String?
   notes        String?
   regType      RegType @default(EARLY_BIRD)
+  categories   String[] @default([]) // "What best describes you?" answers from the register page (see src/lib/categories.ts)
 
   paymentStatus    PaymentStatus @default(NOT_PAID)
   paymentNote      String? // free-text admin note, e.g. "$1000 of $2000 received 9/20"
@@ -213,6 +214,7 @@ model Campaign {
   subject        String
   body           String           @db.Text
   audience       CampaignAudience
+  category       String? // optional extra filter: only registrants in this category (src/lib/categories.ts)
   recipientCount Int              @default(0)
   sentCount      Int              @default(0)
   failedCount    Int              @default(0)
@@ -254,6 +256,10 @@ model Seat {
   label      String     @unique // "A2" — table label + seat number, shown to guests and admins
 
   status SeatStatus @default(OPEN)
+
+  // Unveiled seats are the only ones guests can see and pick on the public seat page.
+  // Admins release seats in batches from /admin/seats. Seats that are already taken stay released.
+  released Boolean @default(false)
 
   registrationId String?       @unique
   registration   Registration? @relation(fields: [registrationId], references: [id])
@@ -401,6 +407,7 @@ model WhatsAppMessage {
 model WhatsAppBroadcast {
   id               String   @id @default(cuid())
   audience         String // "ALL" | "PAID" | ... | "PROSPECTS_ALL" (see src/lib/whatsapp-audience.ts)
+  category         String? // optional extra filter for registrant audiences
   templateName     String
   templateLanguage String
   templateParams   Json? // string[]; may contain {{first_name}} / {{full_name}} merge tokens

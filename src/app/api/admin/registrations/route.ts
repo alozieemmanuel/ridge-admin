@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { getSettingsMap } from "@/lib/settings";
+import { CATEGORY_VALUES, isCategory } from "@/lib/categories";
 
 export const runtime = "nodejs";
 
@@ -42,10 +44,68 @@ function confirmationStatus(events: AttendeeEvent[]): { status: ConfirmationStat
   return { status: "SENT", error: null };
 }
 
+/**
+ * Counts for the filter pills and stat cards across ALL registrations, independent of the
+ * current page or filter. Everything is read with ONE small query and counted here, because
+ * the database pool may allow only a single connection (connection_limit=1).
+ */
+async function loadStats(withPayments: boolean) {
+  const everyone = await prisma.registration.findMany({
+    select: { paymentStatus: true, regType: true, amountPaid: true, categories: true },
+  });
+
+  const categoryCounts: Record<string, number> = {};
+  CATEGORY_VALUES.forEach((c) => (categoryCounts[c] = 0));
+  const paymentStats = { notPaid: 0, partial: 0, paid: 0, totalCollected: 0, outstanding: 0, awaitingApproval: 0 };
+  let earlyBirdCount = 0;
+  let lateCount = 0;
+  let outstanding = 0;
+
+  let settings: Record<string, string> | null = null;
+  if (withPayments) {
+    paymentStats.awaitingApproval = await prisma.registration.count({
+      where: { paymentStatus: "NOT_PAID", paymentProofs: { some: { status: "PENDING" } } },
+    });
+    settings = await getSettingsMap();
+  }
+
+  for (const r of everyone) {
+    if (r.regType === "LATE") lateCount++;
+    else earlyBirdCount++;
+    for (const c of r.categories) if (c in categoryCounts) categoryCounts[c]++;
+    if (!withPayments || !settings) continue;
+
+    paymentStats.totalCollected += r.amountPaid;
+    if (r.paymentStatus === "NOT_PAID") paymentStats.notPaid++;
+    else if (r.paymentStatus === "PAID") paymentStats.paid++;
+    else {
+      paymentStats.partial++;
+      // What a partial payer still owes: the fee for their registration type minus what they have paid.
+      const fee = parseFloat(r.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount);
+      if (Number.isFinite(fee)) outstanding += Math.max(0, fee - r.amountPaid);
+    }
+  }
+  paymentStats.totalCollected = Math.round(paymentStats.totalCollected * 100) / 100;
+  paymentStats.outstanding = Math.round(outstanding * 100) / 100;
+
+  return {
+    paymentStats,
+    regTypeCounts: { all: earlyBirdCount + lateCount, earlyBird: earlyBirdCount, late: lateCount },
+    categoryCounts,
+  };
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() || "";
   const regType = searchParams.get("regType"); // "EARLY_BIRD" | "LATE" | null
+  const category = searchParams.get("category"); // one of the register page categories, or null
+  // Payments page views: "PAID_PARTIAL" (default there), "PAID", "PARTIAL", "AWAITING" (receipt uploaded, nothing confirmed yet)
+  const payView = searchParams.get("payView");
+  // lean=1: only the contact details (the Registrations page). Skips email history, seats and receipts, which makes it much faster.
+  const lean = searchParams.get("lean") === "1";
+  // stats=0: skip the counts for the filter pills and stat cards (used by small lookups).
+  const wantStats = searchParams.get("stats") !== "0";
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
   const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10) || 50));
 
@@ -61,18 +121,52 @@ export async function GET(request: NextRequest) {
           }
         : {},
       regType === "EARLY_BIRD" || regType === "LATE" ? { regType } : {},
+      isCategory(category) ? { categories: { has: category } } : {},
+      payView === "PAID_PARTIAL"
+        ? { paymentStatus: { in: ["PAID", "PARTIAL"] } }
+        : payView === "PAID"
+          ? { paymentStatus: "PAID" }
+          : payView === "PARTIAL"
+            ? { paymentStatus: "PARTIAL" }
+            : payView === "AWAITING"
+              ? { paymentStatus: "NOT_PAID", paymentProofs: { some: { status: "PENDING" } } }
+              : {},
     ],
   };
+  const paging = { where, orderBy: { createdAt: "desc" as const }, skip: (page - 1) * pageSize, take: pageSize };
 
-  // Run the queries one group at a time so a small connection pool is never
-  // asked for more connections than it has.
+  if (lean) {
+    const [total, list] = await Promise.all([
+      prisma.registration.count({ where }),
+      prisma.registration.findMany({
+        ...paging,
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          country: true,
+          categories: true,
+          regType: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+    const stats = wantStats ? await loadStats(false) : null;
+    return NextResponse.json({
+      registrations: list.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })),
+      total,
+      page,
+      pageSize,
+      regTypeCounts: stats?.regTypeCounts,
+      categoryCounts: stats?.categoryCounts,
+    });
+  }
+
   const [total, registrations] = await Promise.all([
     prisma.registration.count({ where }),
     prisma.registration.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
+      ...paging,
       include: {
         emailEvents: {
           where: { audience: "ATTENDEE", source: "REGISTRATION" },
@@ -96,34 +190,7 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  // Payment stats and registration-type counts across ALL registrations,
-  // independent of the current page/filter.
-  const [paymentGroups, paymentTotal, regTypeGroups] = await Promise.all([
-    prisma.registration.groupBy({
-      by: ["paymentStatus"],
-      _count: { paymentStatus: true },
-    }),
-    prisma.registration.aggregate({ _sum: { amountPaid: true } }),
-    prisma.registration.groupBy({
-      by: ["regType"],
-      _count: { regType: true },
-    }),
-  ]);
-
-  const paymentStats = { notPaid: 0, partial: 0, paid: 0, totalCollected: paymentTotal._sum.amountPaid ?? 0 };
-  for (const g of paymentGroups) {
-    if (g.paymentStatus === "NOT_PAID") paymentStats.notPaid = g._count.paymentStatus;
-    else if (g.paymentStatus === "PARTIAL") paymentStats.partial = g._count.paymentStatus;
-    else if (g.paymentStatus === "PAID") paymentStats.paid = g._count.paymentStatus;
-  }
-
-  let earlyBirdCount = 0;
-  let lateCount = 0;
-  for (const g of regTypeGroups) {
-    if (g.regType === "EARLY_BIRD") earlyBirdCount = g._count.regType;
-    else if (g.regType === "LATE") lateCount = g._count.regType;
-  }
-  const regTypeCounts = { all: earlyBirdCount + lateCount, earlyBird: earlyBirdCount, late: lateCount };
+  const stats = wantStats ? await loadStats(true) : null;
 
   const REMINDER_KINDS = new Set(["payment_reminder", "pay_later_reminder"]);
 
@@ -144,6 +211,7 @@ export async function GET(request: NextRequest) {
       country: r.country,
       organization: r.organization,
       notes: r.notes,
+      categories: r.categories,
       regType: r.regType,
       deliveryStatus: status,
       deliveryError: status === "FAILED" ? error : null,
@@ -174,7 +242,8 @@ export async function GET(request: NextRequest) {
     total,
     page,
     pageSize,
-    paymentStats,
-    regTypeCounts,
+    paymentStats: stats?.paymentStats,
+    regTypeCounts: stats?.regTypeCounts,
+    categoryCounts: stats?.categoryCounts,
   });
 }

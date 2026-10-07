@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 export type RegistrationAction = "resend_confirmation" | "send_seat_invite" | "send_payment_reminder";
 
@@ -24,10 +25,18 @@ export async function runRegistrationAction(
 }
 
 interface Props {
-  paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
-  seatInviteSentAt: string | null;
+  /**
+   * "registration": details-only menu for the Registrations page (resend confirmation, WhatsApp, delete).
+   * "payment": payment menu for the Payments page (seat invite, reminder, update, reset, delete).
+   */
+  variant: "registration" | "payment";
+  paymentStatus?: "NOT_PAID" | "PARTIAL" | "PAID";
+  seatInviteSentAt?: string | null;
   /** "Seat A4" or "Attending online" once the person has chosen, otherwise null. */
   seatChoice?: string | null;
+  /** Registration variant: opens a WhatsApp chat with this person in the WhatsApp tab. */
+  phone?: string | null;
+  fullName?: string;
   onAction: (action: RegistrationAction) => void;
   /** Opens the "Update payment" dialog. */
   onUpdatePayment?: () => void;
@@ -41,9 +50,12 @@ const MENU_WIDTH = 260;
 const MENU_HEIGHT_ESTIMATE = 330;
 
 export default function RegistrationActionsMenu({
-  paymentStatus,
-  seatInviteSentAt,
+  variant,
+  paymentStatus = "NOT_PAID",
+  seatInviteSentAt = null,
   seatChoice,
+  phone,
+  fullName,
   onAction,
   onUpdatePayment,
   onResetPayment,
@@ -117,58 +129,79 @@ export default function RegistrationActionsMenu({
           style={{ position: "fixed", width: MENU_WIDTH, ...pos }}
           className="bg-cardbg border border-border rounded-xl shadow-xl z-50 overflow-hidden"
         >
-          {/* Seat selection is always clickable. If the person hasn't paid in
-              full the server refuses and the page shows why, rather than the
-              option silently being greyed out. */}
-          <button
-            onClick={() => choose("send_seat_invite")}
-            disabled={Boolean(seatChoice)}
-            title={seatChoice ? `Already chosen: ${seatChoice}` : undefined}
-            className={itemClass}
-          >
-            {seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
-            {seatChoice ? (
-              <span className="block text-xs text-muted mt-0.5">Already chosen: {seatChoice}</span>
-            ) : (
-              paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>
-            )}
-          </button>
-          <button
-            onClick={() => choose("send_payment_reminder")}
-            disabled={reminderDisabled}
-            title={reminderDisabled ? "Already fully paid" : undefined}
-            className={itemClass}
-          >
-            Send payment reminder
-            {reminderDisabled && <span className="block text-xs text-muted mt-0.5">Already fully paid</span>}
-          </button>
-          <button onClick={() => choose("resend_confirmation")} className={itemClass}>
-            Resend confirmation email
-          </button>
-          {onUpdatePayment && (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onUpdatePayment();
-              }}
-              className={itemClass}
-            >
-              Update payment…
-            </button>
+          {variant === "payment" && (
+            <>
+              {/* Seat selection is always clickable. If the person hasn't paid in
+                  full the server refuses and the page shows why, rather than the
+                  option silently being greyed out. */}
+              <button
+                onClick={() => choose("send_seat_invite")}
+                disabled={Boolean(seatChoice)}
+                title={seatChoice ? `Already chosen: ${seatChoice}` : undefined}
+                className={itemClass}
+              >
+                {seatInviteSentAt ? "Resend seat-selection invite" : "Send seat-selection invite"}
+                {seatChoice ? (
+                  <span className="block text-xs text-muted mt-0.5">Already chosen: {seatChoice}</span>
+                ) : (
+                  paymentStatus !== "PAID" && <span className="block text-xs text-muted mt-0.5">Requires full payment</span>
+                )}
+              </button>
+              <button
+                onClick={() => choose("send_payment_reminder")}
+                disabled={reminderDisabled}
+                title={reminderDisabled ? "Already fully paid" : undefined}
+                className={itemClass}
+              >
+                Send payment reminder
+                {reminderDisabled && <span className="block text-xs text-muted mt-0.5">Already fully paid</span>}
+              </button>
+              {onUpdatePayment && (
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    onUpdatePayment();
+                  }}
+                  className={itemClass}
+                >
+                  Update payment…
+                </button>
+              )}
+              {onResetPayment && (
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    onResetPayment();
+                  }}
+                  disabled={resetDisabled}
+                  title={resetDisabled ? "No payment recorded" : undefined}
+                  className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
+                >
+                  Reset payment…
+                  {resetDisabled && <span className="block text-xs text-muted mt-0.5">No payment recorded</span>}
+                </button>
+              )}
+            </>
           )}
-          {onResetPayment && (
-            <button
-              onClick={() => {
-                setOpen(false);
-                onResetPayment();
-              }}
-              disabled={resetDisabled}
-              title={resetDisabled ? "No payment recorded" : undefined}
-              className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
-            >
-              Reset payment…
-              {resetDisabled && <span className="block text-xs text-muted mt-0.5">No payment recorded</span>}
-            </button>
+          {variant === "registration" && (
+            <>
+              <button onClick={() => choose("resend_confirmation")} className={itemClass}>
+                Resend confirmation email
+              </button>
+              {phone ? (
+                <Link
+                  href={`/admin/whatsapp?to=${encodeURIComponent(phone)}&name=${encodeURIComponent(fullName ?? "")}`}
+                  onClick={() => setOpen(false)}
+                  className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}
+                >
+                  Chat on WhatsApp
+                </Link>
+              ) : (
+                <button disabled title="No phone number" className={`${itemClass} ${onDelete ? "" : "border-b-0"}`}>
+                  Chat on WhatsApp
+                </button>
+              )}
+            </>
           )}
           {onDelete && (
             <button

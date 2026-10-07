@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import TemplatePicker, { type TemplateInfo } from "@/components/TemplatePicker";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import CategoryFilter from "@/components/CategoryFilter";
+import { categoryLabel } from "@/lib/categories";
 
 interface Broadcast {
   id: string;
   audience: string;
+  category?: string | null;
   templateName: string;
   previewText: string;
   recipientCount: number;
@@ -28,6 +31,7 @@ const goldButton =
 
 export default function WhatsAppBroadcastPanel() {
   const [audience, setAudience] = useState("ALL");
+  const [category, setCategory] = useState("");
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
@@ -38,7 +42,7 @@ export default function WhatsAppBroadcastPanel() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/whatsapp/broadcasts");
+      const res = await fetch(`/api/admin/whatsapp/broadcasts${category ? `?category=${encodeURIComponent(category)}` : ""}`);
       if (!res.ok) return;
       const data = await res.json();
       setLabels(data.labels);
@@ -47,12 +51,16 @@ export default function WhatsAppBroadcastPanel() {
     } catch {
       // keep last data
     }
-  }, []);
+  }, [category]);
 
   useEffect(() => {
     load();
   }, [load]);
   useAutoRefresh(() => load(), 15_000);
+
+  // Categories only describe registrants, so prospect audiences ignore the category choice.
+  const isProspectAudience = audience.startsWith("PROSPECTS_");
+  const activeCategory = isProspectAudience ? "" : category;
 
   const recipientCount = counts[audience] ?? 0;
   const canSend = pick.ready && recipientCount > 0;
@@ -65,7 +73,7 @@ export default function WhatsAppBroadcastPanel() {
       const res = await fetch("/api/admin/whatsapp/broadcasts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audience, templateName: pick.template.name, language: pick.template.language, params: pick.params }),
+        body: JSON.stringify({ audience, templateName: pick.template.name, language: pick.template.language, params: pick.params, category: activeCategory }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -113,6 +121,12 @@ export default function WhatsAppBroadcastPanel() {
             </div>
           </div>
         ))}
+        {!isProspectAudience && (
+          <div className="mb-4">
+            <label className="block text-xs uppercase tracking-wider text-muted mb-2">Category</label>
+            <CategoryFilter value={category} onChange={setCategory} allLabel="Any category" />
+          </div>
+        )}
         <p className="text-xs text-muted mb-6">Counts include only people with a usable phone number.</p>
 
         <div className="mb-5">
@@ -130,7 +144,8 @@ export default function WhatsAppBroadcastPanel() {
           <div className="border border-gold/30 rounded-xl p-4">
             <p className="text-sm mb-4">
               This will send &quot;{pick.template?.name}&quot; on WhatsApp to <span className="text-goldlight">{recipientCount}</span>{" "}
-              people ({(labels[audience] ?? audience).toLowerCase()}). Continue?
+              people ({(labels[audience] ?? audience).toLowerCase()}
+              {activeCategory ? `, ${categoryLabel(activeCategory)}` : ""}). Continue?
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -169,7 +184,9 @@ export default function WhatsAppBroadcastPanel() {
                 {broadcasts.map((b) => (
                   <tr key={b.id} className="border-b border-border/50 last:border-b-0" title={b.previewText}>
                     <td className="px-5 py-4 whitespace-nowrap font-medium">{b.templateName}</td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">{labels[b.audience] ?? b.audience}</td>
+                    <td className="px-5 py-4 text-muted whitespace-nowrap">{labels[b.audience] ?? b.audience}
+                      {b.category ? ` · ${categoryLabel(b.category)}` : ""}
+                    </td>
                     <td className="px-5 py-4 text-muted whitespace-nowrap">
                       {b.sentCount} of {b.recipientCount}
                       {b.failedCount > 0 && <span className="text-red-400"> ({b.failedCount} failed)</span>}

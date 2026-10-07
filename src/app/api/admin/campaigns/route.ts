@@ -55,6 +55,7 @@ export async function GET() {
         id: c.id,
         subject: c.subject,
         audience: c.audience,
+        category: c.category,
         recipientCount: c.recipientCount,
         sentCount: c.sentCount,
         failedCount: c.failedCount,
@@ -101,8 +102,9 @@ export async function POST(request: NextRequest) {
   }
 
   const { audience, subject, body } = parsed.data;
+  const category = parsed.data.category || null;
 
-  const recipients = await prisma.registration.findMany({ where: audienceWhere(audience) });
+  const recipients = await prisma.registration.findMany({ where: audienceWhere(audience, category) });
   if (recipients.length === 0) {
     return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
   }
@@ -114,6 +116,7 @@ export async function POST(request: NextRequest) {
       subject,
       body,
       audience,
+      category,
       recipientCount: recipients.length,
       sentCount: 0,
       failedCount: 0,

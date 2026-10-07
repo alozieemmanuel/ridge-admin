@@ -22,6 +22,8 @@ interface Loaded {
   guest: { firstName: string };
   current: { mode: "IN_PERSON" | "ONLINE" | null; seatLabel: string | null };
   tables: TableData[];
+  /** Unveiled seats that are still open to pick. */
+  availableCount?: number;
 }
 
 const RED = "#EB3C34";
@@ -261,6 +263,16 @@ function SeatPicker() {
               )}
             </div>
 
+            {data.tables.length === 0 ? (
+              <p className="text-center text-sm mb-6 border border-border rounded-2xl px-5 py-4 max-w-xl mx-auto text-muted">
+                Seat selection isn&apos;t open yet. We will release seats shortly, so please check back soon. You can also choose to attend online above.
+              </p>
+            ) : data.availableCount === 0 && !current?.seatLabel ? (
+              <p className="text-center text-sm mb-6 border border-border rounded-2xl px-5 py-4 max-w-xl mx-auto text-muted">
+                All the seats released so far have been taken. More seats will be released soon, so please check back.
+              </p>
+            ) : null}
+
             <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-muted mb-4">
               {[
                 ["Open", SEAT_STATUS_META.OPEN.stroke, false],
@@ -279,6 +291,7 @@ function SeatPicker() {
               ))}
             </div>
 
+            {data.tables.length > 0 && (
             <div className="rounded-2xl p-4 sm:p-6 overflow-x-auto" style={{ background: "#000", border: "1px solid #404040" }}>
               <div style={{ minWidth: 6 * 132 }}>
                 <div className="text-center text-[11px] uppercase tracking-[0.3em] mb-5 py-2 rounded-lg" style={{ color: "#ADADAD", border: "1px solid #404040" }}>
@@ -295,6 +308,7 @@ function SeatPicker() {
                 </div>
               </div>
             </div>
+            )}
           </>
         )}
       </main>

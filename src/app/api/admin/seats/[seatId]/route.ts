@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { updateSeatStatusSchema } from "@/lib/validation";
+import { getSession } from "@/lib/auth";
+import { logAdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
 
@@ -24,7 +26,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "Seat not found." }, { status: 404 });
   }
 
-  const { status } = parsed.data;
+  const { status, released } = parsed.data;
+
+  // A seat someone has booked has to stay visible to them.
+  if (released === false && existing.registrationId) {
+    return NextResponse.json({ error: "That seat is booked, so it can't be hidden." }, { status: 409 });
+  }
+
   // Manually setting a seat back to OPEN or BLOCKED clears any registration
   // link — a seat can't simultaneously be "available"/"disabled" and
   // "assigned to someone". RESERVED/TAKEN via this manual endpoint leave
@@ -35,11 +43,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const seat = await prisma.seat.update({
     where: { id: seatId },
     data: {
-      status,
-      registrationId: clearAssignment ? null : existing.registrationId,
+      ...(status ? { status, registrationId: clearAssignment ? null : existing.registrationId } : {}),
+      ...(released !== undefined ? { released } : {}),
     },
     include: { registration: { select: { id: true, fullName: true, email: true } } },
   });
+
+  if (released !== undefined) {
+    await logAdminAction(
+      await getSession(),
+      {
+        action: "seat.update",
+        entityType: "seat",
+        entityId: seatId,
+        entityLabel: existing.label,
+        details: { released },
+      },
+      request
+    );
+  }
 
   return NextResponse.json({ result: "success", seat });
 }

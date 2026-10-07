@@ -11,7 +11,13 @@ export const AUDIENCE_LABELS: Record<CampaignAudience, string> = {
   NOT_CHECKED_IN: "Not checked in (Day 7)",
 };
 
-export function audienceWhere(audience: CampaignAudience): Prisma.RegistrationWhereInput {
+/** The audience, optionally narrowed to one register page category ("What best describes you?"). */
+export function audienceWhere(audience: CampaignAudience, category?: string | null): Prisma.RegistrationWhereInput {
+  const base = audienceBaseWhere(audience);
+  return category ? { AND: [base, { categories: { has: category } }] } : base;
+}
+
+function audienceBaseWhere(audience: CampaignAudience): Prisma.RegistrationWhereInput {
   switch (audience) {
     case "ALL":
       return {};

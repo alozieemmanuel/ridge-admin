@@ -30,8 +30,11 @@ export interface BroadcastRecipient {
   rawPhone: string | null;
 }
 
-/** People in an audience, one entry per phone number (duplicates collapsed). Unusable numbers are kept with waId null so they can be counted. */
-export async function resolveWhatsAppAudience(audience: WhatsAppAudience): Promise<BroadcastRecipient[]> {
+/**
+ * People in an audience, one entry per phone number (duplicates collapsed). Unusable numbers are kept with waId null so they can be counted.
+ * `category` narrows the registrant audiences only; prospects have no category.
+ */
+export async function resolveWhatsAppAudience(audience: WhatsAppAudience, category?: string | null): Promise<BroadcastRecipient[]> {
   let people: { fullName: string; phone: string | null }[];
 
   if (audience === "PROSPECTS_ALL") {
@@ -44,7 +47,7 @@ export async function resolveWhatsAppAudience(audience: WhatsAppAudience): Promi
       select: { fullName: true, phone: true },
     });
   } else {
-    people = await prisma.registration.findMany({ where: audienceWhere(audience), select: { fullName: true, phone: true } });
+    people = await prisma.registration.findMany({ where: audienceWhere(audience, category), select: { fullName: true, phone: true } });
   }
 
   const seen = new Set<string>();
@@ -60,10 +63,10 @@ export async function resolveWhatsAppAudience(audience: WhatsAppAudience): Promi
   return out;
 }
 
-export async function whatsappAudienceCounts(): Promise<Record<WhatsAppAudience, number>> {
+export async function whatsappAudienceCounts(category?: string | null): Promise<Record<WhatsAppAudience, number>> {
   const entries = await Promise.all(
     (Object.keys(WHATSAPP_AUDIENCE_LABELS) as WhatsAppAudience[]).map(async (a) => {
-      const recipients = await resolveWhatsAppAudience(a);
+      const recipients = await resolveWhatsAppAudience(a, category);
       return [a, recipients.filter((r) => r.waId).length] as const;
     })
   );
