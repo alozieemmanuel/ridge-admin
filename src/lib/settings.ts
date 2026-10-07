@@ -10,12 +10,12 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   cohort_dates: "8–14 November 2026",
   sender_name: "RIDGE 2026",
   registration_fee: "USD $2,000 (Early Bird)",
-  late_registration_fee: "USD $5,000",
+  late_registration_fee: "USD $3,000",
   // Plain numbers (no currency symbol/commas) used to auto-derive a
   // registration's payment status when an admin confirms an amount paid.
   registration_fee_amount: "2000",
-  late_registration_fee_amount: "5000",
-  early_bird_deadline: "10th October 2026",
+  late_registration_fee_amount: "3000",
+  early_bird_deadline: "20th October 2026",
   brochure_url: "https://pertinencegroup.com/ridge/RIDGE-Brochure-2026.pdf",
   payment_account_name: "PERTINENCE PROPERTIES LIMITED",
   payment_bank_name: "ZENITH BANK",
