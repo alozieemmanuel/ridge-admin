@@ -3,7 +3,7 @@
  * so an email still goes out with this text if the template row hasn't been created in the database yet.
  * Edit the live copy from Email templates in the dashboard.
  *
- * Merge variables: {{first_name}}, {{full_name}}, {{email}}, {{phone}}, {{organization}}, {{reserve_link}},
+ * Merge variables: {{first_name}}, {{full_name}}, {{email}}, {{phone}}, {{reserve_link}},
  * plus every Settings key, for example {{programme_name}}, {{event_date}}, {{event_time}}, {{event_venue}}.
  */
 export interface DefaultTemplate {

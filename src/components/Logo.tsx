@@ -18,6 +18,6 @@ export default function Logo({ className = "h-10 w-auto", showFallbackText = tru
 
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={LOGO_URL} alt={BRAND_NAME} className={`${className} logo-adaptive`} onError={() => setMissing(true)} />
+    <img src={LOGO_URL} alt={BRAND_NAME} width={456} height={110} decoding="async" fetchPriority="high" className={`${className} logo-adaptive`} onError={() => setMissing(true)} />
   );
 }

@@ -90,13 +90,26 @@ export async function POST(request: NextRequest) {
         fullName: p.fullName,
         email: p.email,
         phone: p.phone,
-        organization: p.organization,
         followUpStatus: p.followUpStatus ?? "NOT_CONTACTED",
-        callFeedback: p.callFeedback,
         extra: Object.keys(p.extra).length ? p.extra : undefined,
       })),
     });
     added += res.count;
+  }
+
+  // Call feedback that came in with the file becomes the first entry in each guest's follow-up log.
+  const withFeedback = newPeople.filter((p) => p.callFeedback);
+  if (withFeedback.length) {
+    const ids = await prisma.registration.findMany({ where: { email: { in: withFeedback.map((p) => p.email) } }, select: { id: true, email: true } });
+    const idByEmail = new Map(ids.map((r) => [r.email, r.id]));
+    for (let i = 0; i < withFeedback.length; i += CHUNK) {
+      await prisma.followUpNote.createMany({
+        data: withFeedback.slice(i, i + CHUNK).flatMap((p) => {
+          const registrationId = idByEmail.get(p.email);
+          return registrationId ? [{ registrationId, body: p.callFeedback!, status: p.followUpStatus, authorName: "Imported from CSV" }] : [];
+        }),
+      });
+    }
   }
 
   if (onDuplicate === "update") {
@@ -107,12 +120,13 @@ export async function POST(request: NextRequest) {
         data: {
           fullName: p.fullName,
           ...(p.phone ? { phone: p.phone } : {}),
-          ...(p.organization ? { organization: p.organization } : {}),
           ...(p.followUpStatus ? { followUpStatus: p.followUpStatus } : {}),
-          ...(p.callFeedback ? { callFeedback: p.callFeedback } : {}),
           ...(Object.keys(p.extra).length ? { extra: p.extra } : {}),
         },
       });
+      if (p.callFeedback) {
+        await prisma.followUpNote.create({ data: { registrationId: id, body: p.callFeedback, status: p.followUpStatus, authorName: "Imported from CSV" } });
+      }
       updated++;
     }
   }

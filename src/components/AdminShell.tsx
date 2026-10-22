@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
@@ -12,14 +12,13 @@ interface AdminSession {
   role: "OWNER" | "ADMIN";
 }
 
-type IconName = "template" | "overview" | "people" | "ticket" | "mail" | "settings" | "log" | "team";
+type IconName = "overview" | "people" | "ticket" | "mail" | "settings" | "log" | "team";
 
 const NAV: { href: string; label: string; icon: IconName; ownerOnly?: boolean }[] = [
   { href: "/admin", label: "Overview", icon: "overview" },
   { href: "/admin/registrations", label: "Registrations", icon: "people" },
   { href: "/admin/attendance", label: "Attendance", icon: "ticket" },
   { href: "/admin/campaigns", label: "Campaigns", icon: "mail" },
-  { href: "/admin/templates", label: "Email templates", icon: "template" },
   { href: "/admin/settings", label: "Settings", icon: "settings" },
   { href: "/admin/audit", label: "Activity log", icon: "log", ownerOnly: true },
   { href: "/admin/admins", label: "Team", icon: "team" },
@@ -76,13 +75,6 @@ function Icon({ name }: { name: IconName }) {
           <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
         </svg>
       );
-    case "template":
-      return (
-        <svg {...common}>
-          <path d="M4 4h16v12H8l-4 4z" />
-          <path d="M8 9h8M8 12h5" />
-        </svg>
-      );
     case "log":
       return (
         <svg {...common}>
@@ -100,7 +92,23 @@ function Icon({ name }: { name: IconName }) {
   }
 }
 
-export default function AdminShell({
+/**
+ * True inside the sidebar frame. The frame lives in app/admin/layout.tsx so it stays on screen (and keeps its logo and signed-in admin)
+ * while the admin moves between modules; pages that still wrap themselves in <AdminShell> then simply render their content.
+ */
+const InsideFrame = createContext(false);
+
+export default function AdminShell({ active, children }: { active: string; children: React.ReactNode }) {
+  const inside = useContext(InsideFrame);
+  return inside ? <>{children}</> : <ShellFrame active={active}>{children}</ShellFrame>;
+}
+
+/** The module a page belongs to, for highlighting the sidebar. */
+function isActive(href: string, active: string): boolean {
+  return href === "/admin" ? active === "/admin" : active === href || active.startsWith(`${href}/`);
+}
+
+export function ShellFrame({
   active,
   children,
 }: {
@@ -136,20 +144,20 @@ export default function AdminShell({
 
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto" aria-label="Main">
         {items.map((item) => {
-          const isActive = active === item.href;
+          const isCurrent = isActive(item.href, active);
           return (
             <Link
               key={item.href}
               href={item.href}
               onClick={() => setMenuOpen(false)}
-              aria-current={isActive ? "page" : undefined}
+              aria-current={isCurrent ? "page" : undefined}
               className={`flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm border-l-2 transition-colors ${
-                isActive
+                isCurrent
                   ? "border-gold bg-gold/15 text-fg font-medium"
                   : "border-transparent text-muted hover:text-fg hover:bg-gold/10"
               }`}
             >
-              <span className={isActive ? "text-goldlight" : ""}>
+              <span className={isCurrent ? "text-goldlight" : ""}>
                 <Icon name={item.icon} />
               </span>
               {item.label}
@@ -200,7 +208,9 @@ export default function AdminShell({
       )}
 
       <main className="flex-1 min-w-0">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 py-8">{children}</div>
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 py-8">
+          <InsideFrame.Provider value={true}>{children}</InsideFrame.Provider>
+        </div>
       </main>
     </div>
   );

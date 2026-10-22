@@ -3,28 +3,31 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
-import { FOLLOW_UP_VALUES } from "@/lib/followUp";
+import { describeActivity } from "@/lib/activity";
 import { reserveLink } from "@/lib/notifications";
 import { EMAIL_RE } from "@/lib/csvImport";
 
 export const runtime = "nodejs";
 
-/** One participant in full: contact details, follow-up, every call note, invitation / reservation / ticket / attendance history and any extra CSV columns. */
+/** One participant in full: contact details, the follow-up log, invitation / reservation / ticket / attendance state, extra CSV columns and everything that has happened to them. */
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const r = await prisma.registration.findUnique({
-    where: { id },
-    include: {
-      followUpNotes: { orderBy: { createdAt: "desc" } },
-      emailEvents: {
-        where: { audience: "ATTENDEE", source: "REGISTRATION" },
-        orderBy: { occurredAt: "desc" },
-        take: 30,
-        select: { id: true, kind: true, type: true, subject: true, errorMessage: true, occurredAt: true },
-      },
-    },
-  });
+  const [r, audit] = await Promise.all([
+    prisma.registration.findUnique({
+      where: { id },
+      include: { followUpNotes: { orderBy: { createdAt: "desc" } } },
+    }),
+    prisma.auditLog.findMany({
+      where: { entityType: "registration", entityId: id },
+      orderBy: { createdAt: "desc" },
+      take: 150,
+      select: { id: true, adminName: true, action: true, details: true, createdAt: true },
+    }),
+  ]);
   if (!r) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
+
+  const activity = audit.map(describeActivity).filter((a): a is NonNullable<typeof a> => a !== null);
+  activity.push({ id: "added", title: "Added to the guest list", detail: null, by: "System", at: r.createdAt.toISOString(), tone: "normal" });
 
   return NextResponse.json({
     participant: {
@@ -32,9 +35,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       fullName: r.fullName,
       email: r.email,
       phone: r.phone,
-      organization: r.organization,
       followUpStatus: r.followUpStatus,
-      callFeedback: r.callFeedback,
       extra: (r.extra as Record<string, string> | null) ?? {},
       inviteSentAt: r.inviteSentAt?.toISOString() ?? null,
       reservedAt: r.reservedAt?.toISOString() ?? null,
@@ -43,15 +44,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       checkedInAt: r.checkedInAt?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       reserveLink: reserveLink(r),
-      notes: r.followUpNotes.map((n) => ({ id: n.id, body: n.body, authorName: n.authorName, createdAt: n.createdAt.toISOString() })),
-      emails: r.emailEvents.map((e) => ({
-        id: e.id,
-        kind: e.kind,
-        type: e.type,
-        subject: e.subject,
-        error: e.errorMessage,
-        at: e.occurredAt.toISOString(),
-      })),
+      followUps: r.followUpNotes.map((n) => ({ id: n.id, status: n.status, body: n.body, authorName: n.authorName, createdAt: n.createdAt.toISOString() })),
+      activity,
     },
   });
 }
@@ -61,13 +55,10 @@ const updateSchema = z
     fullName: z.string().trim().min(2, "Enter the guest's name.").max(200).optional(),
     email: z.string().trim().toLowerCase().max(320).optional(),
     phone: z.string().trim().max(40).optional(),
-    organization: z.string().trim().max(200).nullable().optional(),
-    followUpStatus: z.enum(FOLLOW_UP_VALUES as [string, ...string[]]).optional(),
-    callFeedback: z.string().trim().max(10000).nullable().optional(),
   })
   .strict();
 
-/** Edits a participant's details, follow-up status or call feedback. Only the fields sent are changed. */
+/** Edits a participant's contact details. Only the fields sent are changed. (Follow-up has its own route, so every call is logged with its feedback.) */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const session = await getSession();
@@ -95,32 +86,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.` }, { status: 409 });
   }
 
-  const updated = await prisma.registration.update({
+  await prisma.registration.update({
     where: { id },
     data: {
       ...(data.fullName !== undefined ? { fullName: data.fullName } : {}),
       ...(data.email !== undefined ? { email: data.email } : {}),
       ...(data.phone !== undefined ? { phone: data.phone } : {}),
-      ...(data.organization !== undefined ? { organization: data.organization || null } : {}),
-      ...(data.followUpStatus !== undefined ? { followUpStatus: data.followUpStatus } : {}),
-      ...(data.callFeedback !== undefined ? { callFeedback: data.callFeedback || null } : {}),
     },
   });
 
-  const onlyFollowUp = Object.keys(data).length === 1 && data.followUpStatus !== undefined;
-  await logAdminAction(
-    session,
-    {
-      action: onlyFollowUp ? "participant.follow_up" : "participant.update",
-      entityType: "registration",
-      entityId: id,
-      entityLabel: existing.fullName,
-      details: onlyFollowUp
-        ? { from: existing.followUpStatus, to: updated.followUpStatus }
-        : { changedFields: Object.keys(data) },
-    },
-    request
-  );
+  const changes = (["fullName", "email", "phone"] as const)
+    .filter((f) => data[f] !== undefined && data[f] !== existing[f])
+    .map((f) => ({ field: f, from: existing[f], to: data[f] as string }));
+  if (changes.length) {
+    await logAdminAction(session, { action: "participant.update", entityType: "registration", entityId: id, entityLabel: existing.fullName, details: { changes } }, request);
+  }
 
   return NextResponse.json({ result: "success" });
 }

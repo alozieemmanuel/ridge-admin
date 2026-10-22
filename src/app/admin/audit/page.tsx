@@ -31,6 +31,7 @@ const ACTION_LABELS: Record<string, string> = {
   "participants.import": "Imported guest list",
   "participant.update": "Edited guest",
   "participant.note": "Added call note",
+  "participant.note_delete": "Deleted a follow-up entry",
   "participant.follow_up": "Changed follow-up",
   "participant.send_invitation": "Invitation email",
   "participant.send_ticket": "Ticket email",
@@ -124,7 +125,7 @@ function summarize(row: LogRow): string {
     case "attendance.capacity":
       return d.capacity ? `${d.capacity} seats` : "No limit";
     case "data.clear":
-      return `${d.registrations ?? 0} registrations, ${d.brochureRequests ?? 0} brochure requests`;
+      return d.scope === "everything" ? `Cleared everything: ${d.registrations ?? 0} guests and all old activity` : `${d.registrations ?? 0} guests`;
     case "auth.login_failed":
       return String(d.reason ?? "");
     default:

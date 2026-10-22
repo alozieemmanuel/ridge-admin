@@ -5,6 +5,7 @@ import { verifyReserveToken } from "@/lib/proof-token";
 import { getCapacity, reserveSeat } from "@/lib/reservations";
 import { sendTicket } from "@/lib/notifications";
 import { ticketQrSvg } from "@/lib/ticket";
+import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ async function view(registrationId: string) {
   if (!r) return null;
   const reserved = Boolean(r.reservedAt && r.ticketCode);
   return {
-    guest: { fullName: r.fullName, email: r.email, phone: r.phone || null, organization: r.organization },
+    guest: { fullName: r.fullName, email: r.email, phone: r.phone || null },
     event: {
       name: settings.programme_name,
       caption: settings.event_caption,
@@ -67,11 +68,21 @@ export async function POST(request: NextRequest) {
 
   let emailSent = true;
   if (!result.alreadyReserved) {
+    const r = result.registration;
+    const actor = { adminId: null, name: `${r.fullName} (guest)`, email: r.email };
+    const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName };
+    await logAudit(actor, { ...entry, action: "participant.reserve", details: { by: "guest" } }, request);
     try {
-      await sendTicket(result.registration);
+      await sendTicket(r);
+      await logAudit({ adminId: null, name: "System" }, { ...entry, action: "participant.send_ticket", details: { outcome: "sent", to: r.email } }, request);
     } catch (err) {
       emailSent = false;
       console.error("[reserve] Ticket email failed:", err);
+      await logAudit(
+        { adminId: null, name: "System" },
+        { ...entry, action: "participant.send_ticket", details: { outcome: "failed", error: (err instanceof Error ? err.message : "The ticket email failed.").slice(0, 300) } },
+        request
+      );
     }
   } else {
     emailSent = Boolean(result.registration.ticketSentAt);

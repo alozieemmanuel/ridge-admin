@@ -8,18 +8,27 @@ export const dynamic = "force-dynamic";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Everything the Overview page shows, counted in one go. */
+interface Agg {
+  s: string;
+  n: number;
+  reserved: number;
+  checked: number;
+  invited: number;
+}
+
+/** Everything the Overview page shows. Five queries run side by side (the big counts are one grouped query), so the page doesn't wait on a long chain of round trips. */
 export async function GET() {
-  const [capacity, total, invited, reserved, checkedIn, groups, withPhone, withFeedback, withNotes, recent, reservedDates] = await Promise.all([
+  const [capacity, agg, feedback, recent, reservedDates] = await Promise.all([
     getCapacity(),
-    prisma.registration.count(),
-    prisma.registration.count({ where: { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] } }),
-    prisma.registration.count({ where: { reservedAt: { not: null } } }),
-    prisma.registration.count({ where: { checkedInAt: { not: null } } }),
-    prisma.registration.groupBy({ by: ["followUpStatus"], _count: { _all: true } }),
-    prisma.registration.count({ where: { phone: { not: "" } } }),
-    prisma.registration.count({ where: { callFeedback: { not: null } } }),
-    prisma.registration.count({ where: { followUpNotes: { some: {} } } }),
+    prisma.$queryRaw<Agg[]>`
+      SELECT "followUpStatus" AS s,
+             count(*)::int AS n,
+             count("reservedAt")::int AS reserved,
+             count("checkedInAt")::int AS checked,
+             (count(*) FILTER (WHERE "inviteSentAt" IS NOT NULL OR "reservedAt" IS NOT NULL))::int AS invited
+      FROM "Registration"
+      GROUP BY "followUpStatus"`,
+    prisma.$queryRaw<{ n: number }[]>`SELECT count(DISTINCT "registrationId")::int AS n FROM "FollowUpNote" WHERE body <> ''`,
     prisma.registration.findMany({
       where: { reservedAt: { not: null } },
       orderBy: { reservedAt: "desc" },
@@ -28,6 +37,13 @@ export async function GET() {
     }),
     prisma.registration.findMany({ where: { reservedAt: { gte: new Date(Date.now() - 14 * DAY) } }, select: { reservedAt: true } }),
   ]);
+
+  const total = agg.reduce((n, g) => n + g.n, 0);
+  const invited = agg.reduce((n, g) => n + g.invited, 0);
+  const reserved = agg.reduce((n, g) => n + g.reserved, 0);
+  const checkedIn = agg.reduce((n, g) => n + g.checked, 0);
+  const withFeedback = feedback[0]?.n ?? 0;
+  const groups = agg.map((g) => ({ followUpStatus: g.s, _count: { _all: g.n } }));
 
   const followUp: Record<string, number> = Object.fromEntries(FOLLOW_UP_VALUES.map((v) => [v, 0]));
   for (const g of groups) followUp[g.followUpStatus] = g._count._all;
@@ -52,9 +68,7 @@ export async function GET() {
     seatsLeft: capacity === null ? null : Math.max(0, capacity - reserved),
     contacted,
     followUp,
-    withPhone,
     withFeedback,
-    withNotes,
     recentReservations: recent.map((r) => ({ id: r.id, fullName: r.fullName, reservedAt: r.reservedAt!.toISOString() })),
     reservationsPerDay: Object.entries(perDay).map(([date, count]) => ({ date, count })),
   });

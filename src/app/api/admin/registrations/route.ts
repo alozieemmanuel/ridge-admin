@@ -6,9 +6,28 @@ import { FOLLOW_UP_VALUES, isFollowUpStatus } from "@/lib/followUp";
 export const runtime = "nodejs";
 
 /**
- * The guest list. Filters: search (name, email, phone, company), followUp (one status), seat
- * ("RESERVED" | "NOT_RESERVED"). Counts for the filter pills cover the whole list, whatever page or filter is on.
+ * The guest list. Filters: search (name, email, phone), followUp (one status, or "CONTACTED" for anyone already called), seat
+ * ("RESERVED" | "NOT_RESERVED" | "INVITED" | "AWAITING" | "NOT_INVITED"). Counts for the filter pills cover the whole list, whatever page or filter is on.
  */
+const INVITED: Prisma.RegistrationWhereInput = { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] };
+
+function seatFilter(seat: string | null): Prisma.RegistrationWhereInput {
+  switch (seat) {
+    case "RESERVED":
+      return { reservedAt: { not: null } };
+    case "NOT_RESERVED":
+      return { reservedAt: null };
+    case "INVITED": // an invitation went out (including those who already reserved)
+      return INVITED;
+    case "AWAITING": // invited, no reply yet
+      return { inviteSentAt: { not: null }, reservedAt: null };
+    case "NOT_INVITED":
+      return { inviteSentAt: null, reservedAt: null };
+    default:
+      return {};
+  }
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() || "";
@@ -25,16 +44,15 @@ export async function GET(request: NextRequest) {
               { fullName: { contains: search, mode: "insensitive" } },
               { email: { contains: search, mode: "insensitive" } },
               { phone: { contains: search } },
-              { organization: { contains: search, mode: "insensitive" } },
             ],
           }
         : {},
-      isFollowUpStatus(followUp) ? { followUpStatus: followUp } : {},
-      seat === "RESERVED" ? { reservedAt: { not: null } } : seat === "NOT_RESERVED" ? { reservedAt: null } : {},
+      isFollowUpStatus(followUp) ? { followUpStatus: followUp } : followUp === "CONTACTED" ? { followUpStatus: { not: "NOT_CONTACTED" } } : {},
+      seatFilter(seat),
     ],
   };
 
-  const [total, list, groups, reservedCount, allCount] = await Promise.all([
+  const [total, list, groups] = await Promise.all([
     prisma.registration.count({ where }),
     prisma.registration.findMany({
       where,
@@ -46,7 +64,6 @@ export async function GET(request: NextRequest) {
         fullName: true,
         email: true,
         phone: true,
-        organization: true,
         followUpStatus: true,
         inviteSentAt: true,
         reservedAt: true,
@@ -54,13 +71,15 @@ export async function GET(request: NextRequest) {
         createdAt: true,
       },
     }),
-    prisma.registration.groupBy({ by: ["followUpStatus"], _count: { _all: true } }),
-    prisma.registration.count({ where: { reservedAt: { not: null } } }),
-    prisma.registration.count(),
+    // One grouped query gives the counts for the filter pills (everyone, reserved, and per follow-up status).
+    prisma.$queryRaw<{ s: string; n: number; reserved: number }[]>`
+      SELECT "followUpStatus" AS s, count(*)::int AS n, count("reservedAt")::int AS reserved FROM "Registration" GROUP BY "followUpStatus"`,
   ]);
+  const allCount = groups.reduce((n, g) => n + g.n, 0);
+  const reservedCount = groups.reduce((n, g) => n + g.reserved, 0);
 
   const followUpCounts: Record<string, number> = Object.fromEntries(FOLLOW_UP_VALUES.map((v) => [v, 0]));
-  for (const g of groups) followUpCounts[g.followUpStatus] = (followUpCounts[g.followUpStatus] ?? 0) + g._count._all;
+  for (const g of groups) followUpCounts[g.s] = (followUpCounts[g.s] ?? 0) + g.n;
 
   return NextResponse.json({
     registrations: list.map((r) => ({

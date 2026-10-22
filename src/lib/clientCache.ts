@@ -21,6 +21,11 @@ export function cacheClear(): void {
   store.clear();
 }
 
+/** Forgets every remembered response whose URL starts with `prefix` (after a change, so a list never shows what it had before the change). */
+export function cacheDeletePrefix(prefix: string): void {
+  for (const key of Array.from(store.keys())) if (key.startsWith(prefix)) store.delete(key);
+}
+
 /** Fetches JSON, remembers it under the URL, and returns it (null when the request fails). */
 export async function fetchAndCache<T>(url: string): Promise<T | null> {
   try {

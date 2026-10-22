@@ -21,6 +21,7 @@ export type AuditAction =
   | "participants.import"
   | "participant.update"
   | "participant.note"
+  | "participant.note_delete"
   | "participant.follow_up"
   | "participant.send_invitation"
   | "participant.send_ticket"

@@ -6,7 +6,7 @@ import Logo from "@/components/Logo";
 import { primaryButton } from "@/components/ui";
 
 interface View {
-  guest: { fullName: string; email: string; phone: string | null; organization: string | null };
+  guest: { fullName: string; email: string; phone: string | null };
   event: { name: string; caption: string; date: string; time: string; venue: string; contactEmail: string; contactPhone: string };
   reserved: boolean;
   full: boolean;
@@ -129,7 +129,6 @@ function ReserveInner() {
                 <Field label="Name" value={view.guest.fullName} />
                 <Field label="Email" value={view.guest.email} />
                 {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
-                {view.guest.organization && <Field label="Company" value={view.guest.organization} />}
               </div>
             </section>
 

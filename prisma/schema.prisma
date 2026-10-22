@@ -114,6 +114,10 @@ model Registration {
   paymentRecords PaymentRecord[]
 
   @@index([createdAt])
+  @@index([followUpStatus])
+  @@index([reservedAt])
+  @@index([inviteSentAt])
+  @@index([checkedInAt])
 }
 
 model BrochureRequest {
@@ -135,6 +139,7 @@ model FollowUpNote {
   registrationId String
   registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
   body           String       @db.Text
+  status         String? // the follow-up status chosen when this entry was logged (see src/lib/followUp.ts)
   authorName     String?
   createdAt      DateTime     @default(now())
 
@@ -187,6 +192,7 @@ model AuditLog {
   @@index([createdAt])
   @@index([adminId])
   @@index([action])
+  @@index([entityType, entityId])
 }
 
 // Editable copy for the attendee-facing emails: registration_confirmation,

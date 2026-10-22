@@ -20,7 +20,6 @@ interface Overview {
   contacted: number;
   followUp: Record<string, number>;
   withFeedback: number;
-  withNotes: number;
   recentReservations: { id: string; fullName: string; reservedAt: string }[];
   reservationsPerDay: { date: string; count: number }[];
 }
@@ -61,7 +60,7 @@ export default function OverviewPage() {
   useEffect(() => {
     load();
   }, [load]);
-  useAutoRefresh(load, 15_000);
+  useAutoRefresh(load, 30_000);
 
   const d = data;
   const funnelMax = d?.total ?? 0;
@@ -100,21 +99,22 @@ export default function OverviewPage() {
           )}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-            <StatCard label="Total guests" value={d.total.toLocaleString()} hint="On the guest list" />
+            <StatCard href="/admin/registrations" label="Total guests" value={d.total.toLocaleString()} hint="On the guest list" />
             <StatCard
+              href="/admin/registrations?seat=RESERVED"
               label="Seats reserved"
               value={d.capacity ? `${d.reserved} / ${d.capacity}` : d.reserved.toLocaleString()}
               hint={d.capacity ? `${d.seatsLeft} seat${d.seatsLeft === 1 ? "" : "s"} left` : "No seat limit set"}
               tone="text-goldlight"
             />
-            <StatCard label="Invited" value={d.invited.toLocaleString()} hint={`${d.notInvited.toLocaleString()} not invited yet`} />
-            <StatCard label="Checked in" value={d.checkedIn.toLocaleString()} hint={d.reserved ? `${pct(d.checkedIn, d.reserved)} of reserved seats` : "Nobody has reserved yet"} />
+            <StatCard href="/admin/registrations?seat=INVITED" label="Invited" value={d.invited.toLocaleString()} hint={`${d.notInvited.toLocaleString()} not invited yet`} />
+            <StatCard href="/admin/attendance?filter=IN" label="Checked in" value={d.checkedIn.toLocaleString()} hint={d.reserved ? `${pct(d.checkedIn, d.reserved)} of reserved seats` : "Nobody has reserved yet"} />
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            <StatCard label="Awaiting a reply" value={d.awaitingReply.toLocaleString()} hint="Invited, haven't reserved" tone={d.awaitingReply ? "text-amber-300" : "text-fg"} />
-            <StatCard label="Contacted by phone" value={d.contacted.toLocaleString()} hint={`${pct(d.contacted, d.total)} of the list`} />
-            <StatCard label="Interested" value={(d.followUp.INTERESTED ?? 0).toLocaleString()} hint="Said yes on the call" tone="text-emerald-400" />
-            <StatCard label="Not interested" value={(d.followUp.NOT_INTERESTED ?? 0).toLocaleString()} hint="Said no on the call" tone={d.followUp.NOT_INTERESTED ? "text-red-400" : "text-fg"} />
+            <StatCard href="/admin/registrations?seat=AWAITING" label="Awaiting a reply" value={d.awaitingReply.toLocaleString()} hint="Invited, haven't reserved" tone={d.awaitingReply ? "text-amber-300" : "text-fg"} />
+            <StatCard href="/admin/registrations?followUp=CONTACTED" label="Contacted by phone" value={d.contacted.toLocaleString()} hint={`${pct(d.contacted, d.total)} of the list`} />
+            <StatCard href="/admin/registrations?followUp=INTERESTED" label="Interested" value={(d.followUp.INTERESTED ?? 0).toLocaleString()} hint="Said yes on the call" tone="text-emerald-400" />
+            <StatCard href="/admin/registrations?followUp=NOT_INTERESTED" label="Not interested" value={(d.followUp.NOT_INTERESTED ?? 0).toLocaleString()} hint="Said no on the call" tone={d.followUp.NOT_INTERESTED ? "text-red-400" : "text-fg"} />
           </div>
 
           <div className="grid lg:grid-cols-2 gap-6 mb-6">
@@ -123,12 +123,12 @@ export default function OverviewPage() {
               <p className="text-xs text-muted mb-5">How many guests have reached each step.</p>
               <div className="space-y-4">
                 {[
-                  { label: "On the guest list", value: d.total },
-                  { label: "Invited", value: d.invited },
-                  { label: "Reserved a seat", value: d.reserved },
-                  { label: "Checked in", value: d.checkedIn },
+                  { label: "On the guest list", value: d.total, href: "/admin/registrations" },
+                  { label: "Invited", value: d.invited, href: "/admin/registrations?seat=INVITED" },
+                  { label: "Reserved a seat", value: d.reserved, href: "/admin/registrations?seat=RESERVED" },
+                  { label: "Checked in", value: d.checkedIn, href: "/admin/attendance?filter=IN" },
                 ].map((row) => (
-                  <div key={row.label}>
+                  <Link key={row.label} href={row.href} className="block rounded-lg -mx-2 px-2 py-1 hover:bg-gold/10 transition-colors">
                     <div className="flex justify-between text-sm mb-1.5">
                       <span>{row.label}</span>
                       <span className="text-muted">
@@ -136,7 +136,7 @@ export default function OverviewPage() {
                       </span>
                     </div>
                     <Bar value={row.value} max={funnelMax} />
-                  </div>
+                  </Link>
                 ))}
               </div>
             </section>
@@ -146,17 +146,17 @@ export default function OverviewPage() {
               <p className="text-xs text-muted mb-5">Where the calls have got to.</p>
               <div className="space-y-3.5">
                 {FOLLOW_UP_STATUSES.map((s) => (
-                  <div key={s.value}>
+                  <Link key={s.value} href={`/admin/registrations?followUp=${s.value}`} className="block rounded-lg -mx-2 px-2 py-1 hover:bg-gold/10 transition-colors">
                     <div className="flex justify-between text-sm mb-1.5">
                       <span>{s.label}</span>
                       <span className="text-muted">{(d.followUp[s.value] ?? 0).toLocaleString()}</span>
                     </div>
                     <Bar value={d.followUp[s.value] ?? 0} max={d.total} color={s.value === "NOT_INTERESTED" ? "bg-red-400" : s.value === "NOT_CONTACTED" ? "bg-border" : "bg-gold"} />
-                  </div>
+                  </Link>
                 ))}
               </div>
               <p className="text-xs text-muted mt-5">
-                {d.withFeedback.toLocaleString()} guests came with call feedback; {d.withNotes.toLocaleString()} have notes added here.
+                Call feedback is logged for {d.withFeedback.toLocaleString()} guest{d.withFeedback === 1 ? "" : "s"}.
               </p>
             </section>
           </div>
@@ -187,9 +187,11 @@ export default function OverviewPage() {
               ) : (
                 <ul className="divide-y divide-border">
                   {d.recentReservations.map((r) => (
-                    <li key={r.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
-                      <span className="font-medium truncate">{r.fullName}</span>
-                      <span className="text-muted text-xs whitespace-nowrap">{formatDateTime(r.reservedAt)}</span>
+                    <li key={r.id}>
+                      <Link href={`/admin/registrations/${r.id}`} className="py-2.5 flex items-center justify-between gap-3 text-sm hover:text-goldlight">
+                        <span className="font-medium truncate">{r.fullName}</span>
+                        <span className="text-muted text-xs whitespace-nowrap">{formatDateTime(r.reservedAt)}</span>
+                      </Link>
                     </li>
                   ))}
                 </ul>

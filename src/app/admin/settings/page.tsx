@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import { useIsOwner } from "@/lib/useIsOwner";
 import ThemeToggle from "@/components/ThemeToggle";
+import TemplatesPanel from "@/components/TemplatesPanel";
+import { cacheDeletePrefix } from "@/lib/clientCache";
 
 const FIELDS: { key: string; label: string; hint?: string; placeholder?: string }[] = [
   { key: "programme_name", label: "Event name", hint: "Shown on invitations, tickets and the reserve page." },
@@ -22,13 +25,16 @@ const FIELDS: { key: string; label: string; hint?: string; placeholder?: string 
   },
 ];
 
-type ClearTarget = "registrations" | "brochure_requests" | "all";
+type ClearTarget = "registrations" | "everything";
 
-const CLEAR_OPTIONS: { value: ClearTarget; label: string }[] = [{ value: "registrations", label: "The whole guest list" }];
+const CLEAR_OPTIONS: { value: ClearTarget; label: string; hint: string }[] = [
+  { value: "everything", label: "Everything from the old event", hint: "The guest list plus the old activity log, campaigns, email history, payments, WhatsApp, prospects and leftover settings." },
+  { value: "registrations", label: "Only the guest list", hint: "Guests with their follow-up logs and tickets. The activity log is kept." },
+];
 
 /** Owner-only: permanently wipe records (e.g. test data before launch). */
 function DangerZone() {
-  const [target, setTarget] = useState<ClearTarget>("registrations");
+  const [target, setTarget] = useState<ClearTarget>("everything");
   const [confirmText, setConfirmText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ text: string; ok: boolean } | null>(null);
@@ -45,7 +51,8 @@ function DangerZone() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const { registrations = 0 } = data.deleted ?? {};
-        setResult({ text: `Deleted ${registrations} guest${registrations === 1 ? "" : "s"}.`, ok: true });
+        for (const prefix of ["/api/admin/registrations", "/api/admin/overview", "/api/admin/attendance", "/api/admin/campaigns", "/api/admin/audit"]) cacheDeletePrefix(prefix);
+        setResult({ text: `Done. Deleted ${registrations} guest${registrations === 1 ? "" : "s"}${target === "everything" ? " and all the old activity" : ""}.`, ok: true });
         setConfirmText("");
       } else {
         setResult({ text: data.error || "Failed to clear data.", ok: false });
@@ -57,11 +64,11 @@ function DangerZone() {
   }
 
   return (
-    <div className="border border-red-400/40 rounded-xl p-6 mt-8 max-w-2xl">
+    <div className="border border-red-400/40 rounded-xl p-6 max-w-2xl">
       <h3 className="text-red-400 text-sm font-semibold mb-1">Danger zone</h3>
       <p className="text-sm text-muted mb-4">
-        Permanently delete the guest list, including their notes, reservations and tickets. This can&apos;t be undone and affects what every
-        admin sees. Export the CSV from the Registrations page first. Settings, email templates and admin accounts are not touched.
+        Permanently delete data. This can&apos;t be undone and affects what every admin sees. Export the CSV from the Registrations page first.
+        Admin accounts and your current event details and email templates are not touched.
       </p>
 
       <div className="flex gap-2 flex-wrap mb-4">
@@ -77,6 +84,7 @@ function DangerZone() {
           </button>
         ))}
       </div>
+      <p className="text-xs text-muted mb-4">{CLEAR_OPTIONS.find((o) => o.value === target)?.hint}</p>
 
       <label className="block text-xs uppercase tracking-wider text-muted mb-2">Type DELETE to confirm</label>
       <div className="flex items-center gap-3 flex-wrap">
@@ -99,12 +107,16 @@ function DangerZone() {
   );
 }
 
-export default function SettingsPage() {
+function SettingsInner() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const isOwner = useIsOwner();
+  const router = useRouter();
+  const params = useSearchParams();
+  const requested = params.get("tab");
+  const tab = requested === "templates" || requested === "appearance" || (requested === "data" && isOwner) ? requested : "event";
 
   useEffect(() => {
     fetch("/api/admin/settings")
@@ -125,24 +137,50 @@ export default function SettingsPage() {
     setMessage(res.ok ? "Saved." : "Failed to save.");
   }
 
+  const TABS = [
+    { id: "event", label: "Event details" },
+    { id: "templates", label: "Email templates" },
+    { id: "appearance", label: "Appearance" },
+    ...(isOwner ? [{ id: "data", label: "Data" }] : []),
+  ];
+
   return (
     <AdminShell active="/admin/settings">
       <div className="mb-6">
         <h2 className="font-serif text-3xl">Settings</h2>
-        <p className="text-muted text-sm mt-1.5">
-          The event details used on invitations, tickets and the reserve page. Each one is also available in your email templates as a {"{{token}}"}, for example {"{{event_date}}"}.
-        </p>
+        <p className="text-muted text-sm mt-1.5">The event details, the emails guests receive, how the dashboard looks, and data tools.</p>
       </div>
 
-      <div className="border border-border rounded-xl p-6 mb-8 max-w-2xl">
-        <h3 className="font-serif text-xl mb-1">Appearance</h3>
-        <p className="text-sm text-muted mb-4">Choose how the dashboard looks. This is saved on this device only.</p>
-        <ThemeToggle />
+      <div className="flex gap-2 flex-wrap mb-8 border-b border-border pb-4" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => router.replace(t.id === "event" ? "/admin/settings" : `/admin/settings?tab=${t.id}`, { scroll: false })}
+            className={`text-sm px-4 py-2 rounded-full border transition-colors ${tab === t.id ? "border-gold bg-gold/15 font-medium" : "border-border text-muted hover:text-fg hover:border-gold/60"}`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {loading ? (
-        <p className="text-muted">Loading…</p>
-      ) : (
+      {tab === "appearance" && (
+        <div className="border border-border rounded-xl p-6 max-w-2xl">
+          <h3 className="font-serif text-xl mb-1">Appearance</h3>
+          <p className="text-sm text-muted mb-4">Choose how the dashboard looks. This is saved on this device only.</p>
+          <ThemeToggle />
+        </div>
+      )}
+
+      {tab === "templates" && <TemplatesPanel />}
+
+      {tab === "data" && isOwner && <DangerZone />}
+
+      {tab === "event" &&
+        (loading ? (
+          <p className="text-muted">Loading…</p>
+        ) : (
         <div className="border border-border rounded-xl p-6 space-y-5 max-w-2xl">
           <h3 className="font-serif text-xl -mb-1">Event details</h3>
           {FIELDS.map((field) => (
@@ -171,9 +209,15 @@ export default function SettingsPage() {
             {message && <span className="text-sm text-muted">{message}</span>}
           </div>
         </div>
-      )}
-
-      {isOwner && <DangerZone />}
+        ))}
     </AdminShell>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={null}>
+      <SettingsInner />
+    </Suspense>
   );
 }

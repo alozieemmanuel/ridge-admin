@@ -10,23 +10,24 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code")?.trim().toUpperCase() || "";
 
-  const [capacity, invited, reserved, checkedIn, people, scanned] = await Promise.all([
+  const [capacity, invited, people, scanned] = await Promise.all([
     getCapacity(),
     prisma.registration.count({ where: { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] } }),
-    prisma.registration.count({ where: { reservedAt: { not: null } } }),
-    prisma.registration.count({ where: { checkedInAt: { not: null } } }),
     prisma.registration.findMany({
       where: { reservedAt: { not: null } },
       orderBy: { reservedAt: "desc" },
-      select: { id: true, fullName: true, email: true, phone: true, organization: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
+      select: { id: true, fullName: true, email: true, phone: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
     }),
     code
       ? prisma.registration.findUnique({
           where: { ticketCode: code },
-          select: { id: true, fullName: true, email: true, phone: true, organization: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
+          select: { id: true, fullName: true, email: true, phone: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
         })
       : Promise.resolve(null),
   ]);
+
+  const reserved = people.length;
+  const checkedIn = people.filter((p) => p.checkedInAt).length;
 
   const shape = (r: NonNullable<typeof scanned>) => ({
     ...r,

@@ -4,7 +4,6 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
-import ParticipantDrawer from "@/components/ParticipantDrawer";
 import { Pill, PageHeader, StatCard, formatDateTime, ghostButton, inputClass, primaryButton } from "@/components/ui";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
@@ -13,7 +12,6 @@ interface Person {
   fullName: string;
   email: string;
   phone: string;
-  organization: string | null;
   ticketCode: string | null;
   reservedAt: string | null;
   checkedInAt: string | null;
@@ -37,8 +35,7 @@ function AttendanceInner() {
   const [code, setCode] = useState(initialCode);
   const [lookup, setLookup] = useState(initialCode);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"ALL" | "IN" | "NOT_IN">("ALL");
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"ALL" | "IN" | "NOT_IN">(params.get("filter") === "IN" ? "IN" : params.get("filter") === "NOT_IN" ? "NOT_IN" : "ALL");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [capacityInput, setCapacityInput] = useState("");
@@ -68,7 +65,7 @@ function AttendanceInner() {
       if (filter === "IN" && !p.checkedInAt) return false;
       if (filter === "NOT_IN" && p.checkedInAt) return false;
       if (!s) return true;
-      return [p.fullName, p.email, p.phone, p.ticketCode ?? "", p.organization ?? ""].some((v) => v.toLowerCase().includes(s));
+      return [p.fullName, p.email, p.phone, p.ticketCode ?? ""].some((v) => v.toLowerCase().includes(s));
     });
   }, [data, search, filter]);
 
@@ -239,7 +236,6 @@ function AttendanceInner() {
               <p className="font-serif text-xl">{scanned.fullName}</p>
               <p className="text-sm text-muted">
                 {scanned.email}
-                {scanned.organization ? ` · ${scanned.organization}` : ""}
               </p>
               <p className="text-sm mt-1">{scanned.checkedInAt ? <span className="text-amber-300">Already checked in at {formatDateTime(scanned.checkedInAt)}</span> : <span className="text-emerald-400">Valid ticket, not yet checked in</span>}</p>
             </div>
@@ -297,9 +293,9 @@ function AttendanceInner() {
               {visible.map((p) => (
                 <tr key={p.id} className="border-b border-border/50 last:border-b-0 hover:bg-gold/10">
                   <td className="px-5 py-3.5 whitespace-nowrap font-medium">
-                    <button onClick={() => setOpenId(p.id)} className="text-left hover:underline">
+                    <Link href={`/admin/registrations/${p.id}`} className="text-left hover:underline">
                       {p.fullName}
-                    </button>
+                    </Link>
                   </td>
                   <td className="px-5 py-3.5 text-muted whitespace-nowrap">{p.email}</td>
                   <td className="px-5 py-3.5 font-mono text-xs whitespace-nowrap">{p.ticketCode}</td>
@@ -317,7 +313,6 @@ function AttendanceInner() {
         </div>
       </div>
 
-      {openId && <ParticipantDrawer id={openId} onClose={() => setOpenId(null)} onChanged={load} />}
     </AdminShell>
   );
 }

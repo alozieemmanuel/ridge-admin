@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 /** Shared bits of styling so every screen looks the same. */
 export const primaryButton =
@@ -22,7 +23,22 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   );
 }
 
-export function StatCard({ label, value, hint, tone = "text-fg", onClick }: { label: string; value: ReactNode; hint?: ReactNode; tone?: string; onClick?: () => void }) {
+export function StatCard({
+  label,
+  value,
+  hint,
+  tone = "text-fg",
+  onClick,
+  href,
+}: {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  tone?: string;
+  onClick?: () => void;
+  /** Makes the whole card a link to the module (and filter) behind the number. */
+  href?: string;
+}) {
   const inner = (
     <>
       <p className="text-xs uppercase tracking-wider text-muted mb-2">{label}</p>
@@ -31,6 +47,13 @@ export function StatCard({ label, value, hint, tone = "text-fg", onClick }: { la
     </>
   );
   const cls = "border border-border rounded-xl px-5 py-4 bg-cardbg text-left";
+  if (href) {
+    return (
+      <Link href={href} className={`${cls} block hover:border-gold hover:shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-gold`}>
+        {inner}
+      </Link>
+    );
+  }
   return onClick ? (
     <button onClick={onClick} className={`${cls} hover:border-gold transition-colors`}>
       {inner}

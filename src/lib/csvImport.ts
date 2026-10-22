@@ -8,7 +8,6 @@ export const IMPORT_FIELDS = [
   { value: "lastName", label: "Last name (joined with first name)" },
   { value: "email", label: "Email address" },
   { value: "phone", label: "Phone number" },
-  { value: "organization", label: "Company / organisation" },
   { value: "followUp", label: "Follow-up status" },
   { value: "callFeedback", label: "Call feedback" },
   { value: "extra", label: "Keep as extra detail" },
@@ -25,7 +24,6 @@ const ALIASES: Record<Exclude<ImportField, "extra" | "ignore">, string[]> = {
   lastName: ["last name", "lastname", "surname", "family name"],
   email: ["email", "email address", "e-mail", "e mail", "mail", "email id", "emailaddress"],
   phone: ["phone", "phone number", "phone no", "mobile", "mobile number", "mobile no", "telephone", "tel", "contact number", "whatsapp", "whatsapp number", "phone/whatsapp"],
-  organization: ["organization", "organisation", "company", "company name", "business", "business name", "firm", "employer", "company / organization", "company/organisation"],
   followUp: ["follow-up", "follow up", "followup", "follow-up status", "follow up status", "status", "call status", "call outcome", "outcome", "response"],
   callFeedback: ["feedback", "call feedback", "call notes", "call note", "calls feedback", "comment", "comments", "remark", "remarks", "notes", "note", "call summary", "feedback from call", "feedback from calls"],
 };
@@ -103,7 +101,6 @@ export interface ImportedPerson {
   fullName: string;
   email: string;
   phone: string;
-  organization: string | null;
   followUpStatus: FollowUpStatus | null;
   callFeedback: string | null;
   extra: Record<string, string>;
@@ -175,7 +172,6 @@ export function buildPeople(parsed: ParsedCsv, mapping: Record<string, ImportFie
       fullName: fullName || email.split("@")[0],
       email,
       phone: cleanPhone(first("phone")),
-      organization: first("organization") || null,
       followUpStatus,
       callFeedback: feedbackParts.length ? feedbackParts.join("\n") : null,
       extra,

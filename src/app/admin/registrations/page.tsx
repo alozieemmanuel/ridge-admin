@@ -1,14 +1,13 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
-import ParticipantDrawer from "@/components/ParticipantDrawer";
 import ImportDialog from "@/components/ImportDialog";
 import Pagination from "@/components/Pagination";
 import { Pill, PageHeader, formatDate, ghostButton, inputClass, primaryButton } from "@/components/ui";
 import { FOLLOW_UP_STATUSES, followUpLabel, followUpTone } from "@/lib/followUp";
-import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
 interface Row {
@@ -16,7 +15,6 @@ interface Row {
   fullName: string;
   email: string;
   phone: string;
-  organization: string | null;
   followUpStatus: string;
   inviteSentAt: string | null;
   reservedAt: string | null;
@@ -30,6 +28,7 @@ interface Response {
 
 function RegistrationsInner() {
   const params = useSearchParams();
+  const router = useRouter();
   const [pageSize, setPageSize] = useState(() => getStoredPageSize());
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -40,7 +39,6 @@ function RegistrationsInner() {
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<Response["counts"] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [openId, setOpenId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const requestId = useRef(0);
 
@@ -60,10 +58,20 @@ function RegistrationsInner() {
       if (query) p.set("search", query);
       if (followUp) p.set("followUp", followUp);
       if (seat) p.set("seat", seat);
+      const url = `/api/admin/registrations?${p}`;
+      // Show what this same view had last time straight away, then refresh it quietly.
+      const cached = !silent ? cacheGet<Response>(url) : undefined;
+      if (cached) {
+        setRows(cached.registrations);
+        setTotal(cached.total);
+        setCounts(cached.counts);
+        setLoading(false);
+      }
       try {
-        const res = await fetch(`/api/admin/registrations?${p}`, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store" });
         if (res.ok && mine === requestId.current) {
           const data: Response = await res.json();
+          cacheSet(url, data);
           setRows(data.registrations);
           setTotal(data.total);
           setCounts(data.counts);
@@ -81,7 +89,7 @@ function RegistrationsInner() {
   useEffect(() => {
     load();
   }, [load]);
-  useAutoRefresh(() => load(true), 15_000);
+  useAutoRefresh(() => load(true), 30_000);
 
   const anyFilter = Boolean(query || followUp || seat);
 
@@ -89,7 +97,7 @@ function RegistrationsInner() {
     <AdminShell active="/admin/registrations">
       <PageHeader
         title="Registrations"
-        subtitle={`${(counts?.all ?? 0).toLocaleString()} guests on the list. Click a guest to see everything about them.`}
+        subtitle={`${(counts?.all ?? 0).toLocaleString()} guests on the list. Click a guest to open their full record.`}
         actions={
           <>
             <a href="/api/admin/registrations/export" className={ghostButton}>
@@ -103,7 +111,7 @@ function RegistrationsInner() {
       />
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, phone or company" className={`${inputClass} sm:max-w-md`} aria-label="Search guests" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email or phone" className={`${inputClass} sm:max-w-md`} aria-label="Search guests" />
         <select
           value={followUp}
           onChange={(e) => {
@@ -114,6 +122,7 @@ function RegistrationsInner() {
           aria-label="Filter by follow-up"
         >
           <option value="">All follow-up</option>
+          <option value="CONTACTED">Contacted (any call)</option>
           {FOLLOW_UP_STATUSES.map((s) => (
             <option key={s.value} value={s.value}>
               {s.label}
@@ -133,6 +142,9 @@ function RegistrationsInner() {
           <option value="">Seat: any</option>
           <option value="RESERVED">Reserved{counts ? ` (${counts.reserved})` : ""}</option>
           <option value="NOT_RESERVED">Not reserved{counts ? ` (${counts.notReserved})` : ""}</option>
+          <option value="INVITED">Invited (any)</option>
+          <option value="AWAITING">Invited, no reply yet</option>
+          <option value="NOT_INVITED">Not invited yet</option>
         </select>
       </div>
 
@@ -178,13 +190,12 @@ function RegistrationsInner() {
                   <tr
                     key={r.id}
                     tabIndex={0}
-                    onClick={() => setOpenId(r.id)}
-                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setOpenId(r.id))}
+                    onClick={() => router.push(`/admin/registrations/${r.id}`)}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), router.push(`/admin/registrations/${r.id}`))}
                     className="border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-gold/10 focus:bg-gold/10 focus:outline-none"
                   >
                     <td className="sticky left-0 z-10 bg-inherit px-5 py-3.5 whitespace-nowrap font-medium">
                       {r.fullName}
-                      {r.organization && <span className="block text-xs text-muted font-normal">{r.organization}</span>}
                     </td>
                     <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email}</td>
                     <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.phone || "-"}</td>
@@ -221,7 +232,6 @@ function RegistrationsInner() {
         />
       </div>
 
-      {openId && <ParticipantDrawer id={openId} onClose={() => setOpenId(null)} onChanged={() => load(true)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
     </AdminShell>
   );

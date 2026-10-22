@@ -101,7 +101,7 @@ export const registrationActionSchema = z.object({
 
 // Bulk-delete for clearing test data. The literal confirmation guards against a stray click.
 export const clearDataSchema = z.object({
-  target: z.enum(["registrations", "brochure_requests", "all"]),
+  target: z.enum(["registrations", "everything"]),
   confirm: z.literal("DELETE", { errorMap: () => ({ message: "Type DELETE to confirm." }) }),
 });
 

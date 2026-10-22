@@ -1,5 +1,6 @@
 "use client";
 
+import { cacheDeletePrefix } from "@/lib/clientCache";
 import { useRef, useState } from "react";
 import { IMPORT_FIELDS, type ImportField } from "@/lib/csvImport";
 import { ghostButton, inputClass, primaryButton } from "@/components/ui";
@@ -79,6 +80,8 @@ export default function ImportDialog({ onClose, onImported }: { onClose: () => v
     setBusy(false);
     if (!ok) return setError(json.error || "The import failed.");
     setDone(json as Done);
+    cacheDeletePrefix("/api/admin/registrations?");
+    cacheDeletePrefix("/api/admin/overview");
     onImported();
   }
 
@@ -128,7 +131,7 @@ export default function ImportDialog({ onClose, onImported }: { onClose: () => v
                 {fileName ? "Choose a different file" : "Choose CSV file"}
               </button>
               <p className="text-xs text-muted mt-3">
-                The first row must be the column names. Useful columns: name, email, phone, company, follow-up status and call feedback. Any other column is kept on the guest&apos;s record.
+                The first row must be the column names. Useful columns: name, email, phone, follow-up status and call feedback (feedback becomes the first entry in the guest's follow-up log). Any other column is kept on the guest&apos;s record.
               </p>
             </div>
 

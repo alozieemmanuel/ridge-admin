@@ -78,9 +78,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         let ticketError: string | null = null;
         try {
           await sendTicket(result.registration);
+          await log("participant.send_ticket", { outcome: "sent", to: registration.email });
         } catch (err) {
           ticketSent = false;
           ticketError = err instanceof Error ? err.message : "The ticket email failed.";
+          await log("participant.send_ticket", { outcome: "failed", error: ticketError.slice(0, 300) });
         }
         return NextResponse.json({ result: "success", ticketSent, ticketError });
       }
