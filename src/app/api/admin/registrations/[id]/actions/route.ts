@@ -1,41 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { Registration } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { registrationActionSchema } from "@/lib/validation";
 import { getSettingsMap } from "@/lib/settings";
 import { getSession } from "@/lib/auth";
-import { logAdminAction } from "@/lib/audit";
-import {
-  resendRegistrationConfirmation,
-  sendSeatSelectionInvite,
-  sendPaymentReminder,
-} from "@/lib/notifications";
+import { logAdminAction, type AuditAction } from "@/lib/audit";
+import { missingEventDetails, sendInvitation, sendTicket } from "@/lib/notifications";
+import { releaseReservation, reserveSeat } from "@/lib/reservations";
 
 export const runtime = "nodejs";
 
-function money(currency: string, amount: number): string {
-  return `${currency} ${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
-
-/** "no payment recorded yet" / "USD 1,000 of USD 2,000 received", used in the not-fully-paid error. */
-function describePayment(registration: Registration, settings: Record<string, string>): string {
-  if (registration.paymentStatus === "NOT_PAID") return "no payment recorded yet";
-  const currency = settings.currency || "USD";
-  const fee = parseFloat(
-    registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
-  );
-  return `${money(currency, registration.amountPaid)}${Number.isFinite(fee) ? ` of ${money(currency, fee)}` : ""} received`;
-}
-
 /**
- * Admin email actions for a single registration:
- *   resend_confirmation   — the registration confirmation email
- *   send_seat_invite      — the "pick your seat" email (only once fully paid)
- *   send_payment_reminder — a reminder (only while not fully paid)
+ * Actions on one participant:
+ *   send_invitation / send_reminder  email the unique "Reserve My Seat" link
+ *   reserve / release                reserve a seat for them, or free it again (the admin doing it on their behalf)
+ *   send_ticket                      (re)send the entry ticket email
+ *   check_in / undo_check_in         mark them as arrived at the entrance
  *
- * On a send failure this returns 502 with the provider's reason in `error`,
- * which the dashboard shows next to the button. Every attempt (sent, blocked
- * or failed) is written to the audit log.
+ * On a send failure this answers 502 with the provider's reason in `error`. Every attempt is written to the activity log.
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -47,66 +28,106 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-
   const parsed = registrationActionSchema.safeParse(raw);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid action." }, { status: 400 });
   }
-
-  const registration = await prisma.registration.findUnique({ where: { id }, include: { seat: { select: { label: true } } } });
-  if (!registration) {
-    return NextResponse.json({ error: "Registration not found." }, { status: 404 });
-  }
-
   const { action } = parsed.data;
-  const audit = (outcome: "sent" | "blocked" | "failed", extra?: Record<string, string>) =>
-    logAdminAction(
-      session,
-      {
-        action: `registration.${action}`,
-        entityType: "registration",
-        entityId: registration.id,
-        entityLabel: registration.fullName,
-        details: { outcome, to: registration.email, paymentStatus: registration.paymentStatus, ...extra },
-      },
-      request
-    );
 
-  // Someone who has already chosen a seat, or chosen to attend online, doesn't
-  // need another seat invite. Refuse it so it can't be sent by mistake.
-  if (action === "send_seat_invite" && (registration.seat || registration.attendanceMode === "ONLINE")) {
-    const choice = registration.seat ? `seat ${registration.seat.label}` : "to attend online";
-    const error = `${registration.fullName} has already chosen ${choice}, so no seat invite was sent.`;
-    await audit("blocked", { reason: "already chose" });
-    return NextResponse.json({ error }, { status: 409 });
-  }
+  const registration = await prisma.registration.findUnique({ where: { id } });
+  if (!registration) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
-  // The seat-invite email says "your payment has been confirmed", and a
-  // reminder for someone who has paid in full would be wrong, so guard both.
-  if (action === "send_seat_invite" && registration.paymentStatus !== "PAID") {
-    const settings = await getSettingsMap();
-    const error = `${registration.fullName} hasn't finished making their payment (${describePayment(
-      registration,
-      settings
-    )}). The seat-selection email can only be sent once they've paid in full.`;
-    await audit("blocked", { reason: "payment not complete" });
-    return NextResponse.json({ error }, { status: 409 });
-  }
-  if (action === "send_payment_reminder" && registration.paymentStatus === "PAID") {
-    await audit("blocked", { reason: "already fully paid" });
-    return NextResponse.json({ error: "This registration is already fully paid." }, { status: 409 });
-  }
+  const log = (name: AuditAction, details?: Record<string, string | boolean | null>) =>
+    logAdminAction(session, { action: name, entityType: "registration", entityId: id, entityLabel: registration.fullName, details: details ?? {} }, request);
 
   try {
-    if (action === "resend_confirmation") await resendRegistrationConfirmation(registration);
-    else if (action === "send_seat_invite") await sendSeatSelectionInvite(registration);
-    else await sendPaymentReminder(registration);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to send email.";
-    await audit("failed", { error: message.slice(0, 300) });
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
+    switch (action) {
+      case "send_invitation":
+      case "send_reminder": {
+        const kind = action === "send_reminder" ? "reminder" : "invitation";
+        const missing = missingEventDetails(await getSettingsMap());
+        if (missing.length) {
+          return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
+        }
+        if (registration.reservedAt) {
+          return NextResponse.json({ error: `${registration.fullName} has already reserved a seat.` }, { status: 409 });
+        }
+        try {
+          await sendInvitation(registration, kind);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Failed to send the email.";
+          await log("participant.send_invitation", { outcome: "failed", kind, error: message.slice(0, 300) });
+          return NextResponse.json({ error: message }, { status: 502 });
+        }
+        await log("participant.send_invitation", { outcome: "sent", kind, to: registration.email });
+        return NextResponse.json({ result: "success" });
+      }
 
-  await audit("sent");
-  return NextResponse.json({ result: "success" });
+      case "reserve": {
+        const result = await reserveSeat(id);
+        if (!result.ok) {
+          return NextResponse.json(
+            { error: result.reason === "FULL" ? "All seats are taken. Raise the seat limit in Attendance first." : "Participant not found." },
+            { status: result.reason === "FULL" ? 409 : 404 }
+          );
+        }
+        if (result.alreadyReserved) return NextResponse.json({ result: "success", unchanged: true });
+        await log("participant.reserve", { by: "admin" });
+        // The ticket goes out straight away, like when guests reserve themselves. A failed send never undoes the reservation.
+        let ticketSent = true;
+        let ticketError: string | null = null;
+        try {
+          await sendTicket(result.registration);
+        } catch (err) {
+          ticketSent = false;
+          ticketError = err instanceof Error ? err.message : "The ticket email failed.";
+        }
+        return NextResponse.json({ result: "success", ticketSent, ticketError });
+      }
+
+      case "release": {
+        const result = await releaseReservation(id);
+        if (!result.ok) {
+          return NextResponse.json(
+            { error: result.reason === "CHECKED_IN" ? "This guest is already checked in. Undo the check-in first." : "Participant not found." },
+            { status: result.reason === "CHECKED_IN" ? 409 : 404 }
+          );
+        }
+        await log("participant.release");
+        return NextResponse.json({ result: "success" });
+      }
+
+      case "send_ticket": {
+        if (!registration.reservedAt) {
+          return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat yet, so there is no ticket to send.` }, { status: 409 });
+        }
+        try {
+          await sendTicket(registration);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Failed to send the ticket.";
+          await log("participant.send_ticket", { outcome: "failed", error: message.slice(0, 300) });
+          return NextResponse.json({ error: message }, { status: 502 });
+        }
+        await log("participant.send_ticket", { outcome: "sent", to: registration.email });
+        return NextResponse.json({ result: "success" });
+      }
+
+      case "check_in":
+      case "undo_check_in": {
+        const checkingIn = action === "check_in";
+        if (checkingIn && !registration.reservedAt) {
+          return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat. Reserve one for them first.` }, { status: 409 });
+        }
+        const updated = await prisma.registration.update({ where: { id }, data: { checkedInAt: checkingIn ? new Date() : null } });
+        await log("registration.checkin", { checkedIn: checkingIn });
+        return NextResponse.json({ result: "success", checkedInAt: updated.checkedInAt?.toISOString() ?? null });
+      }
+
+      default:
+        return NextResponse.json({ error: "That action isn't available." }, { status: 400 });
+    }
+  } catch (err) {
+    console.error("[registrations/actions] failed:", err);
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Something went wrong." }, { status: 500 });
+  }
 }

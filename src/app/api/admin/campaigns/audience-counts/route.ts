@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CATEGORY_VALUES, isCategory } from "@/lib/categories";
+import { CAMPAIGN_AUDIENCES } from "@/lib/campaigns";
 import type { CampaignAudience } from "@prisma/client";
 
 export const runtime = "nodejs";
 
-const AUDIENCES: CampaignAudience[] = [
-  "ALL",
-  "EARLY_BIRD",
-  "LATE",
-  "NOT_PAID",
-  "PARTIAL",
-  "PAID",
-  "CHECKED_IN",
-  "NOT_CHECKED_IN",
-];
+const AUDIENCES: CampaignAudience[] = CAMPAIGN_AUDIENCES;
 
 interface Person {
-  regType: "EARLY_BIRD" | "LATE";
-  paymentStatus: "NOT_PAID" | "PARTIAL" | "PAID";
+  invited: boolean;
+  reserved: boolean;
   checkedIn: boolean;
   categories: string[];
 }
@@ -28,20 +20,18 @@ function inAudience(p: Person, audience: CampaignAudience): boolean {
   switch (audience) {
     case "ALL":
       return true;
-    case "EARLY_BIRD":
-      return p.regType === "EARLY_BIRD";
-    case "LATE":
-      return p.regType === "LATE";
-    case "NOT_PAID":
-      return p.paymentStatus === "NOT_PAID";
-    case "PARTIAL":
-      return p.paymentStatus === "PARTIAL";
-    case "PAID":
-      return p.paymentStatus === "PAID";
+    case "NOT_INVITED":
+      return !p.invited && !p.reserved;
+    case "INVITED_NOT_RESERVED":
+      return p.invited && !p.reserved;
+    case "RESERVED":
+      return p.reserved;
     case "CHECKED_IN":
       return p.checkedIn;
     case "NOT_CHECKED_IN":
       return !p.checkedIn;
+    default:
+      return false;
   }
 }
 
@@ -60,11 +50,11 @@ export async function GET(request: NextRequest) {
   const audience: CampaignAudience = audienceParam && AUDIENCES.includes(audienceParam) ? audienceParam : "ALL";
 
   const rows = await prisma.registration.findMany({
-    select: { regType: true, paymentStatus: true, checkedInAt: true, categories: true },
+    select: { inviteSentAt: true, reservedAt: true, checkedInAt: true, categories: true },
   });
   const people: Person[] = rows.map((r) => ({
-    regType: r.regType,
-    paymentStatus: r.paymentStatus,
+    invited: r.inviteSentAt !== null,
+    reserved: r.reservedAt !== null,
     checkedIn: r.checkedInAt !== null,
     categories: r.categories,
   }));

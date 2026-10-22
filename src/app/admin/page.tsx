@@ -1,284 +1,203 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
-import RegistrationActionsMenu, { runRegistrationAction, type RegistrationAction } from "@/components/RegistrationActionsMenu";
+import { PageHeader, StatCard, formatDateTime, ghostButton, primaryButton } from "@/components/ui";
+import { FOLLOW_UP_STATUSES } from "@/lib/followUp";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { useIsOwner } from "@/lib/useIsOwner";
-import CategoryFilter from "@/components/CategoryFilter";
-import { categoryLabel } from "@/lib/categories";
-import Pagination from "@/components/Pagination";
-import { cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
-import { registrationsUrl } from "@/lib/adminData";
+import { cacheGet, cacheSet } from "@/lib/clientCache";
 
-interface RegistrationRow {
-  id: string;
-  fullName: string;
-  email: string;
-  phone: string;
-  country: string;
-  categories: string[];
-  regType: "EARLY_BIRD" | "LATE";
-  createdAt: string;
-}
-
-interface RegistrationsResponse {
-  registrations: RegistrationRow[];
+interface Overview {
   total: number;
-  regTypeCounts?: { all: number; earlyBird: number; late: number };
-  categoryCounts?: Record<string, number>;
+  invited: number;
+  notInvited: number;
+  awaitingReply: number;
+  reserved: number;
+  checkedIn: number;
+  capacity: number | null;
+  seatsLeft: number | null;
+  contacted: number;
+  followUp: Record<string, number>;
+  withFeedback: number;
+  withNotes: number;
+  recentReservations: { id: string; fullName: string; reservedAt: string }[];
+  reservationsPerDay: { date: string; count: number }[];
 }
 
-export default function RegistrationsPage() {
-  const [pageSize, setPageSize] = useState(() => getStoredPageSize());
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState(""); // the search text, after the typing pause
-  const [regType, setRegType] = useState<string>("ALL");
-  const [category, setCategory] = useState<string>("");
+const URL = "/api/admin/overview";
 
-  // What this page showed last time is on screen straight away; fresh data replaces it a moment later.
-  const firstUrl = registrationsUrl({ page: 1, pageSize, regType: "ALL" });
-  const [initial] = useState(() => cacheGet<RegistrationsResponse>(firstUrl));
-  const [rows, setRows] = useState<RegistrationRow[]>(initial?.registrations ?? []);
-  const [total, setTotal] = useState(initial?.total ?? 0);
-  const [regTypeCounts, setRegTypeCounts] = useState<RegistrationsResponse["regTypeCounts"] | null>(initial?.regTypeCounts ?? null);
-  const [categoryCounts, setCategoryCounts] = useState<Record<string, number> | null>(initial?.categoryCounts ?? null);
-  const [loading, setLoading] = useState(!initial);
-  const [actionMessage, setActionMessage] = useState<{ text: string; ok: boolean } | null>(null);
-  const isOwner = useIsOwner();
-  const requestId = useRef(0);
-  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+function pct(part: number, whole: number): string {
+  return whole ? `${Math.round((part / whole) * 100)}%` : "0%";
+}
 
-  // Wait a moment after typing before searching.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setQuery(search.trim());
-      setPage(1);
-    }, 250);
-    return () => clearTimeout(t);
-  }, [search]);
-
-  function changeType(v: string) {
-    setRegType(v);
-    setPage(1);
-  }
-  function changeCategory(v: string) {
-    setCategory(v);
-    setPage(1);
-  }
-  function changePageSize(n: number) {
-    storePageSize(n);
-    setPageSize(n);
-    setPage(1);
-  }
-
-  // `silent` refreshes (the auto-refresh poll) update the rows in place without
-  // flashing the "Loading…" state. The counter drops stale responses so a slow
-  // background refresh can never overwrite newer search/filter results.
-  const load = useCallback(
-    async (silent = false) => {
-      const myRequest = ++requestId.current;
-      const url = registrationsUrl({ page, pageSize, search: query, regType, category });
-      const apply = (data: RegistrationsResponse) => {
-        setRows(data.registrations);
-        setTotal(data.total);
-        if (data.regTypeCounts) setRegTypeCounts(data.regTypeCounts);
-        if (data.categoryCounts) setCategoryCounts(data.categoryCounts);
-      };
-      if (!silent) {
-        const cached = cacheGet<RegistrationsResponse>(url);
-        if (cached) {
-          apply(cached);
-          setLoading(false);
-        } else {
-          setLoading(true);
-        }
-      }
-      try {
-        const res = await fetch(url);
-        if (res.ok && myRequest === requestId.current) {
-          const data: RegistrationsResponse = await res.json();
-          cacheSet(url, data);
-          apply(data);
-          // Deleting the last row of the last page leaves an empty page: step back.
-          if (data.registrations.length === 0 && page > 1 && data.total > 0) {
-            setPage(Math.max(1, Math.ceil(data.total / pageSize)));
-          }
-        }
-      } catch {
-        // Network hiccup: keep showing the last data; the next poll will retry.
-      } finally {
-        if (myRequest === requestId.current) setLoading(false);
-      }
-    },
-    [page, pageSize, query, regType, category]
+/** A horizontal bar: `value` out of `max`. */
+function Bar({ value, max, color = "bg-gold" }: { value: number; max: number; color?: string }) {
+  const width = max > 0 ? Math.max(value > 0 ? 2 : 0, Math.round((value / max) * 100)) : 0;
+  return (
+    <div className="h-2.5 rounded-full bg-tint border border-border overflow-hidden">
+      <div className={`h-full rounded-full ${color}`} style={{ width: `${width}%` }} />
+    </div>
   );
+}
+
+export default function OverviewPage() {
+  const [data, setData] = useState<Overview | null>(() => cacheGet<Overview>(URL) ?? null);
+  const [error, setError] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(URL, { cache: "no-store" });
+      if (!res.ok) throw new Error();
+      const json: Overview = await res.json();
+      cacheSet(URL, json);
+      setData(json);
+      setError(false);
+    } catch {
+      setError(true);
+    }
+  }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+  useAutoRefresh(load, 15_000);
 
-  useAutoRefresh(() => load(true), 10_000);
-
-  function flash(text: string, ok: boolean) {
-    if (messageTimer.current) clearTimeout(messageTimer.current);
-    setActionMessage({ text, ok });
-    messageTimer.current = setTimeout(() => setActionMessage(null), ok ? 4000 : 10000);
-  }
-
-  async function handleAction(id: string, action: RegistrationAction) {
-    flash("Sending…", true);
-    const result = await runRegistrationAction(id, action);
-    flash(result.message, result.ok);
-    load(true);
-  }
-
-  async function handleDelete(row: RegistrationRow) {
-    if (!window.confirm(`Permanently delete the registration for ${row.fullName} (${row.email})? This cannot be undone.`)) {
-      return;
-    }
-    const res = await fetch(`/api/admin/registrations/${row.id}`, { method: "DELETE" });
-    if (res.ok) {
-      flash("Registration deleted.", true);
-      load(true);
-    } else {
-      const data = await res.json().catch(() => ({}));
-      flash(data.error || "Failed to delete.", false);
-    }
-  }
+  const d = data;
+  const funnelMax = d?.total ?? 0;
+  const dayMax = d ? Math.max(1, ...d.reservationsPerDay.map((x) => x.count)) : 1;
 
   return (
     <AdminShell active="/admin">
-      <div className="flex items-center justify-between flex-wrap gap-4 mb-6">
-        <div>
-          <h2 className="font-serif text-2xl">Registrations</h2>
-          <p className="text-muted text-sm mt-1">
-            {total.toLocaleString()} total
-            {actionMessage && (
-              <span className={`ml-3 ${actionMessage.ok ? "text-goldlight" : "text-red-400"}`}>{actionMessage.text}</span>
-            )}
-          </p>
-        </div>
-        <a
-          href="/api/admin/registrations/export"
-          className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest whitespace-nowrap"
-        >
-          Export CSV
-        </a>
-      </div>
-
-      <div className="flex gap-2 mb-4 flex-wrap">
-        {["ALL", "EARLY_BIRD", "LATE"].map((rt) => {
-          const count =
-            rt === "ALL" ? regTypeCounts?.all : rt === "EARLY_BIRD" ? regTypeCounts?.earlyBird : regTypeCounts?.late;
-          return (
-            <button
-              key={rt}
-              onClick={() => changeType(rt)}
-              className={`text-sm px-4 py-2 rounded-full border transition-colors whitespace-nowrap ${
-                regType === rt ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
-              }`}
-            >
-              {rt === "ALL" ? "All" : rt === "EARLY_BIRD" ? "Early Bird" : "Late"}
-              {count !== undefined && <span className="ml-1.5 opacity-70">{count}</span>}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="mb-4">
-        <CategoryFilter value={category} onChange={changeCategory} counts={categoryCounts} />
-      </div>
-
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search name, email or phone"
-        className="w-full max-w-md bg-cardbg border border-border rounded-lg px-4 py-2.5 text-sm mb-6 focus:outline-none focus:border-gold"
+      <PageHeader
+        title="Overview"
+        subtitle="Where the Investor Breakfast Hangout stands right now."
+        actions={
+          <>
+            <Link href="/admin/registrations" className={ghostButton}>
+              Guest list
+            </Link>
+            <Link href="/admin/attendance" className={primaryButton}>
+              Attendance
+            </Link>
+          </>
+        }
       />
 
-      <div className="border border-border rounded-xl overflow-hidden">
-        <div className="table-scroll overflow-auto max-h-[70vh]">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-                <th className="sticky left-0 top-0 z-30 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Email</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Phone</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Category</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Country</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Type</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Registered</th>
-                <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
-                    Loading…
-                  </td>
-                </tr>
-              )}
-              {!loading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-muted">
-                    No registrations found.
-                  </td>
-                </tr>
-              )}
-              {!loading &&
-                rows.map((r) => (
-                  <tr key={r.id} className="border-b border-border/50 last:border-b-0 align-top">
-                    <td className="sticky left-0 z-10 bg-pagebg px-5 py-4 whitespace-nowrap font-medium">
-                      {r.fullName}
-                    </td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">{r.email}</td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">{r.phone}</td>
-                    <td className="px-5 py-4">
-                      {r.categories.length === 0 ? (
-                        <span className="text-muted text-xs">—</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5 max-w-[16rem]">
-                          {r.categories.map((c) => (
-                            <span
-                              key={c}
-                              title={c}
-                              className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap"
-                            >
-                              {categoryLabel(c)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">{r.country}</td>
-                    <td className="px-5 py-4 whitespace-nowrap">
-                      <span className="px-2.5 py-1 rounded-full border border-border text-xs whitespace-nowrap">
-                        {r.regType === "LATE" ? "Late" : "Early Bird"}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 text-muted whitespace-nowrap">
-                      {new Date(r.createdAt).toLocaleString()}
-                    </td>
-                    <td className="px-5 py-4 whitespace-nowrap">
-                      <RegistrationActionsMenu
-                        variant="registration"
-                        phone={r.phone}
-                        fullName={r.fullName}
-                        onAction={(action) => handleAction(r.id, action)}
-                        onDelete={isOwner ? () => handleDelete(r) : undefined}
-                      />
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={changePageSize} />
-      </div>
+      {error && !d && <p className="text-sm text-red-400 mb-4">Couldn&apos;t load the numbers. Check your connection and try again.</p>}
+      {!d && !error && <p className="text-muted">Loading…</p>}
 
+      {d && (
+        <>
+          {d.total === 0 && (
+            <div className="border border-gold/50 bg-gold/10 rounded-xl p-5 mb-6 text-sm">
+              <p className="font-semibold mb-1">Start by loading your guest list</p>
+              <p className="text-muted">
+                Go to <Link href="/admin/registrations" className="text-goldlight underline">Registrations</Link> and use <em>Import CSV</em> to upload the list you
+                have offline. These numbers fill in as soon as it is loaded.
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            <StatCard label="Total guests" value={d.total.toLocaleString()} hint="On the guest list" />
+            <StatCard
+              label="Seats reserved"
+              value={d.capacity ? `${d.reserved} / ${d.capacity}` : d.reserved.toLocaleString()}
+              hint={d.capacity ? `${d.seatsLeft} seat${d.seatsLeft === 1 ? "" : "s"} left` : "No seat limit set"}
+              tone="text-goldlight"
+            />
+            <StatCard label="Invited" value={d.invited.toLocaleString()} hint={`${d.notInvited.toLocaleString()} not invited yet`} />
+            <StatCard label="Checked in" value={d.checkedIn.toLocaleString()} hint={d.reserved ? `${pct(d.checkedIn, d.reserved)} of reserved seats` : "Nobody has reserved yet"} />
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <StatCard label="Awaiting a reply" value={d.awaitingReply.toLocaleString()} hint="Invited, haven't reserved" tone={d.awaitingReply ? "text-amber-300" : "text-fg"} />
+            <StatCard label="Contacted by phone" value={d.contacted.toLocaleString()} hint={`${pct(d.contacted, d.total)} of the list`} />
+            <StatCard label="Interested" value={(d.followUp.INTERESTED ?? 0).toLocaleString()} hint="Said yes on the call" tone="text-emerald-400" />
+            <StatCard label="Not interested" value={(d.followUp.NOT_INTERESTED ?? 0).toLocaleString()} hint="Said no on the call" tone={d.followUp.NOT_INTERESTED ? "text-red-400" : "text-fg"} />
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-6 mb-6">
+            <section className="border border-border rounded-xl p-6 bg-cardbg">
+              <h3 className="font-serif text-xl mb-1">From list to seat</h3>
+              <p className="text-xs text-muted mb-5">How many guests have reached each step.</p>
+              <div className="space-y-4">
+                {[
+                  { label: "On the guest list", value: d.total },
+                  { label: "Invited", value: d.invited },
+                  { label: "Reserved a seat", value: d.reserved },
+                  { label: "Checked in", value: d.checkedIn },
+                ].map((row) => (
+                  <div key={row.label}>
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span>{row.label}</span>
+                      <span className="text-muted">
+                        {row.value.toLocaleString()} <span className="opacity-70">({pct(row.value, funnelMax)})</span>
+                      </span>
+                    </div>
+                    <Bar value={row.value} max={funnelMax} />
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="border border-border rounded-xl p-6 bg-cardbg">
+              <h3 className="font-serif text-xl mb-1">Phone follow-up</h3>
+              <p className="text-xs text-muted mb-5">Where the calls have got to.</p>
+              <div className="space-y-3.5">
+                {FOLLOW_UP_STATUSES.map((s) => (
+                  <div key={s.value}>
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span>{s.label}</span>
+                      <span className="text-muted">{(d.followUp[s.value] ?? 0).toLocaleString()}</span>
+                    </div>
+                    <Bar value={d.followUp[s.value] ?? 0} max={d.total} color={s.value === "NOT_INTERESTED" ? "bg-red-400" : s.value === "NOT_CONTACTED" ? "bg-border" : "bg-gold"} />
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted mt-5">
+                {d.withFeedback.toLocaleString()} guests came with call feedback; {d.withNotes.toLocaleString()} have notes added here.
+              </p>
+            </section>
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-6">
+            <section className="border border-border rounded-xl p-6 bg-cardbg">
+              <h3 className="font-serif text-xl mb-1">Reservations, last 14 days</h3>
+              <p className="text-xs text-muted mb-5">Seats reserved each day.</p>
+              <div className="flex items-end gap-1.5 h-36" role="img" aria-label="Reservations per day for the last 14 days">
+                {d.reservationsPerDay.map((day) => (
+                  <div key={day.date} className="flex-1 flex flex-col items-center justify-end h-full" title={`${day.date}: ${day.count}`}>
+                    <span className="text-[10px] text-muted mb-1">{day.count || ""}</span>
+                    <div className="w-full rounded-t bg-gold" style={{ height: `${day.count ? Math.max(4, (day.count / dayMax) * 100) : 2}%`, opacity: day.count ? 1 : 0.35 }} />
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between text-[10px] text-muted mt-2">
+                <span>{d.reservationsPerDay[0]?.date.slice(5)}</span>
+                <span>{d.reservationsPerDay[d.reservationsPerDay.length - 1]?.date.slice(5)}</span>
+              </div>
+            </section>
+
+            <section className="border border-border rounded-xl p-6 bg-cardbg">
+              <h3 className="font-serif text-xl mb-1">Latest reservations</h3>
+              <p className="text-xs text-muted mb-4">The last guests to reserve a seat.</p>
+              {d.recentReservations.length === 0 ? (
+                <p className="text-sm text-muted">Nobody has reserved yet.</p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {d.recentReservations.map((r) => (
+                    <li key={r.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
+                      <span className="font-medium truncate">{r.fullName}</span>
+                      <span className="text-muted text-xs whitespace-nowrap">{formatDateTime(r.reservedAt)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        </>
+      )}
     </AdminShell>
   );
 }

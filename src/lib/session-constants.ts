@@ -1,1 +1,1 @@
-export const SESSION_COOKIE_NAME = "ridge_admin_session";
+export const SESSION_COOKIE_NAME = "hangout_admin_session";

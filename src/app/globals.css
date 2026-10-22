@@ -3,41 +3,41 @@
 @tailwind utilities;
 
 /*
-  Brand palette
-  Black #000000  ->  0 0 0
-  Grey  #404040  ->  64 64 64
-  White #FEFEFE  ->  254 254 254
-  Red   #EB3C34  ->  235 60 52
+  Brand palette: white and lemon green.
+  Lemon green  #A3E635  ->  163 230 53   (buttons, highlights)
+  Deeper green #4D7C0F  ->  77 124 15    (accent TEXT on white, so it stays readable)
 
-  The variable and class names still say "gold" so tailwind.config.js and every
-  component keep working. The values are now the brand red.
+  The variable and class names still say "gold" so tailwind.config.ts and every
+  component keep working. The values are the lemon green.
 */
 
 :root {
-  /* Dark (default) */
-  --c-pagebg: 0 0 0;
-  --c-cardbg: 0 0 0;
-  --c-inputbg: 0 0 0;
-  --c-fg: 254 254 254;
-  --c-muted: 173 173 173; /* white at about 68% on black, as a solid */
-  --c-border: 64 64 64;
-  --c-gold: 235 60 52;
-  --c-golddark: 196 47 40; /* hover shade, a step darker than the brand red */
-  --c-goldlight: 235 60 52;
-  color-scheme: dark;
+  /* Light (default): white pages, lemon-green accents */
+  --c-pagebg: 255 255 255;
+  --c-cardbg: 255 255 255;
+  --c-inputbg: 255 255 255;
+  --c-tint: 245 250 228; /* a faint lemon wash for the sidebar and hover rows */
+  --c-fg: 20 28 8;
+  --c-muted: 91 102 74;
+  --c-border: 225 232 210;
+  --c-gold: 163 230 53;
+  --c-golddark: 132 204 22; /* hover shade, a step deeper than the lemon green */
+  --c-goldlight: 190 242 100; /* gradient start for the lemon buttons */
+  color-scheme: light;
 }
 
-:root[data-theme="light"] {
-  --c-pagebg: 254 254 254;
-  --c-cardbg: 254 254 254;
-  --c-inputbg: 254 254 254;
-  --c-fg: 0 0 0;
-  --c-muted: 64 64 64;
-  --c-border: 222 222 222; /* light tint so borders stay soft on white */
-  --c-gold: 235 60 52;
-  --c-golddark: 196 47 40;
-  --c-goldlight: 235 60 52;
-  color-scheme: light;
+:root[data-theme="dark"] {
+  --c-pagebg: 12 15 8;
+  --c-cardbg: 19 23 13;
+  --c-inputbg: 12 15 8;
+  --c-tint: 22 28 14;
+  --c-fg: 244 248 232;
+  --c-muted: 160 170 140;
+  --c-border: 48 57 36;
+  --c-gold: 163 230 53;
+  --c-golddark: 132 204 22;
+  --c-goldlight: 190 242 100;
+  color-scheme: dark;
 }
 
 html,
@@ -51,7 +51,7 @@ body {
 }
 
 ::selection {
-  background: rgba(235, 60, 52, 0.35);
+  background: rgba(163, 230, 53, 0.4);
 }
 
 input,
@@ -60,29 +60,31 @@ select {
   color-scheme: inherit;
 }
 
-/* Brand-red TEXT needs to be darker on a light page; the red buttons keep the bright value. */
-:root[data-theme="light"] .text-goldlight {
-  color: #c42f28;
+/* Lemon-green TEXT needs to be a deeper green on a white page; the lemon buttons keep the bright value. */
+:root:not([data-theme="dark"]) .text-goldlight {
+  color: #4d7c0f;
+}
+:root[data-theme="dark"] .text-goldlight {
+  color: #bef264;
 }
 
-/* Status colors are tuned for dark backgrounds; darken them in light mode. */
-:root[data-theme="light"] .text-red-400,
-:root[data-theme="light"] .text-red-300 {
+/* Status colors are tuned for dark backgrounds; darken them on the white (light) theme. */
+:root:not([data-theme="dark"]) .text-red-400,
+:root:not([data-theme="dark"]) .text-red-300 {
   color: #b91c1c;
 }
-:root[data-theme="light"] .text-emerald-400,
-:root[data-theme="light"] .text-emerald-300 {
+:root:not([data-theme="dark"]) .text-emerald-400,
+:root:not([data-theme="dark"]) .text-emerald-300 {
   color: #047857;
 }
-:root[data-theme="light"] .text-amber-300 {
+:root:not([data-theme="dark"]) .text-amber-300 {
   color: #b45309;
 }
 
-/* Slim, red-tinted horizontal scrollbar for wide tables (Registrations,
-   Payments) instead of the bulky default OS scrollbar. */
+/* Slim, green-tinted horizontal scrollbar for wide tables instead of the bulky default OS scrollbar. */
 .table-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(235, 60, 52, 0.45) transparent;
+  scrollbar-color: rgba(132, 204, 22, 0.55) transparent;
 }
 .table-scroll::-webkit-scrollbar {
   height: 8px;
@@ -91,24 +93,20 @@ select {
   background: transparent;
 }
 .table-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(235, 60, 52, 0.45);
+  background-color: rgba(132, 204, 22, 0.55);
   border-radius: 9999px;
 }
 .table-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(235, 60, 52, 0.7);
+  background-color: rgba(132, 204, 22, 0.8);
 }
 
-/* Logo: show the white logo in dark mode and the dark logo in light mode. */
-.logo-swap-light {
-  display: none;
+/* The logo file is the dark version. On the dark theme it is turned white so it stays visible. */
+:root[data-theme="dark"] .logo-adaptive {
+  filter: brightness(0) invert(1);
 }
-:root[data-theme="light"] .logo-swap-dark {
-  display: none;
-}
-:root[data-theme="light"] .logo-swap-light {
-  display: block;
-}
-/* Fallback when there is no dark logo file: turn the white logo solid black in light mode. */
-:root[data-theme="light"] .logo-flatten {
-  filter: brightness(0);
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
 }

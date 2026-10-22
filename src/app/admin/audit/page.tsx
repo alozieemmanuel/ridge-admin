@@ -27,7 +27,16 @@ const ACTION_LABELS: Record<string, string> = {
   "registration.resend_confirmation": "Confirmation email",
   "registration.send_seat_invite": "Seat-selection email",
   "registration.send_payment_reminder": "Payment reminder",
-  "registration.checkin": "Attendance",
+  "registration.checkin": "Check-in",
+  "participants.import": "Imported guest list",
+  "participant.update": "Edited guest",
+  "participant.note": "Added call note",
+  "participant.follow_up": "Changed follow-up",
+  "participant.send_invitation": "Invitation email",
+  "participant.send_ticket": "Ticket email",
+  "participant.reserve": "Reserved a seat for a guest",
+  "participant.release": "Cancelled a reservation",
+  "attendance.capacity": "Changed seat limit",
   "registration.delete": "Deleted registration",
   "registration.export": "Exported registrations",
   "payment_proof.reject": "Rejected receipt",
@@ -56,7 +65,10 @@ const ACTION_LABELS: Record<string, string> = {
 const CATEGORIES: { value: string; label: string }[] = [
   { value: "", label: "All activity" },
   { value: "auth", label: "Sign-ins" },
-  { value: "registration", label: "Registrations & payments" },
+  { value: "registration", label: "Check-ins & deletions" },
+  { value: "participants", label: "Imports" },
+  { value: "participant", label: "Guests & invitations" },
+  { value: "attendance", label: "Attendance" },
   { value: "payment_proof", label: "Receipts" },
   { value: "brochure", label: "Brochure requests" },
   { value: "campaign", label: "Campaigns" },
@@ -100,6 +112,17 @@ function summarize(row: LogRow): string {
     case "admin.create":
     case "admin.delete":
       return `${d.email ?? ""} (${String(d.role ?? "").toLowerCase()})`;
+    case "participants.import":
+      return `${d.added ?? 0} added, ${d.updated ?? 0} updated, ${d.skipped ?? 0} skipped, ${d.problems ?? 0} unusable rows of ${d.rows ?? 0}`;
+    case "participant.follow_up":
+      return `${d.from ?? ""} → ${d.to ?? ""}`;
+    case "participant.send_invitation":
+    case "participant.send_ticket":
+      if (d.bulk) return `Bulk ${d.kind}: ${d.sent ?? 0} sent, ${d.failed ?? 0} failed`;
+      if (d.outcome === "failed") return `Failed: ${d.error ?? "unknown error"}`;
+      return d.to ? `Sent to ${d.to}` : "";
+    case "attendance.capacity":
+      return d.capacity ? `${d.capacity} seats` : "No limit";
     case "data.clear":
       return `${d.registrations ?? 0} registrations, ${d.brochureRequests ?? 0} brochure requests`;
     case "auth.login_failed":

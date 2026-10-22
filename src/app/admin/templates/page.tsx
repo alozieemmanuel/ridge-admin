@@ -11,18 +11,14 @@ interface Template {
 }
 
 const LABELS: Record<string, string> = {
-  registration_confirmation: "Registration confirmation email",
-  brochure_confirmation: "Brochure email",
-  payment_reminder: "Payment reminder email",
-  seat_selection_invite: "Seat-selection invite email",
+  invitation: "Invitation email",
+  reservation_reminder: "Reservation reminder email",
 };
 
 // Where each email is sent from, so admins know where to find the send button.
 const WHEN_SENT: Record<string, string> = {
-  registration_confirmation: "Sent automatically when someone registers. Resend from Registrations → ⋯.",
-  brochure_confirmation: "Sent automatically on a brochure request. Resend from Brochure Requests.",
-  payment_reminder: "Sent manually from Registrations or Payments → ⋯ → Send payment reminder.",
-  seat_selection_invite: "Sent manually from Registrations or Payments → ⋯ → Send seat-selection invite (once fully paid).",
+  invitation: "Sent from Attendance (to everyone not yet invited) or from a guest's page in Registrations. The Reserve My Seat button is added for you.",
+  reservation_reminder: "Sent from Attendance (to guests who haven't reserved yet) or from a guest's page. The Reserve My Seat button is added for you.",
 };
 
 function TemplateEditor({ template, onSaved }: { template: Template; onSaved: () => void }) {
@@ -87,11 +83,9 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
         />
         <p className="text-xs text-muted mt-2">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize. A blank line starts a new
-          paragraph. Any value from Settings also works as {"{{setting_key}}"} — for example{" "}
-          {"{{programme_name}}"}, {"{{cohort_dates}}"}, {"{{registration_fee}}"}, {"{{early_bird_deadline}}"},{" "}
-          {"{{payment_account_number}}"}, {"{{brochure_url}}"}. Registration emails can also use{" "}
-          {"{{email}}"}, {"{{phone}}"}, {"{{country}}"}, {"{{organization}}"}, {"{{reg_type_label}}"} and{" "}
-          {"{{registration_id}}"}.
+          paragraph. Any value from Settings also works, for example {"{{programme_name}}"}, {"{{event_date}}"},{" "}
+          {"{{event_time}}"} and {"{{event_venue}}"}. You can also use {"{{email}}"}, {"{{phone}}"} and {"{{organization}}"}.
+          The date, time and venue are always shown in a box under the message, and the guest&apos;s own link is the button.
         </p>
       </div>
 
@@ -99,7 +93,7 @@ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: ()
         <button
           onClick={handleSave}
           disabled={saving}
-          className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
+          className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
         >
           {saving ? "Saving…" : "Save"}
         </button>
@@ -130,10 +124,9 @@ export default function TemplatesPage() {
   return (
     <AdminShell active="/admin/templates">
       <div className="mb-6">
-        <h2 className="font-serif text-2xl">Emails & WhatsApp</h2>
+        <h2 className="font-serif text-3xl">Email templates</h2>
         <p className="text-muted text-sm mt-1">
-          Edit the emails your attendees receive. Internal team alerts are built into the system and
-          are configured by the Internal Notification Email in Settings.
+          Edit the wording of the emails your guests receive. The ticket email is designed automatically and is sent as soon as a guest reserves.
         </p>
       </div>
 

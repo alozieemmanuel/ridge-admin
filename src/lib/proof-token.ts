@@ -40,6 +40,6 @@ function verify(purpose: string, token: string, acceptLegacy = false): string | 
 export const makeProofToken = (registrationId: string) => make("proof", registrationId);
 export const verifyProofToken = (token: string) => verify("proof", token, true);
 
-/** Seat selection token, put in the seat invite and seat confirmation emails. */
-export const makeSeatToken = (registrationId: string) => make("seat", registrationId);
-export const verifySeatToken = (token: string) => verify("seat", token);
+/** Reserve token: the unique link each invited guest gets by email (/reserve?t=...). */
+export const makeReserveToken = (registrationId: string) => make("reserve", registrationId);
+export const verifyReserveToken = (token: string) => verify("reserve", token);

@@ -1,36 +1,36 @@
-import { sendViaGmail } from "./gmail";
+import { sendViaGmail, type GmailAttachment } from "./gmail";
+import { BRAND_NAME, LOGO_URL } from "./brand";
 
-// Brand palette: black, grey, white and red. Change here to restyle every
-// email sent to participants. Solid hex values only (no rgba) so it also
-// renders correctly in Outlook and other older mail apps.
+// Brand palette: white and lemon green. Change here to restyle every email sent to
+// participants. Solid hex values only (no rgba) so it also renders correctly in
+// Outlook and other older mail apps. (The key called "red" is the accent colour: lemon green.)
 const BRAND = {
-  pageBg: "#000000",
-  cardBg: "#000000",
-  cardBorder: "#404040",
-  innerBorder: "#404040",
-  innerFill: "#0F0F0F",
-  fg: "#FEFEFE",
-  muted: "#ADADAD",
-  footerMuted: "#8C8C8C",
-  red: "#EB3C34",
-  redFg: "#000000", // text on red buttons
-  rule: "#404040",
+  pageBg: "#F4F9E4",
+  cardBg: "#FFFFFF",
+  cardBorder: "#E1E8D2",
+  innerBorder: "#E1E8D2",
+  innerFill: "#F7FBEA",
+  fg: "#141C08",
+  muted: "#5B664A",
+  footerMuted: "#7B876A",
+  red: "#A3E635",
+  redFg: "#141C08", // text on the lemon-green buttons
+  deep: "#4D7C0F", // deeper green, for small text accents on white
+  rule: "#E1E8D2",
 };
 
 /**
- * Public address of this app, used for the logo in emails (mail apps need a
- * full https:// link, not a relative path). The logo file is
- * /public/ridge-logo-email.png (a small white version made for email). Set APP_BASE_URL in the environment
- * if the dashboard is served from a different address.
+ * Public address of this app. Mail apps need full https:// links (not relative paths) for buttons,
+ * so set APP_BASE_URL in the environment to the address this dashboard is served from.
  */
 export function appBaseUrl(): string {
-  return (process.env.APP_BASE_URL || "https://admin.theridgecircle.com").replace(/\/+$/, "");
+  const configured = process.env.APP_BASE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
+  return (configured || "http://localhost:3000").replace(/\/+$/, "");
 }
 
+/** The logo at the top of every email (see src/lib/brand.ts). It is the dark logo, which suits the white card. */
 export function emailLogoUrl(): string {
-  // A small (540px wide, about 30 KB) copy made for email. The full-size logo used
-  // on the dashboard is far too heavy for mail apps to fetch quickly.
-  return `${appBaseUrl()}/ridge-logo-email.png`;
+  return LOGO_URL;
 }
 
 export function escapeHtml(value: string | null | undefined): string {
@@ -74,22 +74,22 @@ function ctaButton(label?: string, url?: string): string {
 }
 
 function eyebrowPill(text: string): string {
-  return `<span style="display:inline-block;border:1px solid ${BRAND.red};color:${BRAND.fg};font-size:11px;letter-spacing:0.08em;padding:6px 14px;border-radius:999px;font-family:Arial,sans-serif;">${escapeHtml(
+  return `<span style="display:inline-block;border:1px solid ${BRAND.red};background:${BRAND.innerFill};color:${BRAND.deep};font-size:11px;font-weight:700;letter-spacing:0.08em;padding:6px 14px;border-radius:999px;font-family:Arial,sans-serif;">${escapeHtml(
     text
   )}</span>`;
 }
 
-/** Outer black page, bordered card, white RIDGE logo on top and the footer line at the bottom. */
+/** Outer pale-green page, white bordered card, logo on top and the footer line at the bottom. */
 function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string }): string {
   return `<div style="background:${BRAND.pageBg};padding:40px 16px;font-family:Georgia,'Times New Roman',serif;">
     <div style="max-width:${opts.maxWidth}px;margin:0 auto;background:${BRAND.cardBg};border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
       <div style="padding:36px 40px 0;text-align:center;">
-        <img src="${emailLogoUrl()}" alt="RIDGE" width="180" height="42" style="display:inline-block;width:180px;max-width:70%;height:auto;border:0;outline:none;text-decoration:none;" />
+        <img src="${emailLogoUrl()}" alt="${escapeHtml(BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
       </div>
       ${inner}
       <div style="padding:28px 40px 40px;text-align:center;">
         ${opts.ctaHtml ?? ""}
-        <p style="margin:22px 0 0;color:${BRAND.footerMuted};font-size:11.5px;font-family:Arial,sans-serif;">© 2026 RIDGE. All rights reserved.</p>
+        <p style="margin:22px 0 0;color:${BRAND.footerMuted};font-size:11.5px;font-family:Arial,sans-serif;">© ${new Date().getFullYear()} ${escapeHtml(BRAND_NAME)}. All rights reserved.</p>
       </div>
     </div>
   </div>`;
@@ -104,7 +104,7 @@ export interface BrandedEmailOptions {
   ctaUrl?: string;
 }
 
-/** Wraps admin-edited plain-text copy in the RIDGE brand HTML shell. */
+/** Wraps admin-edited plain-text copy in the Investor Hangout brand HTML shell. */
 export function renderBrandedEmail(opts: BrandedEmailOptions): string {
   const summaryHtml = (opts.summaryBlocks ?? [])
     .map(
@@ -260,15 +260,115 @@ export function renderReceiptEmail(opts: ReceiptOptions): string {
 }
 
 // ---------------------------------------------------------------------------
+// Entry ticket
+// ---------------------------------------------------------------------------
+
+export interface TicketEmailOptions {
+  eventName: string;
+  guestName: string;
+  ticketCode: string;
+  date: string;
+  time: string;
+  venue: string;
+  intro: string; // plain text, blank line = new paragraph
+  contactLine?: string;
+  /** The QR image is attached to the email with this content id. */
+  qrCid: string;
+}
+
+function ticketField(label: string, value: string): string {
+  return `<div style="font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:${BRAND.muted};font-family:Arial,sans-serif;margin-bottom:5px;">${escapeHtml(
+    label
+  )}</div>
+  <div style="font-size:16px;line-height:1.35;color:${BRAND.fg};font-weight:700;font-family:Arial,sans-serif;">${escapeHtml(value || "To be announced")}</div>`;
+}
+
+/**
+ * The entry ticket: lemon-green header band, guest name, date / time / venue, a dashed tear-off line and a
+ * stub with the QR code and ticket code. Built from tables and inline styles so it renders in Gmail, Outlook
+ * and phone mail apps. The QR image is attached to the email (cid) instead of linked, so it shows even when
+ * remote images are blocked.
+ */
+export function renderTicketEmail(opts: TicketEmailOptions): string {
+  const inner = `
+      <div style="padding:28px 40px 4px;text-align:center;">
+        ${eyebrowPill("Your ticket")}
+        <h1 style="margin:20px 0 0;color:${BRAND.fg};font-size:26px;line-height:1.3;font-weight:600;">Your seat is reserved</h1>
+        <div style="margin-top:14px;text-align:left;">${paragraphsFromPlainText(opts.intro)}</div>
+      </div>
+
+      <div style="margin:18px 24px 0;border:2px solid ${BRAND.red};border-radius:16px;overflow:hidden;background:${BRAND.cardBg};">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td style="background:${BRAND.red};padding:14px 22px;font-family:Arial,sans-serif;">
+              <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:${BRAND.redFg};font-weight:700;">Admit one &middot; By invitation</div>
+              <div style="font-size:19px;line-height:1.3;color:${BRAND.redFg};font-weight:800;margin-top:4px;">${escapeHtml(opts.eventName)}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:22px 22px 6px;">
+              ${ticketField("Guest", opts.guestName)}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:12px 22px 4px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  <td valign="top" width="50%" style="padding:0 10px 14px 0;">${ticketField("Date", opts.date)}</td>
+                  <td valign="top" width="50%" style="padding:0 0 14px 10px;">${ticketField("Time", opts.time)}</td>
+                </tr>
+                <tr>
+                  <td valign="top" colspan="2" style="padding:0 0 8px 0;">${ticketField("Venue", opts.venue)}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 14px;"><div style="border-top:2px dashed #C9D6A8;font-size:0;line-height:0;">&nbsp;</div></td>
+          </tr>
+          <tr>
+            <td style="padding:18px 22px 22px;background:${BRAND.innerFill};">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  <td valign="middle" width="150" style="width:150px;">
+                    <img src="cid:${opts.qrCid}" alt="QR code for ticket ${escapeHtml(opts.ticketCode)}" width="140" height="140" style="display:block;width:140px;height:140px;border:0;background:#FFFFFF;border-radius:8px;" />
+                  </td>
+                  <td valign="middle" style="padding-left:18px;font-family:Arial,sans-serif;">
+                    <div style="font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:${BRAND.muted};margin-bottom:6px;">Ticket code</div>
+                    <div style="font-family:'Courier New',Courier,monospace;font-size:24px;letter-spacing:0.08em;color:${BRAND.fg};font-weight:700;">${escapeHtml(opts.ticketCode)}</div>
+                    <div style="font-size:12.5px;line-height:1.5;color:${BRAND.muted};margin-top:10px;">Show this ticket at the entrance. The QR code is scanned to check you in.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding:20px 40px 0;text-align:left;">
+        ${paragraphsFromPlainText(
+          `Please show this email (or a screenshot or printout of it) at the entrance. Entry is strictly by invitation and each ticket admits one person.${
+            opts.contactLine ? `\n\n${opts.contactLine}` : ""
+          }`
+        )}
+      </div>`;
+
+  return emailShell(inner, { maxWidth: 560 });
+}
+
+// ---------------------------------------------------------------------------
 // Sending
 // ---------------------------------------------------------------------------
 
 /**
  * kind decides the channel:
  *   "campaign"  -> Brevo (broadcast email, with delivery/open/bounce tracking)
- *   anything else -> Gmail (confirmation, payment_reminder, seat_invite, internal, brochure)
+ *   anything else -> Gmail (invitation, reminder, ticket, internal and the older registration emails)
  */
 export type EmailKind =
+  | "invitation"
+  | "reminder"
+  | "ticket"
   | "confirmation"
   | "brochure"
   | "seat_invite"
@@ -288,6 +388,8 @@ export interface SendEmailInput {
   html: string;
   replyTo?: string | null;
   tags?: { name: string; value: string }[];
+  /** Inline images (Gmail channel only), referenced in the html as <img src="cid:...">. */
+  attachments?: GmailAttachment[];
 }
 
 export type EmailProvider = "GMAIL" | "BREVO";
@@ -337,7 +439,12 @@ function describeBrevoError(status: number, body: string): string {
  */
 async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
   const apiKey = process.env.BREVO_API_KEY;
-  const from = process.env.EMAIL_FROM || "RIDGE 2026 <ridge@pertinencegroup.com>";
+  // EMAIL_FROM must be a sender/domain verified in Brevo. Without it, fall back to the Gmail account's address.
+  const from = process.env.EMAIL_FROM || (process.env.GMAIL_USER ? `${BRAND_NAME} <${process.env.GMAIL_USER}>` : "");
+
+  if (!from) {
+    return { success: false, provider: "BREVO", error: "EMAIL_FROM is not set on the server (a sender address verified in Brevo)." };
+  }
 
   if (!apiKey) {
     if (process.env.NODE_ENV === "production") {
@@ -383,13 +490,14 @@ async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
   }
 }
 
-/** Sends via Google Workspace (ridge@pertinencegroup.com) and maps the result to SendEmailResult. */
+/** Sends via the Gmail / Google Workspace account in GMAIL_USER and maps the result to SendEmailResult. */
 async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResult> {
   const res = await sendViaGmail({
     to: input.to,
     subject: input.subject,
     html: input.html,
     replyTo: input.replyTo || undefined,
+    attachments: input.attachments,
   });
   return res.ok
     ? { success: true, provider: "GMAIL", providerMessageId: res.id }

@@ -1,4 +1,4 @@
-// RIDGE Admin — Database Schema
+// Investor Hangout Admin — Database Schema
 // Postgres + Prisma
 
 generator client {
@@ -75,8 +75,8 @@ model Registration {
   id           String  @id @default(cuid())
   fullName     String
   email        String  @unique
-  phone        String
-  country      String
+  phone        String  @default("")
+  country      String  @default("")
   organization String?
   notes        String?
   regType      RegType @default(EARLY_BIRD)
@@ -94,9 +94,19 @@ model Registration {
   attendanceMode     AttendanceMode? // set when the participant picks a seat (IN_PERSON) or chooses to attend online (ONLINE)
   attendanceChosenAt DateTime?
 
+  // ---- Investor Hangout: follow-up, invitation, seat reservation and ticket ----
+  followUpStatus String  @default("NOT_CONTACTED") // see src/lib/followUp.ts for the allowed values
+  callFeedback   String? @db.Text // feedback that came in with the imported CSV
+  extra          Json? // every other CSV column that has no field of its own, kept as-is ({ "Column header": "value" })
+  inviteSentAt   DateTime? // last time the "reserve your seat" invitation email was sent
+  reservedAt     DateTime? // set when the participant clicked "Reserve My Seat" on their unique link
+  ticketCode     String?   @unique // short code printed on the ticket and in its QR code, set on reservation
+  ticketSentAt   DateTime? // last time the ticket email was sent successfully
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  followUpNotes FollowUpNote[]
   emailEvents   EmailEvent[]
   seat          Seat?
   paymentProofs PaymentProof[]
@@ -117,6 +127,18 @@ model BrochureRequest {
 
   @@index([email])
   @@index([createdAt])
+}
+
+// A call-feedback / follow-up note an admin wrote on a participant's record.
+model FollowUpNote {
+  id             String       @id @default(cuid())
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  body           String       @db.Text
+  authorName     String?
+  createdAt      DateTime     @default(now())
+
+  @@index([registrationId, createdAt])
 }
 
 // One row per lifecycle event per email sent (sent/delivered/opened/bounced/...),
@@ -202,6 +224,9 @@ enum CampaignAudience {
   PAID
   CHECKED_IN
   NOT_CHECKED_IN
+  NOT_INVITED // Investor Hangout: no invitation email sent yet
+  INVITED_NOT_RESERVED // invited, but has not reserved a seat yet
+  RESERVED // has reserved a seat
 }
 
 // One row per one-off broadcast sent from /admin/campaigns (the replacement
@@ -318,7 +343,7 @@ model Prospect {
   id         String         @id @default(cuid())
   sourceId   String
   source     ProspectSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  externalId String // the value in the sheet's "RIDGE ID" column; how we find the row again
+  externalId String // the value in the sheet's "Prospect ID" column; how we find the row again
   sheetRow   Int? // last known row number; null = no longer in the sheet
 
   fullName String

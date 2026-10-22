@@ -39,7 +39,7 @@ export async function fetchAndCache<T>(url: string): Promise<T | null> {
 // ---------------------------------------------------------------------------
 
 export const PAGE_SIZES = [25, 50, 100, 200] as const;
-const PAGE_SIZE_KEY = "ridge-admin-page-size";
+const PAGE_SIZE_KEY = "hangout-admin-page-size";
 
 export function getStoredPageSize(): number {
   try {

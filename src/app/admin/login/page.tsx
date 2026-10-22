@@ -4,7 +4,6 @@ import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Logo from "@/components/Logo";
 import PasswordInput from "@/components/PasswordInput";
-import ThemeToggle from "@/components/ThemeToggle";
 
 function LoginForm() {
   const router = useRouter();
@@ -39,14 +38,11 @@ function LoginForm() {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 relative">
-      <div className="absolute top-4 right-4">
-        <ThemeToggle />
-      </div>
       <div className="w-full max-w-sm bg-cardbg border border-border rounded-2xl p-10">
         <div className="flex justify-center mb-3">
-          <Logo className="h-7 w-auto" />
+          <Logo className="h-12 w-auto" />
         </div>
-        <p className="text-muted text-sm text-center mb-8">Sign in to the admin dashboard</p>
+        <p className="text-muted text-sm text-center mb-8">Sign in to the Investor Hangout admin</p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
@@ -76,7 +72,7 @@ function LoginForm() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold text-sm uppercase tracking-widest py-3 rounded-full disabled:opacity-60"
+            className="w-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold text-sm uppercase tracking-widest py-3 rounded-full disabled:opacity-60"
           >
             {loading ? "Signing in…" : "Sign In"}
           </button>

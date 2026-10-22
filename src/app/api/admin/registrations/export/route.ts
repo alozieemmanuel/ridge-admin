@@ -1,64 +1,68 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { categoryLabel } from "@/lib/categories";
+import { followUpLabel } from "@/lib/followUp";
 
 export const runtime = "nodejs";
 
 function csvEscape(value: unknown): string {
-  const str = value === null || value === undefined ? "" : String(value);
-  if (/[",\n]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
+  let str = value === null || value === undefined ? "" : String(value);
+  // A cell that starts with = + - @ would be run as a formula by Excel, so it is made plain text.
+  if (/^[=+\-@\t\r]/.test(str) && !/^\+?\d[\d\s-]*$/.test(str)) str = `'${str}`;
+  return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
+/** The whole guest list as a CSV (what Excel and Google Sheets open). */
 export async function GET() {
-  const registrations = await prisma.registration.findMany({
+  const people = await prisma.registration.findMany({
     orderBy: { createdAt: "desc" },
-    include: { seat: { select: { label: true } } },
+    include: { followUpNotes: { orderBy: { createdAt: "asc" } } },
   });
 
+  const extraHeaders = Array.from(new Set(people.flatMap((p) => Object.keys((p.extra as Record<string, string> | null) ?? {}))));
   const header = [
     "Full Name",
     "Email",
     "Phone",
-    "Country",
-    "Category",
-    "Organization",
-    "Notes",
-    "Registration Type",
-    "Seat",
-    "Payment Status",
-    "Amount Paid",
-    "Payment Updated At",
-    "Registered At",
+    "Company",
+    "Follow-up",
+    "Call Feedback",
+    "Call Notes",
+    "Invitation Sent",
+    "Seat Reserved",
+    "Reserved At",
+    "Ticket Code",
+    "Checked In At",
+    "Added At",
+    ...extraHeaders,
   ];
 
-  const lines = [header.join(",")];
-  for (const r of registrations) {
+  const lines = [header.map(csvEscape).join(",")];
+  for (const p of people) {
+    const extra = (p.extra as Record<string, string> | null) ?? {};
     lines.push(
       [
-        csvEscape(r.fullName),
-        csvEscape(r.email),
-        csvEscape(r.phone),
-        csvEscape(r.country),
-        csvEscape(r.categories.map(categoryLabel).join("; ")),
-        csvEscape(r.organization),
-        csvEscape(r.notes),
-        csvEscape(r.regType),
-        csvEscape(r.seat?.label ?? ""),
-        csvEscape(r.paymentStatus),
-        csvEscape(r.amountPaid),
-        csvEscape(r.paymentUpdatedAt ? r.paymentUpdatedAt.toISOString() : ""),
-        csvEscape(r.createdAt.toISOString()),
-      ].join(",")
+        p.fullName,
+        p.email,
+        p.phone,
+        p.organization,
+        followUpLabel(p.followUpStatus),
+        p.callFeedback,
+        p.followUpNotes.map((n) => `${n.createdAt.toISOString().slice(0, 10)}${n.authorName ? ` (${n.authorName})` : ""}: ${n.body}`).join(" | "),
+        p.inviteSentAt ? p.inviteSentAt.toISOString() : "",
+        p.reservedAt ? "Yes" : "No",
+        p.reservedAt ? p.reservedAt.toISOString() : "",
+        p.ticketCode,
+        p.checkedInAt ? p.checkedInAt.toISOString() : "",
+        p.createdAt.toISOString(),
+        ...extraHeaders.map((h) => extra[h] ?? ""),
+      ]
+        .map(csvEscape)
+        .join(",")
     );
   }
 
-  const csv = lines.join("\n");
-  const filename = `ridge-registrations-${new Date().toISOString().slice(0, 10)}.csv`;
-
-  return new NextResponse(csv, {
+  const filename = `investor-hangout-guests-${new Date().toISOString().slice(0, 10)}.csv`;
+  return new NextResponse("﻿" + lines.join("\r\n"), {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

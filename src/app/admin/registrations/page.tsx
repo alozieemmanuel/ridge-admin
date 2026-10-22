@@ -1,0 +1,236 @@
+"use client";
+
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import AdminShell from "@/components/AdminShell";
+import ParticipantDrawer from "@/components/ParticipantDrawer";
+import ImportDialog from "@/components/ImportDialog";
+import Pagination from "@/components/Pagination";
+import { Pill, PageHeader, formatDate, ghostButton, inputClass, primaryButton } from "@/components/ui";
+import { FOLLOW_UP_STATUSES, followUpLabel, followUpTone } from "@/lib/followUp";
+import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
+
+interface Row {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  organization: string | null;
+  followUpStatus: string;
+  inviteSentAt: string | null;
+  reservedAt: string | null;
+  checkedInAt: string | null;
+}
+interface Response {
+  registrations: Row[];
+  total: number;
+  counts: { all: number; reserved: number; notReserved: number; followUp: Record<string, number> };
+}
+
+function RegistrationsInner() {
+  const params = useSearchParams();
+  const [pageSize, setPageSize] = useState(() => getStoredPageSize());
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [followUp, setFollowUp] = useState(params.get("followUp") ?? "");
+  const [seat, setSeat] = useState(params.get("seat") ?? "");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<Response["counts"] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(
+    async (silent = false) => {
+      const mine = ++requestId.current;
+      if (!silent) setLoading(true);
+      const p = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (query) p.set("search", query);
+      if (followUp) p.set("followUp", followUp);
+      if (seat) p.set("seat", seat);
+      try {
+        const res = await fetch(`/api/admin/registrations?${p}`, { cache: "no-store" });
+        if (res.ok && mine === requestId.current) {
+          const data: Response = await res.json();
+          setRows(data.registrations);
+          setTotal(data.total);
+          setCounts(data.counts);
+          if (data.registrations.length === 0 && page > 1 && data.total > 0) setPage(Math.max(1, Math.ceil(data.total / pageSize)));
+        }
+      } catch {
+        // keep showing the last data; the next refresh retries
+      } finally {
+        if (mine === requestId.current) setLoading(false);
+      }
+    },
+    [page, pageSize, query, followUp, seat]
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+  useAutoRefresh(() => load(true), 15_000);
+
+  const anyFilter = Boolean(query || followUp || seat);
+
+  return (
+    <AdminShell active="/admin/registrations">
+      <PageHeader
+        title="Registrations"
+        subtitle={`${(counts?.all ?? 0).toLocaleString()} guests on the list. Click a guest to see everything about them.`}
+        actions={
+          <>
+            <a href="/api/admin/registrations/export" className={ghostButton}>
+              Export CSV
+            </a>
+            <button onClick={() => setImporting(true)} className={primaryButton}>
+              Import CSV
+            </button>
+          </>
+        }
+      />
+
+      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, phone or company" className={`${inputClass} sm:max-w-md`} aria-label="Search guests" />
+        <select
+          value={followUp}
+          onChange={(e) => {
+            setFollowUp(e.target.value);
+            setPage(1);
+          }}
+          className={`${inputClass} sm:w-56`}
+          aria-label="Filter by follow-up"
+        >
+          <option value="">All follow-up</option>
+          {FOLLOW_UP_STATUSES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+              {counts ? ` (${counts.followUp[s.value] ?? 0})` : ""}
+            </option>
+          ))}
+        </select>
+        <select
+          value={seat}
+          onChange={(e) => {
+            setSeat(e.target.value);
+            setPage(1);
+          }}
+          className={`${inputClass} sm:w-52`}
+          aria-label="Filter by seat"
+        >
+          <option value="">Seat: any</option>
+          <option value="RESERVED">Reserved{counts ? ` (${counts.reserved})` : ""}</option>
+          <option value="NOT_RESERVED">Not reserved{counts ? ` (${counts.notReserved})` : ""}</option>
+        </select>
+      </div>
+
+      <div className="border border-border rounded-xl overflow-hidden bg-cardbg">
+        <div className="table-scroll overflow-auto max-h-[68vh]">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
+                {["Name", "Email", "Phone", "Follow-up", "Seat reserved"].map((h, i) => (
+                  <th key={h} className={`sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap ${i === 0 ? "left-0 z-30" : ""}`}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={5} className="px-5 py-10 text-center text-muted">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && rows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-5 py-10 text-center text-muted">
+                    {anyFilter ? (
+                      "Nobody matches that."
+                    ) : (
+                      <>
+                        No guests yet.{" "}
+                        <button onClick={() => setImporting(true)} className="text-goldlight underline">
+                          Import your CSV
+                        </button>{" "}
+                        to get started.
+                      </>
+                    )}
+                  </td>
+                </tr>
+              )}
+              {!loading &&
+                rows.map((r) => (
+                  <tr
+                    key={r.id}
+                    tabIndex={0}
+                    onClick={() => setOpenId(r.id)}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setOpenId(r.id))}
+                    className="border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-gold/10 focus:bg-gold/10 focus:outline-none"
+                  >
+                    <td className="sticky left-0 z-10 bg-inherit px-5 py-3.5 whitespace-nowrap font-medium">
+                      {r.fullName}
+                      {r.organization && <span className="block text-xs text-muted font-normal">{r.organization}</span>}
+                    </td>
+                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email}</td>
+                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.phone || "-"}</td>
+                    <td className="px-5 py-3.5 whitespace-nowrap">
+                      <Pill tone={followUpTone(r.followUpStatus)}>{followUpLabel(r.followUpStatus)}</Pill>
+                    </td>
+                    <td className="px-5 py-3.5 whitespace-nowrap">
+                      {r.reservedAt ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Pill tone="text-emerald-400">Reserved</Pill>
+                          <span className="text-xs text-muted">{formatDate(r.reservedAt)}</span>
+                        </span>
+                      ) : r.inviteSentAt ? (
+                        <Pill tone="text-amber-300">Invited</Pill>
+                      ) : (
+                        <span className="text-muted">-</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPage={setPage}
+          onPageSize={(n) => {
+            storePageSize(n);
+            setPageSize(n);
+            setPage(1);
+          }}
+        />
+      </div>
+
+      {openId && <ParticipantDrawer id={openId} onClose={() => setOpenId(null)} onChanged={() => load(true)} />}
+      {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
+    </AdminShell>
+  );
+}
+
+export default function RegistrationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegistrationsInner />
+    </Suspense>
+  );
+}

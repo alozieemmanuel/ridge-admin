@@ -3,56 +3,28 @@
 import { useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useIsOwner } from "@/lib/useIsOwner";
+import ThemeToggle from "@/components/ThemeToggle";
 
-const FIELDS: { key: string; label: string; hint?: string }[] = [
-  { key: "programme_name", label: "Programme Name" },
-  { key: "event_caption", label: "Event Caption" },
-  { key: "cohort_dates", label: "Cohort Dates" },
-  { key: "sender_name", label: "Email Sender Name" },
-  { key: "registration_fee", label: "Early Bird Fee (display text)" },
-  { key: "late_registration_fee", label: "Late Fee (display text)" },
-  {
-    key: "registration_fee_amount",
-    label: "Early Bird Fee Amount (number)",
-    hint: "Plain number, no currency symbol — used to auto-calculate paid/partial/not paid on the Payments page.",
-  },
-  {
-    key: "late_registration_fee_amount",
-    label: "Late Fee Amount (number)",
-    hint: "Plain number, no currency symbol — used to auto-calculate paid/partial/not paid on the Payments page.",
-  },
-  { key: "early_bird_deadline", label: "Early Bird Deadline" },
-  { key: "brochure_url", label: "Brochure PDF URL" },
-  { key: "payment_account_name", label: "Payment — Account Name" },
-  { key: "payment_bank_name", label: "Payment — Bank Name" },
-  { key: "payment_account_number", label: "Payment — Account Number" },
-  { key: "currency", label: "Currency" },
-  { key: "contact_email", label: "Contact Email" },
+const FIELDS: { key: string; label: string; hint?: string; placeholder?: string }[] = [
+  { key: "programme_name", label: "Event name", hint: "Shown on invitations, tickets and the reserve page." },
+  { key: "event_caption", label: "Tagline", hint: "The small line above the event name, e.g. “By invitation only”." },
+  { key: "event_date", label: "Date", placeholder: "Saturday 14th November, 2026", hint: "Required before any invitation can be sent." },
+  { key: "event_time", label: "Time", placeholder: "9:00 AM" },
+  { key: "event_venue", label: "Venue", placeholder: "Name and address of the venue", hint: "Required before any invitation can be sent." },
+  { key: "seat_capacity", label: "Number of seats", hint: "Reservations stop when this many seats are taken. You can also change it on the Attendance page. Leave empty for no limit." },
+  { key: "contact_email", label: "Contact email", hint: "Where guests are told to send questions. Replies to your emails go here." },
+  { key: "contact_phone", label: "Contact phone", hint: "Shown on the reserve page and in the ticket email." },
+  { key: "sender_name", label: "Email sender name" },
   {
     key: "notification_email",
-    label: "Internal Notification Email",
-    hint: "Where the built-in new-registration and new-brochure-request alerts are sent. Leave empty to switch them off.",
+    label: "Internal notification email",
+    hint: "Optional. Where team alerts are sent. Leave empty to switch them off.",
   },
-  { key: "contact_whatsapp_number", label: "WhatsApp Number", hint: "Digits only, country code, no plus sign." },
-  { key: "contact_whatsapp_message", label: "WhatsApp Pre-filled Message" },
-  {
-    key: "payment_page_url",
-    label: "Payment Page Link (reminder emails)",
-    hint: "The page the \"Complete My Payment\" button opens. The person's secure token is added to the end as ?pay=...",
-  },
-  { key: "rate_ngn_per_usd", label: "Exchange Rate: Naira per 1 USD", hint: "Used as the starting rate when you record a payment made in Naira. You can change it for each payment." },
-  { key: "rate_cad_per_usd", label: "Exchange Rate: CAD per 1 USD", hint: "Used as the starting rate when you record a payment made in Canadian dollars." },
-  { key: "day7_date", label: "Day 7 Date (seat emails)" },
-  { key: "day7_venue", label: "Day 7 Venue (seat emails)" },
 ];
 
 type ClearTarget = "registrations" | "brochure_requests" | "all";
 
-const CLEAR_OPTIONS: { value: ClearTarget; label: string }[] = [
-  { value: "registrations", label: "Registrations" },
-  { value: "brochure_requests", label: "Brochure requests" },
-  { value: "all", label: "Both" },
-];
+const CLEAR_OPTIONS: { value: ClearTarget; label: string }[] = [{ value: "registrations", label: "The whole guest list" }];
 
 /** Owner-only: permanently wipe records (e.g. test data before launch). */
 function DangerZone() {
@@ -72,13 +44,8 @@ function DangerZone() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const { registrations = 0, brochureRequests = 0 } = data.deleted ?? {};
-        setResult({
-          text: `Deleted ${registrations} registration${registrations === 1 ? "" : "s"} and ${brochureRequests} brochure request${
-            brochureRequests === 1 ? "" : "s"
-          }.`,
-          ok: true,
-        });
+        const { registrations = 0 } = data.deleted ?? {};
+        setResult({ text: `Deleted ${registrations} guest${registrations === 1 ? "" : "s"}.`, ok: true });
         setConfirmText("");
       } else {
         setResult({ text: data.error || "Failed to clear data.", ok: false });
@@ -93,9 +60,8 @@ function DangerZone() {
     <div className="border border-red-400/40 rounded-xl p-6 mt-8 max-w-2xl">
       <h3 className="text-red-400 text-sm font-semibold mb-1">Danger zone</h3>
       <p className="text-sm text-muted mb-4">
-        Permanently delete records — for example test data before launch. This can&apos;t be undone and affects what every
-        admin sees, including real sign-ups. Export the CSV from the Registrations page first. Settings, email templates
-        and admin accounts are not touched, and seats held by deleted registrations are released.
+        Permanently delete the guest list, including their notes, reservations and tickets. This can&apos;t be undone and affects what every
+        admin sees. Export the CSV from the Registrations page first. Settings, email templates and admin accounts are not touched.
       </p>
 
       <div className="flex gap-2 flex-wrap mb-4">
@@ -162,17 +128,23 @@ export default function SettingsPage() {
   return (
     <AdminShell active="/admin/settings">
       <div className="mb-6">
-        <h2 className="font-serif text-2xl">Settings</h2>
-        <p className="text-muted text-sm mt-1">
-          Programme dates, fees, payment details, and contact info. These feed the {"{{token}}"} variables
-          used in your email templates.
+        <h2 className="font-serif text-3xl">Settings</h2>
+        <p className="text-muted text-sm mt-1.5">
+          The event details used on invitations, tickets and the reserve page. Each one is also available in your email templates as a {"{{token}}"}, for example {"{{event_date}}"}.
         </p>
+      </div>
+
+      <div className="border border-border rounded-xl p-6 mb-8 max-w-2xl">
+        <h3 className="font-serif text-xl mb-1">Appearance</h3>
+        <p className="text-sm text-muted mb-4">Choose how the dashboard looks. This is saved on this device only.</p>
+        <ThemeToggle />
       </div>
 
       {loading ? (
         <p className="text-muted">Loading…</p>
       ) : (
         <div className="border border-border rounded-xl p-6 space-y-5 max-w-2xl">
+          <h3 className="font-serif text-xl -mb-1">Event details</h3>
           {FIELDS.map((field) => (
             <div key={field.key}>
               <label className="block text-xs uppercase tracking-wider text-muted mb-2">
@@ -180,6 +152,7 @@ export default function SettingsPage() {
               </label>
               <input
                 value={values[field.key] ?? ""}
+                placeholder={field.placeholder}
                 onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
                 className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
               />
@@ -191,7 +164,7 @@ export default function SettingsPage() {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
+              className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
             >
               {saving ? "Saving…" : "Save Settings"}
             </button>

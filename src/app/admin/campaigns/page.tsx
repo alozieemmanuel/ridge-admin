@@ -3,33 +3,30 @@
 import { useEffect, useState, useCallback } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
-import CategoryFilter from "@/components/CategoryFilter";
-import { categoryLabel } from "@/lib/categories";
 import { useIsOwner } from "@/lib/useIsOwner";
 import Pagination from "@/components/Pagination";
 import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
 
-type Audience =
-  | "ALL"
-  | "EARLY_BIRD"
-  | "LATE"
-  | "NOT_PAID"
-  | "PARTIAL"
-  | "PAID"
-  | "CHECKED_IN"
-  | "NOT_CHECKED_IN";
+type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
 
 const AUDIENCE_OPTIONS: { value: Audience; label: string }[] = [
-  { value: "ALL", label: "All registrants" },
-  { value: "EARLY_BIRD", label: "Early Bird" },
-  { value: "LATE", label: "Late" },
-  { value: "NOT_PAID", label: "Not paid" },
-  { value: "PARTIAL", label: "Partially paid" },
-  { value: "PAID", label: "Fully paid" },
-  { value: "CHECKED_IN", label: "Checked in (Day 7)" },
-  { value: "NOT_CHECKED_IN", label: "Not checked in (Day 7)" },
+  { value: "ALL", label: "Everyone" },
+  { value: "NOT_INVITED", label: "Not invited yet" },
+  { value: "INVITED_NOT_RESERVED", label: "Invited, not reserved" },
+  { value: "RESERVED", label: "Seat reserved" },
+  { value: "CHECKED_IN", label: "Checked in" },
+  { value: "NOT_CHECKED_IN", label: "Not checked in" },
 ];
+
+// Campaigns sent before this dashboard was repurposed can carry the older audiences; they still read correctly in the history.
+const OLD_AUDIENCE_LABELS: Record<string, string> = {
+  EARLY_BIRD: "Early Bird",
+  LATE: "Late",
+  NOT_PAID: "Not paid",
+  PARTIAL: "Partially paid",
+  PAID: "Fully paid",
+};
+const audienceLabel = (a: string) => AUDIENCE_OPTIONS.find((o) => o.value === a)?.label ?? OLD_AUDIENCE_LABELS[a] ?? a;
 
 interface Campaign {
   id: string;
@@ -180,8 +177,7 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: 
             <h3 className="font-serif text-2xl break-words">{detail?.subject ?? (loading ? "Loading…" : "Campaign")}</h3>
             {detail && (
               <p className="text-sm text-muted mt-1">
-                {AUDIENCE_OPTIONS.find((o) => o.value === detail.audience)?.label ?? detail.audience}
-                {detail.category ? ` · ${categoryLabel(detail.category)}` : ""} · {new Date(detail.sentAt).toLocaleString()}
+                {audienceLabel(detail.audience)} · {new Date(detail.sentAt).toLocaleString()}
                 {detail.sentByName ? ` · by ${detail.sentByName}` : ""}
               </p>
             )}
@@ -291,13 +287,10 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: 
 export default function CampaignsPage() {
   const isOwner = useIsOwner();
   const [openCampaignId, setOpenCampaignId] = useState<string | null>(null);
-  const [channel, setChannel] = useState<"email" | "whatsapp">("email");
   const [audience, setAudience] = useState<Audience>("ALL");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
-  const [category, setCategory] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stats, setStats] = useState<CampaignStats>({ delivered: 0, opened: 0, bounced: 0, complained: 0 });
   const [loading, setLoading] = useState(true);
@@ -308,7 +301,6 @@ export default function CampaignsPage() {
   const load = useCallback(async () => {
     try {
       const params = new URLSearchParams({ audience });
-      if (category) params.set("category", category);
       const [countsRes, campaignsRes] = await Promise.all([
         fetch(`/api/admin/campaigns/audience-counts?${params.toString()}`),
         fetch("/api/admin/campaigns"),
@@ -316,7 +308,6 @@ export default function CampaignsPage() {
       if (countsRes.ok) {
         const data = await countsRes.json();
         setCounts(data.counts);
-        setCategoryCounts(data.categoryCounts ?? {});
       }
       if (campaignsRes.ok) {
         const data = await campaignsRes.json();
@@ -328,7 +319,7 @@ export default function CampaignsPage() {
     } finally {
       setLoading(false);
     }
-  }, [audience, category]);
+  }, [audience]);
 
   useEffect(() => {
     load();
@@ -368,7 +359,7 @@ export default function CampaignsPage() {
       const res = await fetch("/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audience, category, subject, body }),
+        body: JSON.stringify({ audience, subject, body }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -394,30 +385,11 @@ export default function CampaignsPage() {
 
   return (
     <AdminShell active="/admin/campaigns">
-      <div className="flex gap-2 mb-6">
-        {(["email", "whatsapp"] as const).map((c) => (
-          <button
-            key={c}
-            onClick={() => setChannel(c)}
-            className={`text-sm px-4 py-2 rounded-full border transition-colors ${
-              channel === c ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted hover:text-fg"
-            }`}
-          >
-            {c === "email" ? "Email" : "WhatsApp"}
-          </button>
-        ))}
-      </div>
-
-      {channel === "whatsapp" && <WhatsAppBroadcastPanel />}
-
-      {channel === "email" && (
       <>
       <div className="mb-6">
-        <h2 className="font-serif text-2xl">Campaigns</h2>
-        <p className="text-muted text-sm mt-1">
-          Send a one-off email to a segment of registrants. Confirmation, brochure, seat-invite and
-          payment-reminder emails are separate — those still go out automatically or from the ⋯ menu on
-          Registrations/Payments.
+        <h2 className="font-serif text-3xl">Campaigns</h2>
+        <p className="text-muted text-sm mt-1.5">
+          Send a one-off email to a group of guests, for example a note before the day. Invitations, reminders and tickets are separate: they are sent from the Attendance page.
         </p>
       </div>
 
@@ -438,16 +410,11 @@ export default function CampaignsPage() {
           ))}
         </div>
 
-        <label className="block text-xs uppercase tracking-wider text-muted mb-2">Category</label>
-        <div className="mb-5">
-          <CategoryFilter value={category} onChange={setCategory} counts={categoryCounts} allLabel="Any category" />
-        </div>
-
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Subject</label>
         <input
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
-          placeholder="e.g. A quick update ahead of Day 7"
+          placeholder="e.g. A quick update ahead of the Hangout"
           className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm mb-4 focus:outline-none focus:border-gold"
         />
 
@@ -471,7 +438,7 @@ export default function CampaignsPage() {
           <button
             onClick={() => setStep("confirm")}
             disabled={!canSend}
-            className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-50"
+            className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-50"
           >
             Continue
           </button>
@@ -481,8 +448,7 @@ export default function CampaignsPage() {
           <div className="border border-gold/30 rounded-xl p-4">
             <p className="text-sm mb-4">
               This will send to <span className="text-goldlight">{recipientCount}</span>{" "}
-              {AUDIENCE_OPTIONS.find((o) => o.value === audience)?.label.toLowerCase()}
-              {category ? ` (${categoryLabel(category)})` : ""}. Continue?
+              {audienceLabel(audience).toLowerCase()}. Continue?
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -495,7 +461,7 @@ export default function CampaignsPage() {
               <button
                 onClick={handleSend}
                 disabled={sending}
-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-60"
+                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
               >
                 {sending ? "Sending…" : `Send to ${recipientCount}`}
               </button>
@@ -566,8 +532,7 @@ export default function CampaignsPage() {
                     >
                       <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
-                        {AUDIENCE_OPTIONS.find((o) => o.value === c.audience)?.label ?? c.audience}
-                        {c.category ? ` · ${categoryLabel(c.category)}` : ""}
+                        {audienceLabel(c.audience)}
                       </td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {c.sentCount} of {c.recipientCount}
@@ -610,7 +575,6 @@ export default function CampaignsPage() {
         </div>
       )}
       </>
-      )}
       {openCampaignId && <CampaignDialog campaignId={openCampaignId} onClose={() => setOpenCampaignId(null)} />}
     </AdminShell>
   );

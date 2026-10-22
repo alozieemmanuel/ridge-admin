@@ -1,5 +1,13 @@
 import nodemailer, { type Transporter } from "nodemailer";
 
+/** An image (or file) sent with the email. Give it a `cid` to use it inline as <img src="cid:...">. */
+export type GmailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+  cid?: string;
+};
+
 export type GmailSendInput = {
   to: string | string[];
   subject: string;
@@ -8,6 +16,7 @@ export type GmailSendInput = {
   replyTo?: string;
   cc?: string | string[];
   bcc?: string | string[];
+  attachments?: GmailAttachment[];
 };
 
 export type GmailSendResult = {
@@ -61,7 +70,7 @@ export async function sendViaGmail(
   }
 
   const user = process.env.GMAIL_USER as string;
-  const fromName = process.env.GMAIL_FROM_NAME || "RIDGE";
+  const fromName = process.env.GMAIL_FROM_NAME || "Investor Hangout";
 
   try {
     const info = await t.sendMail({
@@ -73,6 +82,7 @@ export async function sendViaGmail(
       subject: input.subject,
       html: input.html,
       text: input.text || stripHtml(input.html),
+      attachments: input.attachments,
     });
     return { ok: true, id: info.messageId };
   } catch (err) {

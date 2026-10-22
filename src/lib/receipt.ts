@@ -76,7 +76,7 @@ export function buildReceiptLines(
     const value = lines.length === 0 ? amountPaid : diff;
     lines.push({
       date: formatReceiptDate(paymentUpdatedAt ?? new Date()),
-      method: lines.length === 0 ? "Payment confirmed by RIDGE" : diff > 0 ? "Other payments recorded" : "Adjustment",
+      method: lines.length === 0 ? "Payment confirmed by Investor Hangout" : diff > 0 ? "Other payments recorded" : "Adjustment",
       paid: usdText(value),
       rate: "-",
       usd: usdText(value),

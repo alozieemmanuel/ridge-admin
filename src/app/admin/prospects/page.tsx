@@ -899,7 +899,7 @@ function SourcesPanel({
       <p className="text-sm text-muted mb-5">
         Share each Google Sheet with{" "}
         <span className="text-fg break-all">{serviceEmail ?? "the service account email"}</span> as an Editor. The
-        first row of the tab must be the column headings. A &quot;RIDGE ID&quot; column is added on the right so
+        first row of the tab must be the column headings. A &quot;Prospect ID&quot; column is added on the right so
         each row can be found again.
       </p>
 

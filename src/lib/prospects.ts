@@ -4,7 +4,7 @@ import type { Prospect, ProspectSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readSheet, updateCells, type CellUpdate } from "@/lib/google-sheets";
 import {
-  RIDGE_ID_HEADER,
+  PROSPECT_ID_HEADER,
   formatBoolForSheet,
   interpretStatus,
   parseBool,
@@ -42,7 +42,7 @@ function asManualMap(value: Prisma.JsonValue | null): ManualColumnMap | null {
 
 /**
  * Pulls one sheet into the database.
- *  - Each row is identified by a "RIDGE ID" column. If the sheet has none, the
+ *  - Each row is identified by a "Prospect ID" column. If the sheet has none, the
  *    column is added to the right of the data, and every row gets an ID, so
  *    rows can be re-sorted or deleted in the sheet without mixing people up.
  *  - The sheet wins for name/contact details. For the fields admins edit here,
@@ -85,7 +85,7 @@ async function doSync(sourceId: string, opts: { force?: boolean }): Promise<Sync
     let idCol = mapping.externalId;
     if (idCol === undefined) {
       idCol = headers.length;
-      cellUpdates.push({ row: 1, col: idCol, value: RIDGE_ID_HEADER });
+      cellUpdates.push({ row: 1, col: idCol, value: PROSPECT_ID_HEADER });
     }
 
     const known = await prisma.prospect.findMany({ where: { sourceId } });
@@ -221,7 +221,7 @@ export interface WriteBackResult {
 
 /**
  * Writes the editable fields of one prospect back to its sheet row. The row is
- * found by its RIDGE ID (not its row number), so it is safe even if rows were
+ * found by its Prospect ID (not its row number), so it is safe even if rows were
  * moved since the last sync. Updates `dirty` / `writeBackError` on the prospect.
  */
 export async function writeBackProspect(prospect: Prospect, sourceArg?: ProspectSource): Promise<WriteBackResult> {
@@ -235,7 +235,7 @@ export async function writeBackProspect(prospect: Prospect, sourceArg?: Prospect
     const headers = values[0].map((h) => h.trim());
     const { mapping } = resolveColumns(headers, asManualMap(source.columnMap));
     const idCol = mapping.externalId;
-    if (idCol === undefined) throw new Error('The sheet has no "RIDGE ID" column yet. Sync first.');
+    if (idCol === undefined) throw new Error('The sheet has no "Prospect ID" column yet. Sync first.');
 
     const rowIndex = values.findIndex((row, i) => i > 0 && (row[idCol] ?? "").trim() === prospect.externalId);
     if (rowIndex < 0) throw new Error("This person's row is no longer in the sheet.");

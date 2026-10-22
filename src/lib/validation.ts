@@ -44,27 +44,13 @@ export const updateTemplateSchema = z.object({
     .trim()
     .refine(
       (v) => v === "" || SINGLE_TOKEN.test(v) || isValidEmailAddress(v),
-      "Reply-To must be an email address like ridge@example.com (or the {{contact_email}} token), or left empty."
+      "Reply-To must be an email address like team@example.com (or the {{contact_email}} token), or left empty."
     )
     .nullable()
     .optional(),
 });
 
 export const updateSettingsSchema = z.record(z.string(), z.string().max(2000));
-
-export const updateSeatStatusSchema = z
-  .object({
-    status: z.enum(["OPEN", "RESERVED", "TAKEN", "BLOCKED"]).optional(),
-    // Unveil (true) or hide (false) this seat on the public seat page.
-    released: z.boolean().optional(),
-  })
-  .refine((v) => v.status !== undefined || v.released !== undefined, { message: "Nothing to update." });
-
-// Bulk unveiling from /admin/seats.
-export const seatReleaseSchema = z.object({
-  action: z.enum(["unveil_next", "unveil_all", "hide_open"]),
-  count: z.coerce.number().int().min(1, "Enter at least 1 seat.").max(1000).optional(),
-});
 
 // An optional category filter for campaigns and broadcasts. Empty means "any category".
 const categoryFilter = z
@@ -100,7 +86,17 @@ export const sendReplySchema = z.object({
 });
 
 export const registrationActionSchema = z.object({
-  action: z.enum(["resend_confirmation", "send_seat_invite", "send_payment_reminder"]),
+  action: z.enum([
+    "send_invitation",
+    "send_reminder",
+    "send_ticket",
+    "reserve",
+    "release",
+    "check_in",
+    "undo_check_in",
+    "resend_confirmation",
+    "send_payment_reminder",
+  ]),
 });
 
 // Bulk-delete for clearing test data. The literal confirmation guards against a stray click.
@@ -112,13 +108,16 @@ export const clearDataSchema = z.object({
 export const sendCampaignSchema = z.object({
   audience: z.enum([
     "ALL",
+    "NOT_INVITED",
+    "INVITED_NOT_RESERVED",
+    "RESERVED",
+    "CHECKED_IN",
+    "NOT_CHECKED_IN",
     "EARLY_BIRD",
     "LATE",
     "NOT_PAID",
     "PARTIAL",
     "PAID",
-    "CHECKED_IN",
-    "NOT_CHECKED_IN",
   ]),
   category: categoryFilter,
   subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
@@ -203,6 +202,9 @@ export const WHATSAPP_AUDIENCES = [
   "PAID",
   "CHECKED_IN",
   "NOT_CHECKED_IN",
+  "NOT_INVITED",
+  "INVITED_NOT_RESERVED",
+  "RESERVED",
   "PROSPECTS_ALL",
   "PROSPECTS_NOT_REGISTERED",
   "PROSPECTS_FOLLOW_UP",

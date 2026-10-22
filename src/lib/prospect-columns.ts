@@ -30,7 +30,7 @@ export interface ProspectField {
   editable?: boolean;
 }
 
-export const RIDGE_ID_HEADER = "RIDGE ID";
+export const PROSPECT_ID_HEADER = "Prospect ID";
 
 export const PROSPECT_FIELDS: ProspectField[] = [
   {
@@ -124,7 +124,7 @@ export const PROSPECT_FIELDS: ProspectField[] = [
     editable: true,
     aliases: ["confirmation", "confirmed", "confirmation status", "registration confirmation"],
   },
-  { key: "externalId", label: RIDGE_ID_HEADER, aliases: ["ridge id", "ridgeid", "prospect id", "lead id"] },
+  { key: "externalId", label: PROSPECT_ID_HEADER, aliases: ["prospect id", "prospectid", "lead id"] },
 ];
 
 export const FIELD_BY_KEY: Record<ProspectFieldKey, ProspectField> = Object.fromEntries(

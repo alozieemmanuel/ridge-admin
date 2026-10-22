@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   if (!registrationId) {
     return jsonWithCors(
       request,
-      { error: "This payment link isn't valid. Please use the link in your most recent email, or message the RIDGE team." },
+      { error: "This payment link isn't valid. Please use the link in your most recent email, or message the Investor Hangout team." },
       400
     );
   }
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     select: { fullName: true, regType: true, paymentStatus: true, amountPaid: true },
   });
   if (!registration) {
-    return jsonWithCors(request, { error: "We couldn't find your registration. Please message the RIDGE team." }, 404);
+    return jsonWithCors(request, { error: "We couldn't find your registration. Please message the Investor Hangout team." }, 404);
   }
 
   const settings = await getSettingsMap();

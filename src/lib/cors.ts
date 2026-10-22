@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 // Origins allowed to call the public endpoints from a browser.
 // Set PUBLIC_SITE_ORIGINS in the environment as a comma-separated list, e.g.
-//   PUBLIC_SITE_ORIGINS=https://pertinencegroup.com,https://www.pertinencegroup.com,https://theridgecircle.com
+//   PUBLIC_SITE_ORIGINS=https://pertinencegroup.com,https://www.pertinencegroup.com
 // If it is unset, it falls back to the defaults below.
 const DEFAULT_ORIGINS = [
   "https://pertinencegroup.com",
   "https://www.pertinencegroup.com",
-  "https://theridgecircle.com",
-  "https://www.theridgecircle.com",
   "http://localhost:3000",
   "http://127.0.0.1:5500",
   "http://localhost:5500",

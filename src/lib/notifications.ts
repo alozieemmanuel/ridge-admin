@@ -1,7 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
-import { renderBrandedEmail, renderReceiptEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
-import { makeProofToken, makeSeatToken } from "@/lib/proof-token";
+import { renderBrandedEmail, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
+import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
+import { defaultTemplate } from "@/lib/emailDefaults";
+import { ticketQrPng } from "@/lib/ticket";
+import type { GmailAttachment } from "@/lib/gmail";
 import type { SendEmailResult, EmailKind, ReceiptLine } from "@/lib/email";
 import { buildReceiptLines, buildLedgerLines, paidText, usdText } from "@/lib/receipt";
 import type { Registration, BrochureRequest } from "@prisma/client";
@@ -13,6 +16,7 @@ interface BuiltEmail {
   subject: string;
   html: string;
   replyTo?: string;
+  attachments?: GmailAttachment[];
 }
 
 function firstNameOf(fullName: string): string {
@@ -23,6 +27,9 @@ function firstNameOf(fullName: string): string {
 async function getTemplate(key: string) {
   const template = await prisma.emailTemplate.findUnique({ where: { key } });
   if (!template) {
+    // The invitation and reminder wording has built-in defaults, so they work before the seed has run.
+    const fallback = defaultTemplate(key);
+    if (fallback) return { key: fallback.key, subject: fallback.subject, body: fallback.body, replyTo: fallback.replyTo as string | null };
     throw new Error(
       `Email template "${key}" is missing. Run the seed script (npm run seed) to create default templates.`
     );
@@ -102,6 +109,7 @@ async function deliverAttendeeEmail(opts: {
       subject: email.subject,
       html: email.html,
       replyTo: email.replyTo,
+      attachments: email.attachments,
       tags: [
         { name: "source", value: opts.source === "BROCHURE" ? "brochure" : opts.source === "CAMPAIGN" ? "campaign" : "registration" },
         { name: "id", value: opts.id },
@@ -214,20 +222,8 @@ function registrationVars(registration: Registration, settings: Settings): Setti
 
 /** Link to the payment page for this person, with their secure token so the page can pick up where they left off. */
 export function paymentPageLink(registration: Registration, settings: Settings): string {
-  const base = (settings.payment_page_url || "https://theridgecircle.com/register").trim();
+  const base = (settings.payment_page_url || "https://example.com/register").trim();
   return `${base}${base.includes("?") ? "&" : "?"}pay=${encodeURIComponent(makeProofToken(registration.id))}`;
-}
-
-/**
- * Link to the seat selection page. The page lives on this dashboard's own
- * address. If the Settings value is still the old placeholder (or empty) that
- * built-in page is used; a custom address you set on purpose is respected.
- */
-export function seatSelectionLink(registration: Registration, settings: Settings): string {
-  const custom = (settings.seat_selection_url || "").trim();
-  const isPlaceholder = !custom || /theridgecircle\.com\/select-seat\/?$/i.test(custom);
-  const base = isPlaceholder ? `${appBaseUrl()}/select-seat` : custom;
-  return `${base}${base.includes("?") ? "&" : "?"}t=${encodeURIComponent(makeSeatToken(registration.id))}`;
 }
 
 async function buildRegistrationConfirmation(registration: Registration, settings: Settings): Promise<BuiltEmail> {
@@ -251,7 +247,7 @@ async function buildRegistrationConfirmation(registration: Registration, setting
         ],
       },
     ],
-    ctaLabel: "Contact The RIDGE Team",
+    ctaLabel: "Contact The Team",
     ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
   });
 
@@ -285,23 +281,6 @@ async function buildBrochureEmail(brochureRequest: BrochureRequest, settings: Se
     ],
     ctaLabel: "Download The Brochure",
     ctaUrl: settings.brochure_url,
-  });
-
-  return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
-}
-
-async function buildSeatInvite(registration: Registration, settings: Settings): Promise<BuiltEmail> {
-  const vars = registrationVars(registration, settings);
-  const template = await getTemplate("seat_selection_invite");
-  const subject = mergeTemplate(template.subject, vars);
-  const bodyText = mergeTemplate(template.body, vars);
-
-  const html = renderBrandedEmail({
-    eyebrow: settings.event_caption,
-    heading: subject,
-    bodyText,
-    ctaLabel: "Choose Your Seat",
-    ctaUrl: seatSelectionLink(registration, settings),
   });
 
   return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
@@ -344,7 +323,7 @@ export async function sendRegistrationEmails(registration: Registration): Promis
     source: "REGISTRATION",
     id: registration.id,
     settings,
-    subject: `New RIDGE registration: ${registration.fullName}`,
+    subject: `New registration: ${registration.fullName}`,
     replyTo: registration.email,
     rows: [
       ["Name", registration.fullName],
@@ -374,7 +353,7 @@ export async function sendBrochureEmails(brochureRequest: BrochureRequest): Prom
     source: "BROCHURE",
     id: brochureRequest.id,
     settings,
-    subject: `New RIDGE brochure request: ${brochureRequest.fullName}`,
+    subject: `New brochure request: ${brochureRequest.fullName}`,
     replyTo: brochureRequest.email,
     rows: [
       ["Name", brochureRequest.fullName],
@@ -409,25 +388,6 @@ export async function resendBrochureConfirmation(brochureRequest: BrochureReques
       build: () => buildBrochureEmail(brochureRequest, settings),
     })
   );
-}
-
-/** Admin action: the "pick your seat" invite, sent once payment is confirmed. */
-export async function sendSeatSelectionInvite(registration: Registration): Promise<void> {
-  const settings = await getSettingsMap();
-  throwIfFailed(
-    await deliverAttendeeEmail({
-      source: "REGISTRATION",
-      kind: "seat_invite",
-      id: registration.id,
-      to: registration.email,
-      build: () => buildSeatInvite(registration, settings),
-    })
-  );
-
-  await prisma.registration.update({
-    where: { id: registration.id },
-    data: { seatInviteSentAt: new Date() },
-  });
 }
 
 /** Admin action: a payment reminder for anyone not fully paid. */
@@ -523,7 +483,7 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
   const issued = registration.paymentUpdatedAt ?? new Date();
   const receiptNo = `RCT-${issued.toISOString().slice(0, 10).replace(/-/g, "")}-${registration.id.slice(-5).toUpperCase()}`;
 
-  const subject = paidInFull ? "Your RIDGE payment is confirmed" : "We've received your part payment";
+  const subject = paidInFull ? "Your payment is confirmed" : "We've received your part payment";
   const intro = paidInFull
     ? latest
       ? `Hi ${first},\n\nWe've confirmed your payment of ${latestText} for ${settings.programme_name}. Your registration is now paid in full, and your receipt is below. Thank you.\n\nOur team will send you a link to choose your seat for Day 7.`
@@ -533,8 +493,8 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
       }\n\nOnce the balance is settled we'll send you a link to choose your seat.`;
 
   const footnote = anyForeign
-    ? "Payments made in another currency are converted to USD at the rate shown, which is based on the registration fee quoted to you in that currency. Total paid is the amount confirmed by RIDGE."
-    : "Total paid is the amount confirmed by RIDGE.";
+    ? "Payments made in another currency are converted to USD at the rate shown, which is based on the registration fee quoted to you in that currency. Total paid is the amount confirmed by Investor Hangout."
+    : "Total paid is the amount confirmed by Investor Hangout.";
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -589,8 +549,8 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
   const settings = await getSettingsMap();
   const first = firstNameOf(registration.fullName);
   const when = formatLongDate(registration.payLaterDate);
-  const subject = "Thank you for registering for RIDGE 2026";
-  const bodyText = `Hi ${first},\n\nThank you for registering for RIDGE 2026.\n\nYou chose to pay later, so we will send you a reminder on ${when}. Your seat is confirmed once payment is received, so please keep that date in mind.\n\nIf you need to change the date or have any questions, reply to this email or reach us on WhatsApp.`;
+  const subject = `Thank you for registering for ${settings.programme_name}`;
+  const bodyText = `Hi ${first},\n\nThank you for registering for ${settings.programme_name}.\n\nYou chose to pay later, so we will send you a reminder on ${when}. Your seat is confirmed once payment is received, so please keep that date in mind.\n\nIf you need to change the date or have any questions, reply to this email or reach us on WhatsApp.`;
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -614,7 +574,7 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
               ],
             },
           ],
-          ctaLabel: "Contact The RIDGE Team",
+          ctaLabel: "Contact The Team",
           ctaUrl: buildWhatsAppUrl(settings.contact_whatsapp_number, settings.contact_whatsapp_message),
         }),
       }),
@@ -629,8 +589,8 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
 export async function sendPayLaterReminder(registration: Registration): Promise<void> {
   const settings = await getSettingsMap();
   const first = firstNameOf(registration.fullName);
-  const subject = "A gentle reminder about your RIDGE registration";
-  const bodyText = `Dear ${first},\n\nWe hope you are keeping well.\n\nYou asked us to remind you about your payment for ${settings.programme_name}, so here is a gentle note. We would be delighted to have you with us from ${settings.cohort_dates}.\n\nThe button below takes you back to the payment page, where you can choose the currency you prefer and the payment method that suits you. If you have already paid, thank you, and you are welcome to upload your receipt there.\n\nIf you have any questions, simply reply to this email or reach us on WhatsApp. We are always happy to help.\n\nWarm regards,\nThe RIDGE Team`;
+  const subject = "A gentle reminder about your registration";
+  const bodyText = `Dear ${first},\n\nWe hope you are keeping well.\n\nYou asked us to remind you about your payment for ${settings.programme_name}, so here is a gentle note. We would be delighted to have you with us from ${settings.cohort_dates}.\n\nThe button below takes you back to the payment page, where you can choose the currency you prefer and the payment method that suits you. If you have already paid, thank you, and you are welcome to upload your receipt there.\n\nIf you have any questions, simply reply to this email or reach us on WhatsApp. We are always happy to help.\n\nWarm regards,\nThe Investor Hangout Team`;
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -657,78 +617,121 @@ export async function sendPayLaterReminder(registration: Registration): Promise<
   });
 }
 
-/** Sent when a participant picks (or changes to) a seat on the seat selection page. */
-export async function sendSeatConfirmation(registration: Registration, seat: { label: string; tableLabel: string }): Promise<void> {
-  const settings = await getSettingsMap();
-  const first = firstNameOf(registration.fullName);
-  const subject = "Your RIDGE Day 7 seat is confirmed";
-  const bodyText = `Hi ${first},\n\nYour seat for the Day 7 Graduation and Investor's Dinner is confirmed. The details are below.\n\nIf you would like a different seat, you can change it with the button below at any time before the event.`;
+// ---------------------------------------------------------------------------
+// Invitation, reminder and entry ticket (the Attendance flow)
+// ---------------------------------------------------------------------------
 
-  throwIfFailed(
-    await deliverAttendeeEmail({
-      source: "REGISTRATION",
-      kind: "seat_confirmation",
-      id: registration.id,
-      to: registration.email,
-      build: async () => ({
-        subject,
-        html: renderBrandedEmail({
-          eyebrow: settings.event_caption,
-          heading: subject,
-          bodyText,
-          summaryBlocks: [
-            {
-              heading: "Your Seat",
-              rows: [
-                ["Guest", registration.fullName],
-                ["Seat", seat.label],
-                ["Table", seat.tableLabel],
-                ["Date", settings.day7_date],
-                ["Venue", settings.day7_venue],
-              ],
-            },
-          ],
-          ctaLabel: "Change My Seat",
-          ctaUrl: seatSelectionLink(registration, settings),
-        }),
-      }),
-    })
-  );
+/** The unique link a guest uses to see their details and reserve their seat; afterwards it shows their ticket. */
+export function reserveLink(registration: Pick<Registration, "id">): string {
+  return `${appBaseUrl()}/reserve?t=${encodeURIComponent(makeReserveToken(registration.id))}`;
 }
 
-/** Sent when a participant chooses to attend Day 7 online instead of taking a seat. */
-export async function sendOnlineConfirmation(registration: Registration): Promise<void> {
+/** The event details that must be filled in (Settings) before any invitation goes out. */
+export function missingEventDetails(settings: Settings): string[] {
+  const missing: string[] = [];
+  if (!settings.event_date?.trim()) missing.push("event date");
+  if (!settings.event_venue?.trim()) missing.push("venue");
+  return missing;
+}
+
+async function buildInvitation(
+  registration: Registration,
+  settings: Settings,
+  kind: "invitation" | "reminder"
+): Promise<BuiltEmail> {
+  const link = reserveLink(registration);
+  const vars = { ...registrationVars(registration, settings), reserve_link: link };
+  const template = await getTemplate(kind === "reminder" ? "reservation_reminder" : "invitation");
+  const subject = mergeTemplate(template.subject, vars);
+  const bodyText = mergeTemplate(template.body, vars);
+
+  const html = renderBrandedEmail({
+    eyebrow: settings.event_caption || "By invitation only",
+    heading: subject,
+    bodyText,
+    summaryBlocks: [
+      {
+        heading: "The Event",
+        rows: [
+          ["Event", settings.programme_name],
+          ["Date", settings.event_date],
+          ["Time", settings.event_time || "To be announced"],
+          ["Venue", settings.event_venue],
+        ],
+      },
+    ],
+    ctaLabel: "Reserve My Seat",
+    ctaUrl: link,
+  });
+
+  return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
+}
+
+/**
+ * Emails a guest their unique reserve link. kind "reminder" uses the reminder wording, for people who were
+ * invited but have not reserved yet. Throws (with the reason) if the send fails; the outcome is recorded either way.
+ */
+export async function sendInvitation(registration: Registration, kind: "invitation" | "reminder" = "invitation"): Promise<void> {
   const settings = await getSettingsMap();
-  const first = firstNameOf(registration.fullName);
-  const subject = "You are attending RIDGE Day 7 online";
-  const bodyText = `Hi ${first},\n\nThank you for letting us know. We have noted that you will join the Day 7 Graduation and Investor's Dinner online. We will send you the joining details before the day.\n\nIf your plans change and you would like a seat at the venue instead, you can choose one with the button below.`;
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind,
+      id: registration.id,
+      to: registration.email,
+      build: () => buildInvitation(registration, settings, kind),
+    })
+  );
+
+  await prisma.registration.update({
+    where: { id: registration.id },
+    data: { inviteSentAt: new Date() },
+  });
+}
+
+/**
+ * Emails the entry ticket (designed like a ticket, with a QR code and the ticket code) to a guest who has reserved.
+ * Throws if the guest has no ticket yet or the send fails. The seat stays reserved either way.
+ */
+export async function sendTicket(registration: Registration): Promise<void> {
+  const code = registration.ticketCode;
+  if (!code || !registration.reservedAt) {
+    throw new Error("This guest has no ticket yet. They need to reserve a seat first.");
+  }
+  const settings = await getSettingsMap();
 
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
-      kind: "online_confirmation",
+      kind: "ticket",
       id: registration.id,
       to: registration.email,
-      build: async () => ({
-        subject,
-        html: renderBrandedEmail({
-          eyebrow: settings.event_caption,
-          heading: subject,
-          bodyText,
-          summaryBlocks: [
-            {
-              heading: "Your Choice",
-              rows: [
-                ["Guest", registration.fullName],
-                ["Attending", "Online"],
-                ["Date", settings.day7_date],
-              ],
-            },
-          ],
-          ctaLabel: "Choose A Seat Instead",
-          ctaUrl: seatSelectionLink(registration, settings),
-        }),
-      }),
+      build: async () => {
+        const subject = `Your ticket: ${settings.programme_name}`;
+        const contact = [settings.contact_email?.trim(), settings.contact_phone?.trim()].filter(Boolean).join(" or ");
+        const html = renderTicketEmail({
+          eventName: settings.programme_name,
+          guestName: registration.fullName,
+          ticketCode: code,
+          date: settings.event_date,
+          time: settings.event_time,
+          venue: settings.event_venue,
+          intro: `Hi ${firstNameOf(registration.fullName)},\n\nThank you for confirming. Your seat at the ${settings.programme_name} is reserved, and your entry ticket is below.`,
+          contactLine: contact ? `Questions? You can reach us on ${contact}.` : undefined,
+          qrCid: "ticket-qr",
+        });
+        return {
+          subject,
+          html,
+          replyTo: resolveReplyTo("{{contact_email}}", settings),
+          attachments: [{ filename: "ticket-qr.png", content: await ticketQrPng(code), contentType: "image/png", cid: "ticket-qr" }],
+        };
+      },
     })
   );
+
+  await prisma.registration.update({
+    where: { id: registration.id },
+    data: { ticketSentAt: new Date() },
+  });
 }

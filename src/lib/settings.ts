@@ -1,42 +1,21 @@
 import { prisma } from "@/lib/prisma";
 
-// These mirror the CONFIG block from the original code.gs. They're seeded once
-// (see prisma/seed.ts) and from then on live in the Setting table, editable
-// from /admin/settings — no redeploy needed to change dates, fees, or bank
-// details ever again.
+// Business-config values for the event. They are seeded once (see prisma/seed.ts) and from then on
+// live in the Setting table, editable from /admin/settings, so a date, venue or seat limit can be
+// changed without a redeploy. Every key is also available in email templates as {{key}}.
 export const DEFAULT_SETTINGS: Record<string, string> = {
-  programme_name: "RIDGE — Executive Wealth Creation Programme",
-  event_caption: "Executive Wealth Creation Programme",
-  cohort_dates: "8–14 November 2026",
-  sender_name: "RIDGE 2026",
-  registration_fee: "USD $2,000 (Early Bird)",
-  late_registration_fee: "USD $3,000",
-  // Plain numbers (no currency symbol/commas) used to auto-derive a
-  // registration's payment status when an admin confirms an amount paid.
-  registration_fee_amount: "2000",
-  late_registration_fee_amount: "3000",
-  early_bird_deadline: "20th October 2026",
-  brochure_url: "https://pertinencegroup.com/ridge/RIDGE-Brochure-2026.pdf",
-  payment_account_name: "PERTINENCE PROPERTIES LIMITED",
-  payment_bank_name: "ZENITH BANK",
-  payment_account_number: "5076183938",
-  currency: "USD",
-  contact_email: "ridge@pertinencegroup.com",
-  notification_email: "ridge@pertinencegroup.com",
-  contact_whatsapp_number: "2348149774237",
-  contact_whatsapp_message: "Hi RIDGE team, I'd like some help with my registration.",
-  // Seat picker page. Left as the old placeholder address it is ignored and the
-  // built-in page on this dashboard's own address (/select-seat) is used instead.
-  seat_selection_url: "https://theridgecircle.com/select-seat",
-  // The public payment page the reminder emails send people to. The person's
-  // signed token is added as ?pay=... so the page can pick up where they left off.
-  payment_page_url: "https://theridgecircle.com/register",
-  // Rates used when recording a payment made in another currency. They match the fees shown
-  // on the register page ($2,000 = N2,800,000 = C$2,800). Editable per payment in the dialog.
-  rate_ngn_per_usd: "1400",
-  rate_cad_per_usd: "1.4",
-  day7_date: "Saturday 14th November, 2026",
-  day7_venue: "Marriott Hotel",
+  programme_name: "Investor Breakfast Hangout",
+  event_caption: "By invitation only",
+  sender_name: "Investor Hangout",
+  // Shown on invitations, tickets and the reserve page. Invitations are blocked until the date and venue are set.
+  event_date: "",
+  event_time: "",
+  event_venue: "",
+  // How many seats can be reserved. A reservation is refused once this many are taken. Empty = no limit.
+  seat_capacity: "100",
+  // Where guests are told to send questions (shown on the reserve page and in emails). Also the default Reply-To.
+  contact_email: "",
+  contact_phone: "",
 };
 
 export async function getSettingsMap(): Promise<Record<string, string>> {
@@ -48,6 +27,7 @@ export async function getSettingsMap(): Promise<Record<string, string>> {
   return map;
 }
 
+/** Used only by the switched-off registration/WhatsApp emails (see src/lib/modules.ts). */
 export function buildWhatsAppUrl(number: string, message: string): string {
   return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
 }

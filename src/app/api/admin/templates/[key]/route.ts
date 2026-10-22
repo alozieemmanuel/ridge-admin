@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { updateTemplateSchema } from "@/lib/validation";
+import { defaultTemplate } from "@/lib/emailDefaults";
 
 export const runtime = "nodejs";
 
@@ -31,19 +32,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     );
   }
 
-  const existing = await prisma.emailTemplate.findUnique({ where: { key } });
-  if (!existing) {
+  if (!defaultTemplate(key)) {
     return NextResponse.json({ error: "Template not found." }, { status: 404 });
   }
 
-  const template = await prisma.emailTemplate.update({
-    where: { key },
-    data: {
-      subject: parsed.data.subject,
-      body: parsed.data.body,
-      replyTo: parsed.data.replyTo || null,
-    },
-  });
+  const data = { subject: parsed.data.subject, body: parsed.data.body, replyTo: parsed.data.replyTo || null };
+  const template = await prisma.emailTemplate.upsert({ where: { key }, update: data, create: { key, ...data } });
 
   return NextResponse.json({ result: "success", template });
 }

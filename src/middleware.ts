@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { SESSION_COOKIE_NAME } from "@/lib/session-constants";
+import { DISABLED_API_PREFIXES, HIDDEN_ADMIN_PAGES, startsWithAny } from "@/lib/modules";
 
 // Public paths under /admin and /api/admin that must NOT require a session.
 const PUBLIC_ADMIN_PATHS = new Set(["/admin/login", "/api/admin/login"]);
@@ -15,6 +16,14 @@ function getSecretKey() {
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Switched-off modules (see src/lib/modules.ts): their APIs answer 404 and their pages go back to the Overview.
+  if (startsWithAny(pathname, DISABLED_API_PREFIXES) || /^\/api\/admin\/registrations\/[^/]+\/payment$/.test(pathname)) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
+  if (startsWithAny(pathname, HIDDEN_ADMIN_PAGES)) {
+    return NextResponse.redirect(new URL("/admin", request.url));
+  }
 
   if (PUBLIC_ADMIN_PATHS.has(pathname)) {
     return NextResponse.next();
@@ -52,5 +61,11 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/admin/:path*"],
+  matcher: [
+    "/admin/:path*",
+    "/api/admin/:path*",
+    "/api/public/:path*",
+    "/api/webhooks/whatsapp",
+    "/api/cron/:path*",
+  ],
 };

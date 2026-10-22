@@ -10,6 +10,7 @@ const config: Config = {
         pagebg: "rgb(var(--c-pagebg) / <alpha-value>)",
         cardbg: "rgb(var(--c-cardbg) / <alpha-value>)",
         inputbg: "rgb(var(--c-inputbg) / <alpha-value>)",
+        tint: "rgb(var(--c-tint) / <alpha-value>)",
         fg: "rgb(var(--c-fg) / <alpha-value>)",
         muted: "rgb(var(--c-muted) / <alpha-value>)",
         border: "rgb(var(--c-border) / <alpha-value>)",
