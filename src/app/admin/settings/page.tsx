@@ -67,7 +67,7 @@ function DangerZone() {
     <div className="border border-red-400/40 rounded-xl p-6 max-w-2xl">
       <h3 className="text-red-400 text-sm font-semibold mb-1">Danger zone</h3>
       <p className="text-sm text-muted mb-4">
-        Permanently delete data. This can&apos;t be undone and affects what every admin sees. Export the CSV from the Registrations page first.
+        Permanently delete data. This can&apos;t be undone and affects what every admin sees. Export the CSV from the Contacts page first.
         Admin accounts and your current event details and email templates are not touched.
       </p>
 

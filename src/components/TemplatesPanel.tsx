@@ -16,7 +16,7 @@ const LABELS: Record<string, string> = {
 
 // Where each email is sent from, so admins know where to find the send button.
 const WHEN_SENT: Record<string, string> = {
-  invitation: "Sent from Attendance (to everyone not yet invited) or from a guest's page in Registrations. The Reserve My Seat button is added for you.",
+  invitation: "Sent from Attendance (to everyone not yet invited) or from a guest's page in Contacts. The Reserve My Seat button is added for you.",
   reservation_reminder: "Sent from Attendance (to guests who haven't reserved yet) or from a guest's page. The Reserve My Seat button is added for you.",
 };
 

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
 import { buildPeople, isImportField, parseCsvText, suggestMapping, type ImportField } from "@/lib/csvImport";
+import { saveImportedPeople } from "@/lib/contactSave";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -80,63 +81,15 @@ export async function POST(request: NextRequest) {
   if (body.dryRun === true || !body.mapping) return NextResponse.json({ result: "preview", ...preview });
 
   // ---- Save ----
-  let added = 0;
-  let updated = 0;
-  const CHUNK = 500;
-  for (let i = 0; i < newPeople.length; i += CHUNK) {
-    const res = await prisma.registration.createMany({
-      skipDuplicates: true,
-      data: newPeople.slice(i, i + CHUNK).map((p) => ({
-        fullName: p.fullName,
-        email: p.email,
-        phone: p.phone,
-        followUpStatus: p.followUpStatus ?? "NOT_CONTACTED",
-        extra: Object.keys(p.extra).length ? p.extra : undefined,
-      })),
-    });
-    added += res.count;
-  }
-
-  // Call feedback that came in with the file becomes the first entry in each guest's follow-up log.
-  const withFeedback = newPeople.filter((p) => p.callFeedback);
-  if (withFeedback.length) {
-    const ids = await prisma.registration.findMany({ where: { email: { in: withFeedback.map((p) => p.email) } }, select: { id: true, email: true } });
-    const idByEmail = new Map(ids.map((r) => [r.email, r.id]));
-    for (let i = 0; i < withFeedback.length; i += CHUNK) {
-      await prisma.followUpNote.createMany({
-        data: withFeedback.slice(i, i + CHUNK).flatMap((p) => {
-          const registrationId = idByEmail.get(p.email);
-          return registrationId ? [{ registrationId, body: p.callFeedback!, status: p.followUpStatus, authorName: "Imported from CSV" }] : [];
-        }),
-      });
-    }
-  }
-
-  if (onDuplicate === "update") {
-    for (const p of dupPeople) {
-      const id = existingByEmail.get(p.email)!;
-      await prisma.registration.update({
-        where: { id },
-        data: {
-          fullName: p.fullName,
-          ...(p.phone ? { phone: p.phone } : {}),
-          ...(p.followUpStatus ? { followUpStatus: p.followUpStatus } : {}),
-          ...(Object.keys(p.extra).length ? { extra: p.extra } : {}),
-        },
-      });
-      if (p.callFeedback) {
-        await prisma.followUpNote.create({ data: { registrationId: id, body: p.callFeedback, status: p.followUpStatus, authorName: "Imported from CSV" } });
-      }
-      updated++;
-    }
-  }
+  const saved = await saveImportedPeople(people, onDuplicate, { author: "Imported from CSV", overwriteStatus: true });
+  const { added, updated } = saved;
 
   await logAdminAction(
     session,
     {
       action: "participants.import",
       entityType: "data",
-      details: { rows: parsed.rows.length, added, updated, skipped: onDuplicate === "skip" ? dupPeople.length : 0, problems: problems.length },
+      details: { rows: parsed.rows.length, added, updated, skipped: saved.skipped, problems: problems.length },
     },
     request
   );
@@ -145,7 +98,7 @@ export async function POST(request: NextRequest) {
     result: "imported",
     added,
     updated,
-    skipped: onDuplicate === "skip" ? dupPeople.length : 0,
+    skipped: saved.skipped,
     problemCount: problems.length,
     problems: problems.slice(0, 50),
   });

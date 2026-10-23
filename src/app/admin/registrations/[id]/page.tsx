@@ -83,6 +83,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
   // The follow-up status the admin has just clicked and is writing feedback for. null = the box is closed.
   const [logging, setLogging] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +104,13 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
   useEffect(() => {
     load();
   }, [load]);
+
+  // The notice stays on screen for a few seconds, wherever the admin has scrolled to.
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(() => setMessage(null), message.ok ? 4000 : 9000);
+    return () => clearTimeout(t);
+  }, [message]);
 
   async function call(target: string, init: RequestInit, key: string): Promise<{ ok: boolean; json: Record<string, unknown> }> {
     setBusy(key);
@@ -170,7 +178,9 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
     if (!p) return;
     try {
       await navigator.clipboard.writeText(p.reserveLink);
-      setMessage({ text: "Link copied.", ok: true });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+      setMessage({ text: "Reserve link copied.", ok: true });
     } catch {
       window.prompt("Copy this link:", p.reserveLink);
     }
@@ -182,8 +192,18 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
   return (
     <>
       <Link href="/admin/registrations" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-fg mb-5">
-        <span aria-hidden>←</span> Back to registrations
+        <span aria-hidden>←</span> Back to contacts
       </Link>
+
+      {message && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-5 right-5 z-50 max-w-sm rounded-xl border px-4 py-3 text-sm shadow-lg bg-cardbg ${message.ok ? "border-gold" : "border-red-400/60 text-red-400"}`}
+        >
+          {message.text}
+        </div>
+      )}
 
       {error && !p && <p className="text-sm text-red-400">{error}</p>}
       {!p && !error && <p className="text-muted">Loading…</p>}
@@ -203,15 +223,67 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
             </div>
           </div>
 
-          {message && (
-            <p className={`text-sm mb-5 rounded-lg border px-4 py-2.5 ${message.ok ? "border-gold/50 bg-gold/10" : "border-red-400/50 text-red-400"}`} role="status">
-              {message.text}
-            </p>
-          )}
-
           <div className="grid lg:grid-cols-3 gap-6 items-start">
-            {/* Left, wide: the follow-up and everything that has happened */}
+            {/* Left, wide: contact, then the follow-up, then everything that has happened */}
             <div className="lg:col-span-2 space-y-6">
+              <Card
+                title="Contact"
+                aside={
+                  !editing && (
+                    <button
+                      onClick={() => {
+                        setForm({ fullName: p.fullName, email: p.email, phone: p.phone });
+                        setEditing(true);
+                      }}
+                      className="text-xs text-goldlight hover:underline"
+                    >
+                      Edit
+                    </button>
+                  )
+                }
+              >
+                {!editing ? (
+                  <dl>
+                    <Row label="Name">{p.fullName}</Row>
+                    <Row label="Email">
+                      <a href={`mailto:${p.email}`} className="text-goldlight underline">
+                        {p.email}
+                      </a>
+                    </Row>
+                    <Row label="Phone">
+                      {p.phone ? (
+                        <a href={`tel:${p.phone}`} className="text-goldlight underline">
+                          {p.phone}
+                        </a>
+                      ) : null}
+                    </Row>
+                  </dl>
+                ) : (
+                  <div className="space-y-3">
+                    {(
+                      [
+                        ["fullName", "Full name"],
+                        ["email", "Email address"],
+                        ["phone", "Phone number"],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label key={key} className="block">
+                        <span className="block text-xs uppercase tracking-wider text-muted mb-1.5">{label}</span>
+                        <input value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} className={inputClass} />
+                      </label>
+                    ))}
+                    <div className="flex gap-3 pt-1">
+                      <button onClick={() => setEditing(false)} className={ghostButton}>
+                        Cancel
+                      </button>
+                      <button disabled={busy === "patch"} className={primaryButton} onClick={saveDetails}>
+                        {busy === "patch" ? "Saving…" : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Card>
+
               <Card title="Follow-up">
                 <p className="text-sm text-muted mb-3">Pick the outcome of your call. You can add what was said, and it is saved here with the time and your name.</p>
                 <div className="flex flex-wrap gap-2">
@@ -314,66 +386,8 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
               </Card>
             </div>
 
-            {/* Right: contact, then the invitation, seat and ticket */}
+            {/* Right: the invitation, seat and ticket */}
             <div className="space-y-6">
-              <Card
-                title="Contact"
-                aside={
-                  !editing && (
-                    <button
-                      onClick={() => {
-                        setForm({ fullName: p.fullName, email: p.email, phone: p.phone });
-                        setEditing(true);
-                      }}
-                      className="text-xs text-goldlight hover:underline"
-                    >
-                      Edit
-                    </button>
-                  )
-                }
-              >
-                {!editing ? (
-                  <dl>
-                    <Row label="Name">{p.fullName}</Row>
-                    <Row label="Email">
-                      <a href={`mailto:${p.email}`} className="text-goldlight underline">
-                        {p.email}
-                      </a>
-                    </Row>
-                    <Row label="Phone">
-                      {p.phone ? (
-                        <a href={`tel:${p.phone}`} className="text-goldlight underline">
-                          {p.phone}
-                        </a>
-                      ) : null}
-                    </Row>
-                  </dl>
-                ) : (
-                  <div className="space-y-3">
-                    {(
-                      [
-                        ["fullName", "Full name"],
-                        ["email", "Email address"],
-                        ["phone", "Phone number"],
-                      ] as const
-                    ).map(([key, label]) => (
-                      <label key={key} className="block">
-                        <span className="block text-xs uppercase tracking-wider text-muted mb-1.5">{label}</span>
-                        <input value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} className={inputClass} />
-                      </label>
-                    ))}
-                    <div className="flex gap-3 pt-1">
-                      <button onClick={() => setEditing(false)} className={ghostButton}>
-                        Cancel
-                      </button>
-                      <button disabled={busy === "patch"} className={primaryButton} onClick={saveDetails}>
-                        {busy === "patch" ? "Saving…" : "Save"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </Card>
-
               <Card title="Invitation, seat and ticket">
                 <dl className="mb-4">
                   <Row label="Invitation sent">{p.inviteSentAt ? formatDateTime(p.inviteSentAt) : "Not yet"}</Row>
@@ -389,13 +403,13 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                     </button>
                   )}
                   {!reserved && (
-                    <button className={ghostButton} onClick={copyLink}>
-                      Copy reserve link
+                    <button className={`${ghostButton} ${copied ? "border-gold bg-gold/15" : ""}`} onClick={copyLink} aria-live="polite">
+                      {copied ? "Copied ✓" : "Copy reserve link"}
                     </button>
                   )}
                   {!reserved && (
                     <button className={ghostButton} disabled={busy !== null} onClick={() => act("reserve", "Seat reserved and ticket emailed.", `Reserve a seat for ${p.fullName} and email them their ticket?`)}>
-                      Reserve for them
+                      {busy === "reserve" ? "Reserving…" : "Reserve for them"}
                     </button>
                   )}
                   {reserved && (
@@ -405,12 +419,12 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                   )}
                   {reserved && !p.checkedInAt && (
                     <button className={ghostButton} disabled={busy !== null} onClick={() => act("check_in", "Checked in.")}>
-                      Check in
+                      {busy === "check_in" ? "Checking in…" : "Check in"}
                     </button>
                   )}
                   {reserved && p.checkedInAt && (
                     <button className={ghostButton} disabled={busy !== null} onClick={() => act("undo_check_in", "Check-in undone.")}>
-                      Undo check-in
+                      {busy === "undo_check_in" ? "Undoing…" : "Undo check-in"}
                     </button>
                   )}
                   {reserved && !p.checkedInAt && (
@@ -419,7 +433,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                       disabled={busy !== null}
                       onClick={() => act("release", "Reservation cancelled.", `Cancel ${p.fullName}'s reservation? Their ticket stops working and the seat is free again.`)}
                     >
-                      Cancel reservation
+                      {busy === "release" ? "Cancelling…" : "Cancel reservation"}
                     </button>
                   )}
                 </div>

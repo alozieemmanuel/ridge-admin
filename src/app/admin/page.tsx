@@ -92,8 +92,8 @@ export default function OverviewPage() {
             <div className="border border-gold/50 bg-gold/10 rounded-xl p-5 mb-6 text-sm">
               <p className="font-semibold mb-1">Start by loading your guest list</p>
               <p className="text-muted">
-                Go to <Link href="/admin/registrations" className="text-goldlight underline">Registrations</Link> and use <em>Import CSV</em> to upload the list you
-                have offline. These numbers fill in as soon as it is loaded.
+                Go to <Link href="/admin/registrations" className="text-goldlight underline">Contacts</Link> and use <em>Connect live sheet</em> or <em>Import CSV</em> to load your
+                list. These numbers fill in as soon as it is loaded.
               </p>
             </div>
           )}

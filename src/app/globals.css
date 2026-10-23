@@ -100,7 +100,18 @@ select {
   background-color: rgba(132, 204, 22, 0.8);
 }
 
-/* The logo file is the dark version. On the dark theme it is turned white so it stays visible. */
+/* Two logo files: the dark one on the light theme, the white one on the dark theme. */
+.logo-dark {
+  display: none;
+}
+:root[data-theme="dark"] .logo-light {
+  display: none;
+}
+:root[data-theme="dark"] .logo-dark {
+  display: inline;
+}
+
+/* Only used if the white logo file can't be loaded: the dark logo is turned white instead. */
 :root[data-theme="dark"] .logo-adaptive {
   filter: brightness(0) invert(1);
 }

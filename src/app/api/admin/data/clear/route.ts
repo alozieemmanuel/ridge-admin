@@ -5,13 +5,14 @@ import { logAdminAction } from "@/lib/audit";
 import { clearDataSchema } from "@/lib/validation";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
 import { EDITABLE_TEMPLATE_KEYS } from "@/lib/emailDefaults";
+import { SHEET_KEYS } from "@/lib/contactSheet";
 
 export const runtime = "nodejs";
 
 /**
  * Bulk delete (owner only). Requires { target, confirm: "DELETE" } in the body.
  *
- *   registrations  the whole guest list, with their follow-up logs, email history and tickets.
+ *   registrations  the whole contact list, with their follow-up logs, email history and tickets.
  *   everything     the guest list AND everything left over from the previous event: the activity log, campaigns,
  *                  email history, brochure requests, prospects, payments, WhatsApp conversations, seats and tables,
  *                  settings and email templates that belong to the old event.
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Everything. Children first, so no foreign key ever blocks the delete; all or nothing.
-  const keepSettings = Object.keys(DEFAULT_SETTINGS).concat("notification_email");
+  const keepSettings = Object.keys(DEFAULT_SETTINGS).concat("notification_email", ...SHEET_KEYS);
   const [, , , , , , , , , , , guests, , , oldSettings, oldValues, oldTemplates] = await prisma.$transaction([
     prisma.emailEvent.deleteMany({}),
     prisma.paymentRecord.deleteMany({}),

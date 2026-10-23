@@ -11,3 +11,10 @@ export const EVENT_NAME = "Investor Breakfast Hangout";
  */
 export const LOGO_URL =
   process.env.NEXT_PUBLIC_LOGO_URL || "https://pertinencegroup.com/wp-content/uploads/2026/04/Pertinence-Group-Dark-scaled.png";
+
+/** The white version of the logo, shown instead of LOGO_URL when the dashboard is in dark mode. Not used in emails. */
+export const LOGO_WHITE_URL =
+  process.env.NEXT_PUBLIC_LOGO_WHITE_URL || "https://pertinencegroup.com/wp-content/uploads/2026/04/Pertinence-Group-White-scaled.png";
+
+/** The site icon (browser tab, bookmarks, phone home screen). */
+export const ICON_URL = process.env.NEXT_PUBLIC_ICON_URL || "https://pertinencegroup.com/wp-content/uploads/2022/04/cropped-download-6.png";

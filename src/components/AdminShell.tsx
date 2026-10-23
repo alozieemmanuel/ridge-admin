@@ -16,7 +16,7 @@ type IconName = "overview" | "people" | "ticket" | "mail" | "settings" | "log" |
 
 const NAV: { href: string; label: string; icon: IconName; ownerOnly?: boolean }[] = [
   { href: "/admin", label: "Overview", icon: "overview" },
-  { href: "/admin/registrations", label: "Registrations", icon: "people" },
+  { href: "/admin/registrations", label: "Contacts", icon: "people" },
   { href: "/admin/attendance", label: "Attendance", icon: "ticket" },
   { href: "/admin/campaigns", label: "Campaigns", icon: "mail" },
   { href: "/admin/settings", label: "Settings", icon: "settings" },

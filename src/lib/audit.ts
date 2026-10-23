@@ -19,6 +19,8 @@ export type AuditAction =
   | "registration.delete"
   | "registration.export"
   | "participants.import"
+  | "contacts.sheet_link"
+  | "contacts.sheet_sync"
   | "participant.update"
   | "participant.note"
   | "participant.note_delete"

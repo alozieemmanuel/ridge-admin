@@ -4,10 +4,11 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import ImportDialog from "@/components/ImportDialog";
+import SheetSyncDialog from "@/components/SheetSyncDialog";
 import Pagination from "@/components/Pagination";
 import { Pill, PageHeader, formatDate, ghostButton, inputClass, primaryButton } from "@/components/ui";
 import { FOLLOW_UP_STATUSES, followUpLabel, followUpTone } from "@/lib/followUp";
-import { cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { cacheDeletePrefix, cacheGet, cacheSet, getStoredPageSize, storePageSize } from "@/lib/clientCache";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 
 interface Row {
@@ -40,6 +41,8 @@ function RegistrationsInner() {
   const [counts, setCounts] = useState<Response["counts"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetLinked, setSheetLinked] = useState(false);
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -91,18 +94,53 @@ function RegistrationsInner() {
   }, [load]);
   useAutoRefresh(() => load(true), 30_000);
 
+  // With a live sheet linked, the list is synced when this page opens and every 5 minutes while it stays open.
+  const syncSheet = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/registrations/sheet", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ auto: true }) });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.result === "synced" && (json.added || json.updated)) {
+        cacheDeletePrefix("/api/admin/registrations?");
+        cacheDeletePrefix("/api/admin/overview");
+        await load(true);
+      }
+    } catch {
+      // the next run tries again
+    }
+  }, [load]);
+  const syncSheetRef = useRef(syncSheet);
+  useEffect(() => {
+    syncSheetRef.current = syncSheet;
+  }, [syncSheet]);
+  useEffect(() => {
+    fetch("/api/admin/registrations/sheet", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        const linked = Boolean(data.url);
+        setSheetLinked(linked);
+        if (linked) void syncSheetRef.current();
+      })
+      .catch(() => {});
+  }, []);
+  useAutoRefresh(() => {
+    if (sheetLinked) void syncSheet();
+  }, 300_000);
+
   const anyFilter = Boolean(query || followUp || seat);
 
   return (
     <AdminShell active="/admin/registrations">
       <PageHeader
-        title="Registrations"
-        subtitle={`${(counts?.all ?? 0).toLocaleString()} guests on the list. Click a guest to open their full record.`}
+        title="Contacts"
+        subtitle={`${(counts?.all ?? 0).toLocaleString()} contacts on the list. Click a contact to open their full record.`}
         actions={
           <>
             <a href="/api/admin/registrations/export" className={ghostButton}>
               Export CSV
             </a>
+            <button onClick={() => setSheetOpen(true)} className={ghostButton}>
+              {sheetLinked ? "Live sheet" : "Connect live sheet"}
+            </button>
             <button onClick={() => setImporting(true)} className={primaryButton}>
               Import CSV
             </button>
@@ -111,7 +149,7 @@ function RegistrationsInner() {
       />
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email or phone" className={`${inputClass} sm:max-w-md`} aria-label="Search guests" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email or phone" className={`${inputClass} sm:max-w-md`} aria-label="Search contacts" />
         <select
           value={followUp}
           onChange={(e) => {
@@ -175,9 +213,13 @@ function RegistrationsInner() {
                       "Nobody matches that."
                     ) : (
                       <>
-                        No guests yet.{" "}
+                        No contacts yet.{" "}
+                        <button onClick={() => setSheetOpen(true)} className="text-goldlight underline">
+                          Connect your live sheet
+                        </button>{" "}
+                        or{" "}
                         <button onClick={() => setImporting(true)} className="text-goldlight underline">
-                          Import your CSV
+                          import a CSV
                         </button>{" "}
                         to get started.
                       </>
@@ -233,6 +275,18 @@ function RegistrationsInner() {
       </div>
 
       {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
+      {sheetOpen && (
+        <SheetSyncDialog
+          onClose={() => {
+            setSheetOpen(false);
+            fetch("/api/admin/registrations/sheet", { cache: "no-store" })
+              .then((res) => res.json())
+              .then((data) => setSheetLinked(Boolean(data.url)))
+              .catch(() => {});
+          }}
+          onSynced={() => load(true)}
+        />
+      )}
     </AdminShell>
   );
 }

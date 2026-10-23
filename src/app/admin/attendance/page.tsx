@@ -174,7 +174,7 @@ function AttendanceInner() {
         <h3 className="font-serif text-xl mb-1">Invitations</h3>
         <p className="text-sm text-muted mb-4">
           Every guest has their own link. When they open it they see their details and press <em>Reserve My Seat</em>, and their ticket is emailed to them. You can also send to a single guest from their
-          page in <Link href="/admin/registrations" className="text-goldlight underline">Registrations</Link>.
+          page in <Link href="/admin/registrations" className="text-goldlight underline">Contacts</Link>.
         </p>
         {bulk ? (
           <div className="border border-gold/40 rounded-xl p-4">
