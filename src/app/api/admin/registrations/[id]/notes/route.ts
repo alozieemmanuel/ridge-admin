@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -8,8 +8,9 @@ export const runtime = "nodejs";
 /** Deletes one follow-up entry (owner only). Body: { noteId: string }. The deletion itself is written to the guest's activity. */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
-  if (!session || session.role !== "OWNER") return NextResponse.json({ error: "Only an owner can delete follow-up entries." }, { status: 403 });
+  const ctx = await requireEvent(request, { owner: true });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   let raw: { noteId?: unknown };
   try {
@@ -18,7 +19,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   const noteId = typeof raw.noteId === "string" ? raw.noteId : "";
-  const note = await prisma.followUpNote.findFirst({ where: { id: noteId, registrationId: id }, include: { registration: { select: { fullName: true } } } });
+  const note = await prisma.followUpNote.findFirst({ where: { id: noteId, registrationId: id, registration: { eventId: event.id } }, include: { registration: { select: { fullName: true } } } });
   if (!note) return NextResponse.json({ error: "Entry not found." }, { status: 404 });
 
   await prisma.followUpNote.delete({ where: { id: noteId } });

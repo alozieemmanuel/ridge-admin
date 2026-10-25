@@ -6,6 +6,7 @@ import { getCapacity, reserveSeat } from "@/lib/reservations";
 import { sendTicket } from "@/lib/notifications";
 import { ticketQrSvg } from "@/lib/ticket";
 import { logAudit } from "@/lib/audit";
+import { termsOf } from "@/lib/eventTheme";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,18 +14,24 @@ export const dynamic = "force-dynamic";
 const BAD_LINK = "This link isn't valid. Please use the link in your most recent invitation email, or contact the team.";
 
 async function view(registrationId: string) {
-  const [r, settings, capacity, taken] = await Promise.all([
-    prisma.registration.findUnique({ where: { id: registrationId } }),
-    getSettingsMap(),
-    getCapacity(),
-    prisma.registration.count({ where: { reservedAt: { not: null } } }),
-  ]);
+  const r = await prisma.registration.findUnique({ where: { id: registrationId } });
   if (!r) return null;
+  const [settings, capacity, taken, brand] = await Promise.all([
+    getSettingsMap(r.eventId),
+    getCapacity(r.eventId),
+    prisma.registration.count({ where: { eventId: r.eventId, reservedAt: { not: null } } }),
+    prisma.event.findUnique({ where: { id: r.eventId }, select: { brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true } }),
+  ]);
   const reserved = Boolean(r.reservedAt && r.ticketCode);
   return {
     guest: { fullName: r.fullName, email: r.email, phone: r.phone || null },
     event: {
       name: settings.programme_name,
+      brandName: brand?.brandName || null,
+      color: brand?.color || null,
+      logoUrl: brand?.logoUrl || null,
+      logoDarkUrl: brand?.logoDarkUrl || null,
+      action: termsOf(brand?.terms).action,
       caption: settings.event_caption,
       date: settings.event_date,
       time: settings.event_time,
@@ -35,7 +42,7 @@ async function view(registrationId: string) {
     reserved,
     full: !reserved && capacity !== null && taken >= capacity,
     ticket: reserved
-      ? { code: r.ticketCode, qrSvg: await ticketQrSvg(r.ticketCode!), checkedIn: Boolean(r.checkedInAt) }
+      ? { code: r.ticketCode, qrSvg: await ticketQrSvg(r.ticketCode!, settings.event_slug), checkedIn: Boolean(r.checkedInAt) }
       : null,
   };
 }
@@ -70,7 +77,7 @@ export async function POST(request: NextRequest) {
   if (!result.alreadyReserved) {
     const r = result.registration;
     const actor = { adminId: null, name: `${r.fullName} (guest)`, email: r.email };
-    const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName };
+    const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName, eventId: r.eventId };
     await logAudit(actor, { ...entry, action: "participant.reserve", details: { by: "guest" } }, request);
     try {
       await sendTicket(r);

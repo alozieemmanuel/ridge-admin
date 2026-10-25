@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { FOLLOW_UP_VALUES, isFollowUpStatus } from "@/lib/followUp";
+import { requireEvent } from "@/lib/event";
 
 export const runtime = "nodejs";
 
 /**
- * The guest list. Filters: search (name, email, phone), followUp (one status, or "CONTACTED" for anyone already called), seat
+ * The event's contact list. Filters: search (name, email, phone), followUp (one status, or "CONTACTED" for anyone already called), seat
  * ("RESERVED" | "NOT_RESERVED" | "INVITED" | "AWAITING" | "NOT_INVITED"). Counts for the filter pills cover the whole list, whatever page or filter is on.
  */
 const INVITED: Prisma.RegistrationWhereInput = { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] };
@@ -29,6 +30,9 @@ function seatFilter(seat: string | null): Prisma.RegistrationWhereInput {
 }
 
 export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() || "";
   const followUp = searchParams.get("followUp");
@@ -38,6 +42,7 @@ export async function GET(request: NextRequest) {
 
   const where: Prisma.RegistrationWhereInput = {
     AND: [
+      { eventId: event.id },
       search
         ? {
             OR: [
@@ -73,7 +78,7 @@ export async function GET(request: NextRequest) {
     }),
     // One grouped query gives the counts for the filter pills (everyone, reserved, and per follow-up status).
     prisma.$queryRaw<{ s: string; n: number; reserved: number }[]>`
-      SELECT "followUpStatus" AS s, count(*)::int AS n, count("reservedAt")::int AS reserved FROM "Registration" GROUP BY "followUpStatus"`,
+      SELECT "followUpStatus" AS s, count(*)::int AS n, count("reservedAt")::int AS reserved FROM "Registration" WHERE "eventId" = ${event.id} GROUP BY "followUpStatus"`,
   ]);
   const allCount = groups.reduce((n, g) => n + g.n, 0);
   const reservedCount = groups.reduce((n, g) => n + g.reserved, 0);

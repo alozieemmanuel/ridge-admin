@@ -27,9 +27,21 @@ The seat limit is enforced: reservations are counted one at a time, so the room 
 
 ## Switched-off modules
 
-Prospects, Payments, Brochure Requests and WhatsApp are hidden: their pages redirect to the Overview and their
-endpoints answer 404 (see `src/lib/modules.ts`). To bring one back, remove it from that file and add it to the
-sidebar in `src/components/AdminShell.tsx`.
+## Events
+
+The dashboard manages several events from one place.
+
+- `/event` is the list of events an admin can open, with their numbers.
+- `/event/<slug>` is one event: Overview, Contacts (with the live sheet), Attendance, Campaigns, Settings, Activity log.
+- `/event/<slug>/reserve?t=TOKEN` is the guest's own link.
+- `/event/new` (owners) creates an event. `/event/team` (owners) manages admins and which events each admin can open.
+
+Every event has its own contacts, settings, email templates, campaigns, activity log and live sheet. Owners open every event.
+Other admins open only the events they were added to. Invitations, Attendance and Campaigns can be switched on or off per
+event (Settings, Data tab, owners only).
+
+Prospects, Payments, Brochure Requests and WhatsApp are parked in `src/app/_parked` (Next ignores that folder) and their
+endpoints answer 404 (see `src/lib/modules.ts`).
 
 ## Getting started
 
@@ -37,13 +49,13 @@ sidebar in `src/components/AdminShell.tsx`.
 npm install
 cp .env.example .env
 # edit .env: DATABASE_URL, DIRECT_URL, SESSION_SECRET, APP_BASE_URL, GMAIL_USER, GMAIL_APP_PASSWORD
-npx prisma migrate deploy   # applies every migration, including the Investor Hangout one
-npm run seed                # default templates/settings + your first admin login
+npx prisma migrate deploy   # applies every migration, including the multi-event one
+npm run seed                # first event if none exists, default templates/settings + your first admin login
 npm run dev
 ```
 
-Open `http://localhost:3000/admin/login` and sign in with `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`.
-Then fill in the **date and venue** in Settings: invitations are blocked until both are set.
+Open `http://localhost:3000/event/login` and sign in with `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`.
+Open the event, then fill in the **date and venue** in Settings: invitations are blocked until both are set.
 
 ## CSV import
 

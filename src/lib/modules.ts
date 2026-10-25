@@ -1,18 +1,12 @@
 /**
- * Modules that exist in the code but are switched off for the Investor Hangout event.
+ * Modules that exist in the code but are switched off.
  * Nothing is deleted: take a path out of these lists (and add the module back to the
  * sidebar in src/components/AdminShell.tsx) to bring it back.
  *
  * This file is imported by the middleware, so keep it free of Node-only code.
  */
 
-/** Admin pages that redirect to the Overview instead of opening. */
-export const HIDDEN_ADMIN_PAGES = [
-  "/admin/prospects",
-  "/admin/payments",
-  "/admin/brochure-requests",
-  "/admin/whatsapp",
-];
+/** The code of these modules sits in src/app/_parked (Next ignores that folder, so they have no page). Move a folder back under src/app/[slug]/(admin) to bring one back. */
 
 /** Endpoints that answer 404 while their module is off (public forms, payment receipts, WhatsApp, and the matching admin APIs). */
 export const DISABLED_API_PREFIXES = [

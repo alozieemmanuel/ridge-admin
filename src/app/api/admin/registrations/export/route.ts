@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { followUpLabel } from "@/lib/followUp";
+import { requireEvent } from "@/lib/event";
 
 export const runtime = "nodejs";
 
@@ -11,9 +12,13 @@ function csvEscape(value: unknown): string {
   return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
-/** The whole guest list as a CSV (what Excel and Google Sheets open). */
-export async function GET() {
+/** The event's whole contact list as a CSV (what Excel and Google Sheets open). The link carries ?event=<slug>. */
+export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const people = await prisma.registration.findMany({
+    where: { eventId: event.id },
     orderBy: { createdAt: "desc" },
     include: { followUpNotes: { orderBy: { createdAt: "asc" } } },
   });
@@ -59,7 +64,7 @@ export async function GET() {
     );
   }
 
-  const filename = `investor-hangout-guests-${new Date().toISOString().slice(0, 10)}.csv`;
+  const filename = `${event.slug}-contacts-${new Date().toISOString().slice(0, 10)}.csv`;
   return new NextResponse("﻿" + lines.join("\r\n"), {
     status: 200,
     headers: {

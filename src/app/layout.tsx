@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { BRAND_NAME, EVENT_NAME, ICON_URL } from "@/lib/brand";
+import { BRAND_NAME, ICON_URL } from "@/lib/brand";
+import ClientBoot from "@/components/ClientBoot";
 
 export const metadata: Metadata = {
-  title: `${BRAND_NAME} Admin`,
-  description: `${EVENT_NAME}: guest list, invitations, seat reservations and attendance.`,
+  title: `${BRAND_NAME} Events`,
+  description: "Manage your events: contacts, invitations, tickets, check-in and campaigns.",
   icons: { icon: ICON_URL, shortcut: ICON_URL, apple: ICON_URL },
 };
 
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className="min-h-screen bg-pagebg text-fg font-sans antialiased"
         suppressHydrationWarning
       >
+        <ClientBoot />
         {children}
       </body>
     </html>

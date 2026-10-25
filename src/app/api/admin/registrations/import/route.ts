@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { buildPeople, isImportField, parseCsvText, suggestMapping, type ImportField } from "@/lib/csvImport";
 import { saveImportedPeople } from "@/lib/contactSave";
@@ -18,7 +18,9 @@ export const maxDuration = 120;
  *     "update" fills in what the CSV knows (it never blanks a field and never touches a reservation).
  */
 export async function POST(request: NextRequest) {
-  const session = await getSession();
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
   let body: { csv?: unknown; mapping?: unknown; onDuplicate?: unknown; dryRun?: unknown };
   try {
     body = await request.json();
@@ -60,7 +62,7 @@ export async function POST(request: NextRequest) {
   }
 
   const existing = await prisma.registration.findMany({
-    where: { email: { in: people.map((p) => p.email) } },
+    where: { eventId: event.id, email: { in: people.map((p) => p.email) } },
     select: { id: true, email: true },
   });
   const existingByEmail = new Map(existing.map((e) => [e.email, e.id]));
@@ -81,7 +83,7 @@ export async function POST(request: NextRequest) {
   if (body.dryRun === true || !body.mapping) return NextResponse.json({ result: "preview", ...preview });
 
   // ---- Save ----
-  const saved = await saveImportedPeople(people, onDuplicate, { author: "Imported from CSV", overwriteStatus: true });
+  const saved = await saveImportedPeople(event.id, people, onDuplicate, { author: "Imported from CSV", overwriteStatus: true });
   const { added, updated } = saved;
 
   await logAdminAction(

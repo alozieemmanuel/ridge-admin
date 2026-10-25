@@ -3,14 +3,14 @@ import { DEFAULT_SETTINGS } from "@/lib/settings";
 import { generateTicketCode } from "@/lib/ticket";
 import type { Registration } from "@prisma/client";
 
-/** The seat limit from Settings. null means no limit (the field was left empty or isn't a positive number). */
+/** The event's seat limit from its Settings. null means no limit (the field was left empty or isn't a positive number). */
 export function parseCapacity(raw: string | null | undefined): number | null {
   const n = Number.parseInt(String(raw ?? "").trim(), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-export async function getCapacity(): Promise<number | null> {
-  const row = await prisma.setting.findUnique({ where: { key: "seat_capacity" } });
+export async function getCapacity(eventId: string): Promise<number | null> {
+  const row = await prisma.setting.findUnique({ where: { eventId_key: { eventId, key: "seat_capacity" } } });
   return parseCapacity(row ? row.value : DEFAULT_SETTINGS.seat_capacity);
 }
 
@@ -18,9 +18,8 @@ export type ReserveResult =
   | { ok: true; registration: Registration; alreadyReserved: boolean }
   | { ok: false; reason: "NOT_FOUND" | "FULL" };
 
-// Any fixed number: it only has to be the same for every reservation, so two people reserving the
-// last seat at the same moment are handled one after the other.
-const RESERVE_LOCK_ID = 7340211;
+// The lock is per event: two people reserving the last seat of the SAME event at the same moment are handled
+// one after the other, while different events never wait for each other.
 
 /**
  * Reserves a seat for a guest and gives them their ticket code. Safe to call twice (it returns the
@@ -29,18 +28,17 @@ const RESERVE_LOCK_ID = 7340211;
  */
 export async function reserveSeat(registrationId: string): Promise<ReserveResult> {
   return prisma.$transaction(async (tx): Promise<ReserveResult> => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESERVE_LOCK_ID})`;
-
     const registration = await tx.registration.findUnique({ where: { id: registrationId } });
     if (!registration) return { ok: false, reason: "NOT_FOUND" };
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${registration.eventId}))`;
     if (registration.reservedAt && registration.ticketCode) {
       return { ok: true, registration, alreadyReserved: true };
     }
 
-    const capacityRow = await tx.setting.findUnique({ where: { key: "seat_capacity" } });
+    const capacityRow = await tx.setting.findUnique({ where: { eventId_key: { eventId: registration.eventId, key: "seat_capacity" } } });
     const capacity = parseCapacity(capacityRow ? capacityRow.value : DEFAULT_SETTINGS.seat_capacity);
     if (capacity !== null) {
-      const taken = await tx.registration.count({ where: { reservedAt: { not: null } } });
+      const taken = await tx.registration.count({ where: { eventId: registration.eventId, reservedAt: { not: null } } });
       if (taken >= capacity) return { ok: false, reason: "FULL" };
     }
 

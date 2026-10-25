@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { getSettingsMap } from "@/lib/settings";
 import { missingEventDetails, sendInvitation } from "@/lib/notifications";
@@ -13,7 +13,9 @@ export const maxDuration = 300;
  * NOT_INVITED sends the invitation, INVITED_NOT_RESERVED sends the reminder. Sent a few at a time.
  */
 export async function POST(request: NextRequest) {
-  const session = await getSession();
+  const ctx = await requireEvent(request, { module: "invitations" });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
   let raw: { audience?: unknown; dryRun?: unknown };
   try {
     raw = await request.json();
@@ -25,13 +27,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Choose who to send to." }, { status: 400 });
   }
 
-  const where = audience === "NOT_INVITED" ? { inviteSentAt: null, reservedAt: null } : { inviteSentAt: { not: null }, reservedAt: null };
+  const where = audience === "NOT_INVITED" ? { eventId: event.id, inviteSentAt: null, reservedAt: null } : { eventId: event.id, inviteSentAt: { not: null }, reservedAt: null };
   const people = await prisma.registration.findMany({ where, orderBy: { createdAt: "asc" } });
 
   if (raw.dryRun === true) return NextResponse.json({ count: people.length });
   if (people.length === 0) return NextResponse.json({ error: "There is nobody to send to." }, { status: 400 });
 
-  const missing = missingEventDetails(await getSettingsMap());
+  const missing = missingEventDetails(await getSettingsMap(event.id));
   if (missing.length) {
     return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
   }

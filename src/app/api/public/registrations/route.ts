@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { firstEventId } from "@/lib/event";
 import { registrationSchema } from "@/lib/validation";
 import { sendRegistrationEmails } from "@/lib/notifications";
 import { jsonWithCors, preflight } from "@/lib/cors";
@@ -36,8 +37,9 @@ export async function POST(request: NextRequest) {
 
   // Upsert on email: prevents duplicate rows if someone double-submits or
   // resubmits after updating their details.
+  const eventId = await firstEventId();
   const registration = await prisma.registration.upsert({
-    where: { email: normalizedEmail },
+    where: { eventId_email: { eventId, email: normalizedEmail } },
     update: {
       fullName: data.fullName,
       phone: data.phone,
@@ -48,6 +50,7 @@ export async function POST(request: NextRequest) {
       categories,
     },
     create: {
+      eventId,
       fullName: data.fullName,
       email: normalizedEmail,
       phone: data.phone,

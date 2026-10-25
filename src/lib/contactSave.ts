@@ -27,7 +27,7 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
 }
 
 /**
- * Saves people read from a CSV file or a live sheet. Nobody is emailed.
+ * Saves people read from a CSV file or a live sheet into one event. Nobody is emailed.
  *
  *   New emails are added. Call feedback that came with a person becomes the first entry in their follow-up log.
  *   Emails already on the list are left alone ("skip") or filled in from the file ("update"). An update never blanks a
@@ -39,6 +39,7 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
  *                           This keeps what the team set in the dashboard from being undone by an older row in the sheet.
  */
 export async function saveImportedPeople(
+  eventId: string,
   people: ImportedPerson[],
   onDuplicate: "skip" | "update",
   opts: { author?: string; overwriteStatus?: boolean } = {}
@@ -50,7 +51,7 @@ export async function saveImportedPeople(
   for (const part of chunks(people.map((p) => p.email))) {
     existing.push(
       ...(await prisma.registration.findMany({
-        where: { email: { in: part } },
+        where: { eventId, email: { in: part } },
         select: { id: true, email: true, fullName: true, phone: true, followUpStatus: true, extra: true },
       }))
     );
@@ -64,6 +65,7 @@ export async function saveImportedPeople(
     const res = await prisma.registration.createMany({
       skipDuplicates: true,
       data: part.map((p) => ({
+        eventId,
         fullName: p.fullName,
         email: p.email,
         phone: p.phone,
@@ -77,7 +79,7 @@ export async function saveImportedPeople(
   // Feedback that came in with the file becomes the first entry in each new guest's follow-up log.
   const withFeedback = fresh.filter((p) => p.callFeedback);
   for (const part of chunks(withFeedback)) {
-    const rows = await prisma.registration.findMany({ where: { email: { in: part.map((p) => p.email) } }, select: { id: true, email: true } });
+    const rows = await prisma.registration.findMany({ where: { eventId, email: { in: part.map((p) => p.email) } }, select: { id: true, email: true } });
     const idByEmail = new Map(rows.map((r: { id: string; email: string }) => [r.email, r.id]));
     await prisma.followUpNote.createMany({
       data: part.flatMap((p) => {

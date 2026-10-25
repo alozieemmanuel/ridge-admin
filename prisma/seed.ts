@@ -6,21 +6,29 @@ import { DEFAULT_EMAIL_TEMPLATES } from "../src/lib/emailDefaults";
 const prisma = new PrismaClient();
 
 async function main() {
+  console.log("Creating the first event (if there is none)...");
+  let event = await prisma.event.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!event) {
+    event = await prisma.event.create({
+      data: { slug: "investor-hangout", name: "Investor Hangout", modules: ["invitations", "attendance", "campaigns"] },
+    });
+  }
+
   console.log("Seeding settings...");
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     await prisma.setting.upsert({
-      where: { key },
+      where: { eventId_key: { eventId: event.id, key } },
       update: {},
-      create: { key, value },
+      create: { eventId: event.id, key, value },
     });
   }
 
   console.log("Seeding email templates...");
   for (const t of DEFAULT_EMAIL_TEMPLATES) {
     await prisma.emailTemplate.upsert({
-      where: { key: t.key },
+      where: { eventId_key: { eventId: event.id, key: t.key } },
       update: {},
-      create: t,
+      create: { ...t, eventId: event.id },
     });
   }
 

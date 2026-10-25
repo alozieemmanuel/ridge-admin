@@ -6,14 +6,21 @@
  * switching between modules (the tabs), which is exactly when the delay was noticeable.
  */
 
+import { slugFromPathname } from "@/lib/basePath";
+
 const store = new Map<string, unknown>();
 
+/** Remembered responses are kept per event: the same address in two events must never share an entry. */
+function k(key: string): string {
+  return `${typeof window === "undefined" ? "" : slugFromPathname(window.location.pathname)}|${key}`;
+}
+
 export function cacheGet<T>(key: string): T | undefined {
-  return store.get(key) as T | undefined;
+  return store.get(k(key)) as T | undefined;
 }
 
 export function cacheSet(key: string, value: unknown): void {
-  store.set(key, value);
+  store.set(k(key), value);
 }
 
 /** Forgets everything (used on sign-out so the next admin never sees the previous one's data). */
@@ -23,7 +30,8 @@ export function cacheClear(): void {
 
 /** Forgets every remembered response whose URL starts with `prefix` (after a change, so a list never shows what it had before the change). */
 export function cacheDeletePrefix(prefix: string): void {
-  for (const key of Array.from(store.keys())) if (key.startsWith(prefix)) store.delete(key);
+  const full = k(prefix);
+  for (const key of Array.from(store.keys())) if (key.startsWith(full)) store.delete(key);
 }
 
 /** Fetches JSON, remembers it under the URL, and returns it (null when the request fails). */
@@ -32,7 +40,7 @@ export async function fetchAndCache<T>(url: string): Promise<T | null> {
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = (await res.json()) as T;
-    store.set(url, data);
+    store.set(k(url), data);
     return data;
   } catch {
     return null;

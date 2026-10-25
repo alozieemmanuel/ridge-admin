@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireEvent } from "@/lib/event";
 import { prisma } from "@/lib/prisma";
 import { FOLLOW_UP_VALUES } from "@/lib/followUp";
 import { getCapacity } from "@/lib/reservations";
@@ -17,9 +18,12 @@ interface Agg {
 }
 
 /** Everything the Overview page shows. Five queries run side by side (the big counts are one grouped query), so the page doesn't wait on a long chain of round trips. */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const [capacity, agg, feedback, recent, reservedDates] = await Promise.all([
-    getCapacity(),
+    getCapacity(event.id),
     prisma.$queryRaw<Agg[]>`
       SELECT "followUpStatus" AS s,
              count(*)::int AS n,
@@ -27,15 +31,16 @@ export async function GET() {
              count("checkedInAt")::int AS checked,
              (count(*) FILTER (WHERE "inviteSentAt" IS NOT NULL OR "reservedAt" IS NOT NULL))::int AS invited
       FROM "Registration"
+      WHERE "eventId" = ${event.id}
       GROUP BY "followUpStatus"`,
-    prisma.$queryRaw<{ n: number }[]>`SELECT count(DISTINCT "registrationId")::int AS n FROM "FollowUpNote" WHERE body <> ''`,
+    prisma.$queryRaw<{ n: number }[]>`SELECT count(DISTINCT n."registrationId")::int AS n FROM "FollowUpNote" n JOIN "Registration" r ON r."id" = n."registrationId" WHERE n.body <> '' AND r."eventId" = ${event.id}`,
     prisma.registration.findMany({
-      where: { reservedAt: { not: null } },
+      where: { eventId: event.id, reservedAt: { not: null } },
       orderBy: { reservedAt: "desc" },
       take: 6,
       select: { id: true, fullName: true, reservedAt: true },
     }),
-    prisma.registration.findMany({ where: { reservedAt: { gte: new Date(Date.now() - 14 * DAY) } }, select: { reservedAt: true } }),
+    prisma.registration.findMany({ where: { eventId: event.id, reservedAt: { gte: new Date(Date.now() - 14 * DAY) } }, select: { reservedAt: true } }),
   ]);
 
   const total = agg.reduce((n, g) => n + g.n, 0);

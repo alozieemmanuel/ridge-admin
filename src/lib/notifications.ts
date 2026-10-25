@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
-import { renderBrandedEmail, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
+import { BASE_PATH } from "@/lib/basePath";
+import { firstEventId } from "@/lib/event";
+import { renderBrandedEmail, emailBrand, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
 import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
 import { defaultTemplate } from "@/lib/emailDefaults";
 import { ticketQrPng } from "@/lib/ticket";
@@ -24,8 +26,8 @@ function firstNameOf(fullName: string): string {
   return trimmed ? trimmed.split(/\s+/)[0] : "there";
 }
 
-async function getTemplate(key: string) {
-  const template = await prisma.emailTemplate.findUnique({ where: { key } });
+async function getTemplate(eventId: string, key: string) {
+  const template = await prisma.emailTemplate.findUnique({ where: { eventId_key: { eventId, key } } });
   if (!template) {
     // The invitation and reminder wording has built-in defaults, so they work before the seed has run.
     const fallback = defaultTemplate(key);
@@ -227,11 +229,12 @@ export function paymentPageLink(registration: Registration, settings: Settings):
 
 async function buildRegistrationConfirmation(registration: Registration, settings: Settings): Promise<BuiltEmail> {
   const vars = registrationVars(registration, settings);
-  const template = await getTemplate("registration_confirmation");
+  const template = await getTemplate(registration.eventId, "registration_confirmation");
   const subject = mergeTemplate(template.subject, vars);
   const bodyText = mergeTemplate(template.body, vars);
 
   const html = renderBrandedEmail({
+        brand: emailBrand(settings),
     eyebrow: settings.event_caption,
     heading: subject,
     bodyText,
@@ -260,11 +263,12 @@ async function buildBrochureEmail(brochureRequest: BrochureRequest, settings: Se
     email: brochureRequest.email,
     ...settings,
   };
-  const template = await getTemplate("brochure_confirmation");
+  const template = await getTemplate(settings.event_id, "brochure_confirmation");
   const subject = mergeTemplate(template.subject, vars);
   const bodyText = mergeTemplate(template.body, vars);
 
   const html = renderBrandedEmail({
+        brand: emailBrand(settings),
     eyebrow: settings.cohort_dates,
     heading: subject,
     bodyText,
@@ -287,11 +291,12 @@ async function buildBrochureEmail(brochureRequest: BrochureRequest, settings: Se
 
 async function buildPaymentReminder(registration: Registration, settings: Settings): Promise<BuiltEmail> {
   const vars = registrationVars(registration, settings);
-  const template = await getTemplate("payment_reminder");
+  const template = await getTemplate(registration.eventId, "payment_reminder");
   const subject = mergeTemplate(template.subject, vars);
   const bodyText = mergeTemplate(template.body, vars);
 
   const html = renderBrandedEmail({
+        brand: emailBrand(settings),
     eyebrow: settings.event_caption,
     heading: subject,
     bodyText,
@@ -308,7 +313,7 @@ async function buildPaymentReminder(registration: Registration, settings: Settin
 
 /** New registration: attendee confirmation + internal team alert. Never throws for a failed send — the outcome is recorded. */
 export async function sendRegistrationEmails(registration: Registration): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
 
   await deliverAttendeeEmail({
     source: "REGISTRATION",
@@ -337,7 +342,7 @@ export async function sendRegistrationEmails(registration: Registration): Promis
 
 /** New brochure request: brochure email + internal team alert. Never throws for a failed send — the outcome is recorded. */
 export async function sendBrochureEmails(brochureRequest: BrochureRequest): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(await firstEventId());
 
   await deliverAttendeeEmail({
     source: "BROCHURE",
@@ -362,7 +367,7 @@ export async function sendBrochureEmails(brochureRequest: BrochureRequest): Prom
 
 /** Admin action: re-send just the attendee confirmation. Throws (with the reason) if it fails. */
 export async function resendRegistrationConfirmation(registration: Registration): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
@@ -376,7 +381,7 @@ export async function resendRegistrationConfirmation(registration: Registration)
 
 /** Admin action: re-send just the brochure email. Throws (with the reason) if it fails. */
 export async function resendBrochureConfirmation(brochureRequest: BrochureRequest): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(await firstEventId());
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "BROCHURE",
@@ -390,7 +395,7 @@ export async function resendBrochureConfirmation(brochureRequest: BrochureReques
 
 /** Admin action: a payment reminder for anyone not fully paid. */
 export async function sendPaymentReminder(registration: Registration): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
@@ -431,12 +436,42 @@ export async function sendCampaignEmail(
     build: async () => ({
       subject: mergedSubject,
       html: renderBrandedEmail({
+        brand: emailBrand(settings),
         eyebrow: settings.event_caption,
         heading: mergedSubject,
         bodyText: mergedBody,
       }),
     }),
   });
+}
+
+/**
+ * Sends a test of a campaign to one address the admin typed, so they can see the real email before it goes to everyone.
+ * It uses the same sender, layout and merge values as the real send (the name is the admin's own), is marked [TEST] in the
+ * subject, and is not recorded against any contact or campaign.
+ */
+export async function sendCampaignTest(opts: { to: string; subject: string; bodyText: string; settings: Settings; sampleName: string }): Promise<SendEmailResult> {
+  const vars: Settings = {
+    first_name: firstNameOf(opts.sampleName),
+    full_name: opts.sampleName,
+    email: opts.to,
+    phone: "",
+    reserve_link: `${appBaseUrl()}${BASE_PATH}/${opts.settings.event_slug}/reserve?t=TEST-LINK-NOT-ACTIVE`,
+    ...opts.settings,
+  };
+  const subject = mergeTemplate(opts.subject, vars);
+  const body = mergeTemplate(opts.bodyText, vars);
+  try {
+    return await sendEmail({
+      kind: "campaign",
+      to: opts.to,
+      subject: `[TEST] ${subject}`,
+      html: renderBrandedEmail({ brand: emailBrand(opts.settings), eyebrow: opts.settings.event_caption, heading: subject, bodyText: body }),
+      tags: [{ name: "source", value: "campaign-test" }],
+    });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -447,7 +482,7 @@ export async function sendCampaignEmail(
  */
 export async function sendPaymentConfirmation(registration: Registration): Promise<void> {
   if (registration.paymentStatus === "NOT_PAID") return;
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   const feeRaw = parseFloat(
     registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount
   );
@@ -503,6 +538,7 @@ export async function sendPaymentConfirmation(registration: Registration): Promi
       build: async () => ({
         subject,
         html: renderReceiptEmail({
+        brand: emailBrand(settings),
           eyebrow: "Payment Receipt",
           heading: subject,
           intro,
@@ -544,7 +580,7 @@ function formatLongDate(date: Date): string {
  */
 export async function sendPayLaterAcknowledgement(registration: Registration): Promise<void> {
   if (!registration.payLaterDate) return;
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   const first = firstNameOf(registration.fullName);
   const when = formatLongDate(registration.payLaterDate);
   const subject = `Thank you for registering for ${settings.programme_name}`;
@@ -559,6 +595,7 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
       build: async () => ({
         subject,
         html: renderBrandedEmail({
+        brand: emailBrand(settings),
           eyebrow: settings.event_caption,
           heading: subject,
           bodyText,
@@ -585,7 +622,7 @@ export async function sendPayLaterAcknowledgement(registration: Registration): P
  * payment details. Throws (with the reason) if the send fails.
  */
 export async function sendPayLaterReminder(registration: Registration): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   const first = firstNameOf(registration.fullName);
   const subject = "A gentle reminder about your registration";
   const bodyText = `Dear ${first},\n\nWe hope you are keeping well.\n\nYou asked us to remind you about your payment for ${settings.programme_name}, so here is a gentle note. We would be delighted to have you with us from ${settings.cohort_dates}.\n\nThe button below takes you back to the payment page, where you can choose the currency you prefer and the payment method that suits you. If you have already paid, thank you, and you are welcome to upload your receipt there.\n\nIf you have any questions, simply reply to this email or reach us on WhatsApp. We are always happy to help.\n\nWarm regards,\nThe Investor Hangout Team`;
@@ -599,6 +636,7 @@ export async function sendPayLaterReminder(registration: Registration): Promise<
       build: async () => ({
         subject,
         html: renderBrandedEmail({
+        brand: emailBrand(settings),
           eyebrow: settings.event_caption,
           heading: subject,
           bodyText,
@@ -619,9 +657,9 @@ export async function sendPayLaterReminder(registration: Registration): Promise<
 // Invitation, reminder and entry ticket (the Attendance flow)
 // ---------------------------------------------------------------------------
 
-/** The unique link a guest uses to see their details and reserve their seat; afterwards it shows their ticket. */
-export function reserveLink(registration: Pick<Registration, "id">): string {
-  return `${appBaseUrl()}/reserve?t=${encodeURIComponent(makeReserveToken(registration.id))}`;
+/** The unique link a guest uses to see their details and reserve their seat; afterwards it shows their ticket. Looks like https://pertinencegroup.com/event/investor-hangout/reserve?t=... */
+export function reserveLink(registration: Pick<Registration, "id">, eventSlug: string): string {
+  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/reserve?t=${encodeURIComponent(makeReserveToken(registration.id))}`;
 }
 
 /** The event details that must be filled in (Settings) before any invitation goes out. */
@@ -637,13 +675,14 @@ async function buildInvitation(
   settings: Settings,
   kind: "invitation" | "reminder"
 ): Promise<BuiltEmail> {
-  const link = reserveLink(registration);
+  const link = reserveLink(registration, settings.event_slug);
   const vars = { ...registrationVars(registration, settings), reserve_link: link };
-  const template = await getTemplate(kind === "reminder" ? "reservation_reminder" : "invitation");
+  const template = await getTemplate(registration.eventId, kind === "reminder" ? "reservation_reminder" : "invitation");
   const subject = mergeTemplate(template.subject, vars);
   const bodyText = mergeTemplate(template.body, vars);
 
   const html = renderBrandedEmail({
+        brand: emailBrand(settings),
     eyebrow: settings.event_caption || "By invitation only",
     heading: subject,
     bodyText,
@@ -670,7 +709,7 @@ async function buildInvitation(
  * invited but have not reserved yet. Throws (with the reason) if the send fails; the outcome is recorded either way.
  */
 export async function sendInvitation(registration: Registration, kind: "invitation" | "reminder" = "invitation"): Promise<void> {
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
@@ -696,7 +735,7 @@ export async function sendTicket(registration: Registration): Promise<void> {
   if (!code || !registration.reservedAt) {
     throw new Error("This guest has no ticket yet. They need to reserve a seat first.");
   }
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
 
   throwIfFailed(
     await deliverAttendeeEmail({
@@ -708,6 +747,7 @@ export async function sendTicket(registration: Registration): Promise<void> {
         const subject = `Your ticket: ${settings.programme_name}`;
         const contact = [settings.contact_email?.trim(), settings.contact_phone?.trim()].filter(Boolean).join(" or ");
         const html = renderTicketEmail({
+        brand: emailBrand(settings),
           eventName: settings.programme_name,
           guestName: registration.fullName,
           ticketCode: code,
@@ -722,7 +762,7 @@ export async function sendTicket(registration: Registration): Promise<void> {
           subject,
           html,
           replyTo: resolveReplyTo("{{contact_email}}", settings),
-          attachments: [{ filename: "ticket-qr.png", content: await ticketQrPng(code), contentType: "image/png", cid: "ticket-qr" }],
+          attachments: [{ filename: "ticket-qr.png", content: await ticketQrPng(code, settings.event_slug), contentType: "image/png", cid: "ticket-qr" }],
         };
       },
     })

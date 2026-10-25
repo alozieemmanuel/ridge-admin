@@ -4,7 +4,7 @@ import { sendCampaignSchema } from "@/lib/validation";
 import { audienceWhere } from "@/lib/campaigns";
 import { getSettingsMap } from "@/lib/settings";
 import { sendCampaignEmail } from "@/lib/notifications";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import type { Campaign, Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -21,8 +21,11 @@ const emptyCounts = (): StatCounts => ({ delivered: 0, opened: 0, bounced: 0, co
  * same email five times counts as one open. These numbers come from Brevo's
  * webhook, which only exists for campaigns (everything else is sent via Gmail).
  */
-export async function GET() {
-  const campaigns = await prisma.campaign.findMany({ orderBy: { sentAt: "desc" }, take: 50 });
+export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request, { module: "campaigns" });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
+  const campaigns = await prisma.campaign.findMany({ where: { eventId: event.id }, orderBy: { sentAt: "desc" }, take: 50 });
   const campaignIds = campaigns.map((c: Campaign) => c.id);
 
   const perCampaign: Record<string, StatCounts> = {};
@@ -84,7 +87,9 @@ export async function GET() {
  * bounced events to the right campaign later.
  */
 export async function POST(request: NextRequest) {
-  const session = await getSession();
+  const ctx = await requireEvent(request, { module: "campaigns" });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   let raw: unknown;
   try {
@@ -104,15 +109,16 @@ export async function POST(request: NextRequest) {
   const { audience, subject, body } = parsed.data;
   const category = parsed.data.category || null;
 
-  const recipients = await prisma.registration.findMany({ where: audienceWhere(audience, category) });
+  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, audienceWhere(audience, category)] } });
   if (recipients.length === 0) {
     return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
   }
 
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(event.id);
 
   const campaign = await prisma.campaign.create({
     data: {
+      eventId: event.id,
       subject,
       body,
       audience,
@@ -120,7 +126,7 @@ export async function POST(request: NextRequest) {
       recipientCount: recipients.length,
       sentCount: 0,
       failedCount: 0,
-      sentByName: session?.name,
+      sentByName: session.name,
     },
   });
 

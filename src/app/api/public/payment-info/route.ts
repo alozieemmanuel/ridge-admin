@@ -35,13 +35,13 @@ export async function POST(request: NextRequest) {
 
   const registration = await prisma.registration.findUnique({
     where: { id: registrationId },
-    select: { fullName: true, regType: true, paymentStatus: true, amountPaid: true },
+    select: { eventId: true, fullName: true, regType: true, paymentStatus: true, amountPaid: true },
   });
   if (!registration) {
     return jsonWithCors(request, { error: "We couldn't find your registration. Please message the Investor Hangout team." }, 404);
   }
 
-  const settings = await getSettingsMap();
+  const settings = await getSettingsMap(registration.eventId);
   const feeRaw = parseFloat(registration.regType === "LATE" ? settings.late_registration_fee_amount : settings.registration_fee_amount);
   const fee = Number.isFinite(feeRaw) ? feeRaw : null;
   const balanceUsd = fee !== null ? Math.max(0, fee - registration.amountPaid) : null;

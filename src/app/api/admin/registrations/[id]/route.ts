@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { describeActivity } from "@/lib/activity";
 import { reserveLink } from "@/lib/notifications";
@@ -10,11 +10,14 @@ import { EMAIL_RE } from "@/lib/csvImport";
 export const runtime = "nodejs";
 
 /** One participant in full: contact details, the follow-up log, invitation / reservation / ticket / attendance state, extra CSV columns and everything that has happened to them. */
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const { id } = await params;
   const [r, audit] = await Promise.all([
-    prisma.registration.findUnique({
-      where: { id },
+    prisma.registration.findFirst({
+      where: { id, eventId: event.id },
       include: { followUpNotes: { orderBy: { createdAt: "desc" } } },
     }),
     prisma.auditLog.findMany({
@@ -43,7 +46,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       ticketSentAt: r.ticketSentAt?.toISOString() ?? null,
       checkedInAt: r.checkedInAt?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
-      reserveLink: reserveLink(r),
+      reserveLink: reserveLink(r, event.slug),
       followUps: r.followUpNotes.map((n) => ({ id: n.id, status: n.status, body: n.body, authorName: n.authorName, createdAt: n.createdAt.toISOString() })),
       activity,
     },
@@ -60,8 +63,10 @@ const updateSchema = z
 
 /** Edits a participant's contact details. Only the fields sent are changed. (Follow-up has its own route, so every call is logged with its feedback.) */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
   const { id } = await params;
-  const session = await getSession();
 
   let raw: unknown;
   try {
@@ -78,11 +83,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "That email address doesn't look right." }, { status: 400 });
   }
 
-  const existing = await prisma.registration.findUnique({ where: { id } });
+  const existing = await prisma.registration.findFirst({ where: { id, eventId: event.id } });
   if (!existing) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
   if (data.email && data.email !== existing.email) {
-    const clash = await prisma.registration.findUnique({ where: { email: data.email }, select: { id: true, fullName: true } });
+    const clash = await prisma.registration.findFirst({ where: { eventId: event.id, email: data.email }, select: { id: true, fullName: true } });
     if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.` }, { status: 409 });
   }
 
@@ -107,12 +112,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
 /** Permanently deletes one participant (owner only), with their notes and email history. */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can delete records." }, { status: 403 });
-  }
+  const ctx = await requireEvent(request, { owner: true });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
   const { id } = await params;
-  const existing = await prisma.registration.findUnique({ where: { id }, select: { id: true, fullName: true, email: true } });
+  const existing = await prisma.registration.findFirst({ where: { id, eventId: event.id }, select: { id: true, fullName: true, email: true } });
   if (!existing) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
   await prisma.registration.delete({ where: { id } });

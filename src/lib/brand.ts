@@ -2,8 +2,8 @@
  * Names and logo used across the dashboard, the public reserve page and the emails.
  * Change them here (or set NEXT_PUBLIC_LOGO_URL) and everything follows.
  */
-export const BRAND_NAME = "Investor Hangout";
-export const EVENT_NAME = "Investor Breakfast Hangout";
+/** The platform name. Each event has its own name (Event settings), shown on its pages and in its emails. */
+export const BRAND_NAME = "Pertinence Group";
 
 /**
  * The logo is loaded from this address (dashboard, login, reserve page and emails alike; mail apps need a

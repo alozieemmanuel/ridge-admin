@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
+import { saveSetting } from "@/lib/settings";
 import { logAdminAction } from "@/lib/audit";
 import { getCapacity } from "@/lib/reservations";
 
@@ -8,19 +9,22 @@ export const runtime = "nodejs";
 
 /** Attendance numbers and the people who reserved (for check-in). Optional ?code= finds one ticket for the QR-scan flow. */
 export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request, { module: ["attendance", "invitations"] });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const code = request.nextUrl.searchParams.get("code")?.trim().toUpperCase() || "";
 
   const [capacity, invited, people, scanned] = await Promise.all([
-    getCapacity(),
-    prisma.registration.count({ where: { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] } }),
+    getCapacity(event.id),
+    prisma.registration.count({ where: { eventId: event.id, OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] } }),
     prisma.registration.findMany({
-      where: { reservedAt: { not: null } },
+      where: { eventId: event.id, reservedAt: { not: null } },
       orderBy: { reservedAt: "desc" },
       select: { id: true, fullName: true, email: true, phone: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
     }),
     code
-      ? prisma.registration.findUnique({
-          where: { ticketCode: code },
+      ? prisma.registration.findFirst({
+          where: { eventId: event.id, ticketCode: code },
           select: { id: true, fullName: true, email: true, phone: true, ticketCode: true, reservedAt: true, checkedInAt: true, ticketSentAt: true },
         })
       : Promise.resolve(null),
@@ -50,7 +54,9 @@ export async function GET(request: NextRequest) {
 
 /** Sets how many seats there are. Body: { capacity: number | null } (null = no limit). */
 export async function PUT(request: NextRequest) {
-  const session = await getSession();
+  const ctx = await requireEvent(request, { module: ["attendance", "invitations"] });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
   let raw: { capacity?: unknown };
   try {
     raw = await request.json();
@@ -61,12 +67,12 @@ export async function PUT(request: NextRequest) {
   if (c !== null && (typeof c !== "number" || !Number.isInteger(c) || c < 1 || c > 100000)) {
     return NextResponse.json({ error: "Enter a whole number of seats, 1 or more." }, { status: 400 });
   }
-  const reserved = await prisma.registration.count({ where: { reservedAt: { not: null } } });
+  const reserved = await prisma.registration.count({ where: { eventId: event.id, reservedAt: { not: null } } });
   if (typeof c === "number" && c < reserved) {
     return NextResponse.json({ error: `${reserved} seats are already reserved, so the limit can't be lower than that.` }, { status: 409 });
   }
   const value = c === null ? "" : String(c);
-  await prisma.setting.upsert({ where: { key: "seat_capacity" }, update: { value }, create: { key: "seat_capacity", value } });
+  await saveSetting(event.id, "seat_capacity", value);
   await logAdminAction(session, { action: "attendance.capacity", entityType: "data", details: { capacity: c } }, request);
   return NextResponse.json({ result: "success", capacity: c });
 }

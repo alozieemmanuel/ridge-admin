@@ -1,6 +1,6 @@
 {
   "regions": ["dub1"],
   "crons": [
-    { "path": "/api/cron/pay-later-reminders", "schedule": "0 8 * * *" }
+    { "path": "/event/api/cron/sheet-sync", "schedule": "0 6 * * *" }
   ]
 }

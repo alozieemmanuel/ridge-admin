@@ -3,6 +3,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { SESSION_COOKIE_NAME } from "@/lib/session-constants";
+import { BASE_PATH } from "@/lib/basePath";
 
 export { SESSION_COOKIE_NAME };
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -104,12 +105,15 @@ export async function setSessionCookie(token: string) {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    path: "/",
+    path: BASE_PATH || "/",
     maxAge: SESSION_DURATION_SECONDS,
   });
+  // A cookie from the old address layout (path "/") would shadow the new one, so remove it.
+  if (BASE_PATH) cookieStore.set(SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
 }
 
 export async function clearSessionCookie() {
   const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE_NAME);
+  cookieStore.set(SESSION_COOKIE_NAME, "", { path: BASE_PATH || "/", maxAge: 0 });
+  if (BASE_PATH) cookieStore.set(SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
 }

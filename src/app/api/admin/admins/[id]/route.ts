@@ -17,6 +17,7 @@ const patchSchema = z.discriminatedUnion("action", [
     action: z.literal("password"),
     password: z.string().min(8, "Password must be at least 8 characters.").max(200),
   }),
+  z.object({ action: z.literal("events"), eventIds: z.array(z.string()).max(500) }),
   z.object({ action: z.literal("archive") }),
   z.object({ action: z.literal("restore") }),
 ]);
@@ -76,6 +77,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           after: { name: data.name, email: data.email, role: data.role },
         },
       },
+      request
+    );
+    return NextResponse.json({ result: "success" });
+  }
+
+  if (data.action === "events") {
+    // Replaces the list of events this admin may open. Owners open every event, so the list only matters for admins.
+    const valid = await prisma.event.findMany({ where: { id: { in: data.eventIds } }, select: { id: true, name: true } });
+    await prisma.$transaction([
+      prisma.eventAdmin.deleteMany({ where: { adminId: id } }),
+      prisma.eventAdmin.createMany({ data: valid.map((e) => ({ adminId: id, eventId: e.id })) }),
+    ]);
+    await logAdminAction(
+      session,
+      { action: "event.access", entityType: "admin", entityId: id, entityLabel: target.name, eventId: null, details: { events: valid.map((e) => e.name) } },
       request
     );
     return NextResponse.json({ result: "success" });

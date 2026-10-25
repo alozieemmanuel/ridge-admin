@@ -30,6 +30,7 @@ export async function GET() {
       lastLoginAt: true,
       archivedAt: true,
       createdAt: true,
+      events: { select: { eventId: true } },
     },
   });
 
@@ -42,7 +43,7 @@ export async function GET() {
       lastLoginAt: a.lastLoginAt ? a.lastLoginAt.toISOString() : null,
       // Only owners ever receive these two fields.
       ...(isOwner
-        ? { role: a.role, archivedAt: a.archivedAt ? a.archivedAt.toISOString() : null }
+        ? { role: a.role, archivedAt: a.archivedAt ? a.archivedAt.toISOString() : null, eventIds: a.events.map((e) => e.eventId) }
         : {}),
     })),
   });
@@ -67,6 +68,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { name, email, password, role } = parsed.data;
+  const eventIds = Array.isArray((raw as { eventIds?: unknown }).eventIds) ? ((raw as { eventIds: unknown[] }).eventIds.filter((x) => typeof x === "string") as string[]) : [];
 
   const existing = await prisma.admin.findUnique({ where: { email: email.toLowerCase() } });
   if (existing) {
@@ -79,6 +81,7 @@ export async function POST(request: NextRequest) {
       email: email.toLowerCase(),
       passwordHash: await hashPassword(password),
       role: role ?? "ADMIN",
+      ...(eventIds.length ? { events: { create: eventIds.map((eventId) => ({ eventId })) } } : {}),
     },
     select: { id: true, name: true, email: true, role: true, createdAt: true },
   });

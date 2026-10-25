@@ -1,20 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 
 export const runtime = "nodejs";
 
 /**
- * The audit trail (owner only). Query: admin=<adminId>, category=<action prefix
+ * One event's activity log (owner only). Query: admin=<adminId>, category=<action prefix
  * such as "registration"|"auth"|"campaign">, search=<text>, page, pageSize.
  * Read-only on purpose. No endpoint edits or deletes entries.
  */
 export async function GET(request: NextRequest) {
-  const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can view the audit log." }, { status: 403 });
-  }
+  const ctx = await requireEvent(request, { owner: true });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
 
   const { searchParams } = request.nextUrl;
   const adminId = searchParams.get("admin") || undefined;
@@ -25,6 +24,7 @@ export async function GET(request: NextRequest) {
 
   const where: Prisma.AuditLogWhereInput = {
     AND: [
+      { eventId: event.id },
       adminId ? { adminId } : {},
       category ? { action: { startsWith: `${category}.` } } : {},
       search
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
-    prisma.auditLog.groupBy({ by: ["adminId", "adminName"], where: { adminId: { not: null } } }),
+    prisma.auditLog.groupBy({ by: ["adminId", "adminName"], where: { eventId: event.id, adminId: { not: null } } }),
   ]);
 
   return NextResponse.json({

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { CATEGORY_VALUES, isCategory } from "@/lib/categories";
 import { CAMPAIGN_AUDIENCES } from "@/lib/campaigns";
 import type { CampaignAudience } from "@prisma/client";
+import { requireEvent } from "@/lib/event";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,9 @@ function inAudience(p: Person, audience: CampaignAudience): boolean {
  * allow a single connection (connection_limit=1) and a dozen parallel counts would time out.
  */
 export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request, { module: "campaigns" });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const { searchParams } = request.nextUrl;
   const categoryParam = searchParams.get("category");
   const category = isCategory(categoryParam) ? categoryParam : null;
@@ -50,6 +54,7 @@ export async function GET(request: NextRequest) {
   const audience: CampaignAudience = audienceParam && AUDIENCES.includes(audienceParam) ? audienceParam : "ALL";
 
   const rows = await prisma.registration.findMany({
+    where: { eventId: event.id },
     select: { inviteSentAt: true, reservedAt: true, checkedInAt: true, categories: true },
   });
   const people: Person[] = rows.map((r) => ({

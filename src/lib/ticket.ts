@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import QRCode from "qrcode";
 import { appBaseUrl } from "@/lib/email";
+import { BASE_PATH } from "@/lib/basePath";
 
 // No 0/O or 1/I/L, so a code read out loud or typed from a printout is hard to get wrong.
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -13,8 +14,8 @@ export function generateTicketCode(): string {
 }
 
 /** What the QR code holds: a link that opens the Attendance page already looking at this ticket. */
-export function ticketVerifyUrl(ticketCode: string): string {
-  return `${appBaseUrl()}/admin/attendance?code=${encodeURIComponent(ticketCode)}`;
+export function ticketVerifyUrl(ticketCode: string, eventSlug: string): string {
+  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/attendance?code=${encodeURIComponent(ticketCode)}`;
 }
 
 const QR_OPTIONS = {
@@ -24,11 +25,11 @@ const QR_OPTIONS = {
 };
 
 /** The QR as an SVG string, for the reserve page. */
-export async function ticketQrSvg(ticketCode: string): Promise<string> {
-  return QRCode.toString(ticketVerifyUrl(ticketCode), { ...QR_OPTIONS, type: "svg", width: 220 });
+export async function ticketQrSvg(ticketCode: string, eventSlug: string): Promise<string> {
+  return QRCode.toString(ticketVerifyUrl(ticketCode, eventSlug), { ...QR_OPTIONS, type: "svg", width: 220 });
 }
 
 /** The QR as a PNG, attached to the ticket email (mail apps show an attached image reliably; they don't show SVG). */
-export async function ticketQrPng(ticketCode: string): Promise<Buffer> {
-  return QRCode.toBuffer(ticketVerifyUrl(ticketCode), { ...QR_OPTIONS, type: "png", width: 440 });
+export async function ticketQrPng(ticketCode: string, eventSlug: string): Promise<Buffer> {
+  return QRCode.toBuffer(ticketVerifyUrl(ticketCode, eventSlug), { ...QR_OPTIONS, type: "png", width: 440 });
 }

@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { SESSION_COOKIE_NAME } from "@/lib/session-constants";
-import { DISABLED_API_PREFIXES, HIDDEN_ADMIN_PAGES, startsWithAny } from "@/lib/modules";
+import { DISABLED_API_PREFIXES, startsWithAny } from "@/lib/modules";
 
-// Public paths under /admin and /api/admin that must NOT require a session.
-const PUBLIC_ADMIN_PATHS = new Set(["/admin/login", "/api/admin/login"]);
+/**
+ * Everything below runs with the base path (/event) already removed from request.nextUrl.pathname.
+ *
+ *   /login                       open
+ *   /<event>/reserve             open (the guest's own link)
+ *   /api/public/*                open (each route checks its own signed token)
+ *   everything else              needs the admin session cookie
+ *
+ * Whether the admin may open a particular event is checked in the API routes (requireEvent) and the event pages.
+ */
+const PUBLIC_PAGE = /^\/login\/?$|^\/[^/]+\/reserve\/?$/;
+const PUBLIC_API = new Set(["/api/admin/login"]);
 
 function getSecretKey() {
   const secret = process.env.SESSION_SECRET;
@@ -17,27 +27,27 @@ function getSecretKey() {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Switched-off modules (see src/lib/modules.ts): their APIs answer 404 and their pages go back to the Overview.
+  // Switched-off modules (see src/lib/modules.ts): their APIs answer 404.
   if (startsWithAny(pathname, DISABLED_API_PREFIXES) || /^\/api\/admin\/registrations\/[^/]+\/payment$/.test(pathname)) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
-  if (startsWithAny(pathname, HIDDEN_ADMIN_PAGES)) {
-    return NextResponse.redirect(new URL("/admin", request.url));
+
+  // The old address layout (/admin/...) has no meaning any more: go to the event list.
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/";
+    url.search = "";
+    return NextResponse.redirect(url);
   }
 
-  if (PUBLIC_ADMIN_PATHS.has(pathname)) {
-    return NextResponse.next();
-  }
-
-  const isProtectedPage = pathname.startsWith("/admin");
-  const isProtectedApi = pathname.startsWith("/api/admin");
-
-  if (!isProtectedPage && !isProtectedApi) {
+  const isApi = pathname.startsWith("/api/");
+  if (isApi) {
+    if (pathname.startsWith("/api/public/") || pathname.startsWith("/api/webhooks/") || pathname.startsWith("/api/cron/") || PUBLIC_API.has(pathname)) return NextResponse.next();
+  } else if (PUBLIC_PAGE.test(pathname)) {
     return NextResponse.next();
   }
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-
   let valid = false;
   if (token) {
     try {
@@ -47,25 +57,18 @@ export async function middleware(request: NextRequest) {
       valid = false;
     }
   }
+  if (valid) return NextResponse.next();
 
-  if (!valid) {
-    if (isProtectedApi) {
-      return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
-    }
-    const loginUrl = new URL("/admin/login", request.url);
-    loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
-  }
+  if (isApi) return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 
-  return NextResponse.next();
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = "/login";
+  loginUrl.search = "";
+  if (pathname !== "/") loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+  return NextResponse.redirect(loginUrl);
 }
 
 export const config = {
-  matcher: [
-    "/admin/:path*",
-    "/api/admin/:path*",
-    "/api/public/:path*",
-    "/api/webhooks/whatsapp",
-    "/api/cron/:path*",
-  ],
+  // Every page and API route, except Next's own files and the icon.
+  matcher: ["/", "/((?!_next/|favicon.ico|icon|.*\\.(?:png|jpg|jpeg|svg|ico|webp|css|js|map)$).*)"],
 };

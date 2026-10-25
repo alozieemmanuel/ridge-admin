@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { SessionPayload } from "@/lib/auth";
+import { eventIdForSlug } from "@/lib/event";
 
 /**
  * Every action name written to the audit log. Grouped by the part before the
@@ -33,6 +34,10 @@ export type AuditAction =
   | "payment_proof.reject"
   | "brochure.delete"
   | "campaign.send"
+  | "campaign.test"
+  | "event.create"
+  | "event.update"
+  | "event.access"
   | "campaign.delete"
   | "reply.send"
   | "seat.update"
@@ -68,7 +73,10 @@ export interface AuditEntry {
     | "prospect_source"
     | "whatsapp"
     | "whatsapp_broadcast"
+    | "event"
     | "data";
+  /** The event this belongs to. Left out, it is taken from the request's event (x-event header); team-wide actions have none. */
+  eventId?: string | null;
   entityId?: string;
   /** Human-readable label, e.g. the participant's name, so the log reads without joins. */
   entityLabel?: string;
@@ -99,8 +107,14 @@ function clientIp(request?: Request): string | null {
  */
 export async function logAudit(actor: AuditActor, entry: AuditEntry, request?: Request): Promise<void> {
   try {
+    let eventId = entry.eventId;
+    if (eventId === undefined && request) {
+      const slug = (request.headers.get("x-event") || new URL(request.url).searchParams.get("event") || "").trim().toLowerCase();
+      eventId = slug ? await eventIdForSlug(slug) : null;
+    }
     await prisma.auditLog.create({
       data: {
+        eventId: eventId ?? null,
         adminId: actor.adminId ?? null,
         adminName: actor.name,
         adminEmail: actor.email ?? null,

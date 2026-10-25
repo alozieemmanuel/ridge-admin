@@ -116,8 +116,38 @@ select {
   filter: brightness(0) invert(1);
 }
 
+/* An event logo with no white version: on the dark theme it sits on a white chip so it stays readable. */
+:root[data-theme="dark"] .logo-chip {
+  background: #fff;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
 @media print {
   .no-print {
     display: none !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Per-event accent colour. The wrapper element gets the variables from themeStyle() in src/lib/eventTheme.ts.
+   --------------------------------------------------------------------------- */
+.event-themed ::selection {
+  background: rgb(var(--c-gold) / 0.35);
+}
+.event-themed [class*="141C08"],
+.event-themed .text-black {
+  color: rgb(var(--c-on-gold)) !important;
+}
+:root:not([data-theme="dark"]) .event-themed {
+  --c-tint: var(--c-tint-light);
+}
+:root[data-theme="dark"] .event-themed {
+  --c-tint: var(--c-tint-dark);
+}
+:root:not([data-theme="dark"]) .event-themed .text-goldlight {
+  color: rgb(var(--c-accent-text-light));
+}
+:root[data-theme="dark"] .event-themed .text-goldlight {
+  color: rgb(var(--c-accent-text-dark));
 }

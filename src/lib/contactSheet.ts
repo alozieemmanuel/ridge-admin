@@ -3,7 +3,7 @@ import { buildPeople, parseCsvText, suggestMapping, type RowProblem } from "@/li
 import { saveImportedPeople } from "@/lib/contactSave";
 
 /**
- * The live sheet: one Google Sheet link kept in the Settings table. "Sync" reads the sheet and adds or updates
+ * The live sheet: one Google Sheet link per event, kept in that event's settings. "Sync" reads the sheet and adds or updates
  * contacts by email, exactly like a CSV import (nobody is emailed). The sheet has to be shared as
  * "Anyone with the link can view", or published to the web as CSV, so no Google login is needed here.
  */
@@ -11,7 +11,8 @@ import { saveImportedPeople } from "@/lib/contactSave";
 export const SHEET_URL_KEY = "contacts_sheet_url";
 export const SHEET_LAST_SYNC_KEY = "contacts_sheet_last_sync";
 /** Settings keys that belong to the live sheet. They are kept out of the Event details form and survive "clear everything". */
-export const SHEET_KEYS = [SHEET_URL_KEY, SHEET_LAST_SYNC_KEY];
+export const SHEET_INTERVAL_KEY = "contacts_sheet_interval";
+export const SHEET_KEYS = [SHEET_URL_KEY, SHEET_LAST_SYNC_KEY, SHEET_INTERVAL_KEY];
 
 export interface LastSync {
   at: string;
@@ -81,16 +82,23 @@ async function fetchCsv(csvUrl: string): Promise<string> {
   return text;
 }
 
-async function readSetting(key: string): Promise<string | null> {
-  return (await prisma.setting.findUnique({ where: { key } }))?.value ?? null;
+async function readSetting(eventId: string, key: string): Promise<string | null> {
+  return (await prisma.setting.findUnique({ where: { eventId_key: { eventId, key } } }))?.value ?? null;
 }
 
-async function writeSetting(key: string, value: string): Promise<void> {
-  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+async function writeSetting(eventId: string, key: string, value: string): Promise<void> {
+  await prisma.setting.upsert({ where: { eventId_key: { eventId, key } }, update: { value }, create: { eventId, key, value } });
 }
 
-export async function getSheetState(): Promise<{ url: string; lastSync: LastSync | null }> {
-  const [url, last] = await Promise.all([readSetting(SHEET_URL_KEY), readSetting(SHEET_LAST_SYNC_KEY)]);
+/** How often the server reads the sheet on its own, in minutes. 0 = only when someone presses Sync. */
+export async function getSheetInterval(eventId: string): Promise<number> {
+  const raw = await readSetting(eventId, SHEET_INTERVAL_KEY);
+  const n = raw === null ? 5 : parseInt(raw, 10);
+  return [0, 5, 15, 60].includes(n) ? n : 5;
+}
+
+export async function getSheetState(eventId: string): Promise<{ url: string; interval: number; lastSync: LastSync | null }> {
+  const [url, last, interval] = await Promise.all([readSetting(eventId, SHEET_URL_KEY), readSetting(eventId, SHEET_LAST_SYNC_KEY), getSheetInterval(eventId)]);
   let lastSync: LastSync | null = null;
   if (last) {
     try {
@@ -99,35 +107,39 @@ export async function getSheetState(): Promise<{ url: string; lastSync: LastSync
       lastSync = null;
     }
   }
-  return { url: url ?? "", lastSync };
+  return { url: url ?? "", interval, lastSync };
 }
 
 /** Saves (or, when empty, removes) the link. Returns an error message when the link isn't usable. */
-export async function saveSheetUrl(input: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function saveSheetInterval(eventId: string, minutes: number): Promise<void> {
+  await writeSetting(eventId, SHEET_INTERVAL_KEY, String([0, 5, 15, 60].includes(minutes) ? minutes : 5));
+}
+
+export async function saveSheetUrl(eventId: string, input: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const trimmed = input.trim();
   if (!trimmed) {
-    await prisma.setting.deleteMany({ where: { key: { in: SHEET_KEYS } } });
+    await prisma.setting.deleteMany({ where: { eventId, key: { in: SHEET_KEYS } } });
     return { ok: true };
   }
   if (!toCsvUrl(trimmed)) return { ok: false, error: "That is not a Google Sheets link. Paste the address from the sheet's browser tab." };
-  await writeSetting(SHEET_URL_KEY, trimmed);
+  await writeSetting(eventId, SHEET_URL_KEY, trimmed);
   return { ok: true };
 }
 
 /**
  * Reads the saved sheet and adds or updates contacts by email.
- *   replace: delete every contact first (their follow-up logs, email history and tickets go with them), then load the sheet.
+ *   replace: delete every contact of THIS event first (their follow-up logs, email history and tickets go with them), then load the sheet.
  *            The sheet is read and checked BEFORE anything is deleted, so a bad link or a broken sheet deletes nothing.
  *   minGapMs: skip the work when the last sync was this recent (used by the automatic sync).
  */
-export async function syncContactSheet(opts: { replace?: boolean; minGapMs?: number } = {}): Promise<SyncResult | { skipped: true }> {
-  const { url, lastSync } = await getSheetState();
+export async function syncContactSheet(eventId: string, opts: { replace?: boolean; minGapMs?: number } = {}): Promise<SyncResult | { skipped: true }> {
+  const { url, lastSync } = await getSheetState(eventId);
   if (!url) throw new Error("Save the sheet link first.");
 
   if (opts.minGapMs && lastSync?.ok && Date.now() - new Date(lastSync.at).getTime() < opts.minGapMs) return { skipped: true };
 
   const fail = async (error: string): Promise<never> => {
-    await writeSetting(SHEET_LAST_SYNC_KEY, JSON.stringify({ at: new Date().toISOString(), ok: false, error } satisfies LastSync));
+    await writeSetting(eventId, SHEET_LAST_SYNC_KEY, JSON.stringify({ at: new Date().toISOString(), ok: false, error } satisfies LastSync));
     throw new Error(error);
   };
 
@@ -157,9 +169,9 @@ export async function syncContactSheet(opts: { replace?: boolean; minGapMs?: num
   const { people, problems } = buildPeople(parsed, mapping);
   if (opts.replace && people.length === 0) return fail("The sheet has no usable rows, so nothing was deleted.");
 
-  if (opts.replace) await prisma.registration.deleteMany({});
+  if (opts.replace) await prisma.registration.deleteMany({ where: { eventId } });
 
-  const saved = await saveImportedPeople(people, "update", { author: "Imported from sheet", overwriteStatus: false });
+  const saved = await saveImportedPeople(eventId, people, "update", { author: "Imported from sheet", overwriteStatus: false });
   const result: SyncResult = {
     at: new Date().toISOString(),
     ok: true,
@@ -172,6 +184,6 @@ export async function syncContactSheet(opts: { replace?: boolean; minGapMs?: num
   };
   const { problems: _omit, ...stored } = result;
   void _omit;
-  await writeSetting(SHEET_LAST_SYNC_KEY, JSON.stringify(stored satisfies LastSync));
+  await writeSetting(eventId, SHEET_LAST_SYNC_KEY, JSON.stringify(stored satisfies LastSync));
   return result;
 }

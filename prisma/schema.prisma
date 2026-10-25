@@ -53,6 +53,13 @@ enum AdminRole {
   ADMIN
 }
 
+enum EventStatus {
+  // Only owners see a draft, so an event can be set up quietly before the team is told.
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
 enum SeatStatus {
   OPEN
   RESERVED
@@ -71,10 +78,70 @@ enum PaymentStatus {
   PAID
 }
 
+// One event (Investor Hangout, ...). Everything an event owns (contacts, settings, email templates, campaigns,
+// activity log) carries its eventId, so events never see each other's data. The slug is the address:
+// /event/<slug> is that event's dashboard.
+model Event {
+  id        String      @id @default(cuid())
+  slug      String      @unique
+  name      String
+  status    EventStatus @default(ACTIVE)
+  // The optional modules switched on for this event: "invitations" | "attendance" | "campaigns" | "whatsapp".
+  // Contacts and Settings are always on.
+  modules   String[]    @default([])
+  // Starting point chosen in the wizard: free | paid | conference | webinar | private.
+  type      String      @default("free")
+  // Brand: its own name, accent colour (hex) and logos. A logo is a web address, or "/api/public/event-logo/..." for an uploaded file.
+  brandName   String?
+  color       String?
+  logoUrl     String?
+  logoDarkUrl String?
+  // What this event calls its people, e.g. { "person": "Registration", "people": "Registrations", "action": "Reserve my seat" }.
+  terms     Json?
+  timezone  String      @default("Africa/Lagos")
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  assets        EventAsset[]
+  registrations Registration[]
+  campaigns     Campaign[]
+  settings      Setting[]
+  templates     EmailTemplate[]
+  admins        EventAdmin[]
+  auditLogs     AuditLog[]
+}
+
+// A logo file uploaded for an event (kept in the database so no file storage has to be set up). id is "<eventId>:<variant>".
+model EventAsset {
+  id          String   @id
+  eventId     String
+  event       Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  variant     String
+  contentType String
+  data        Bytes
+  updatedAt   DateTime @updatedAt
+
+  @@index([eventId])
+}
+
+// Which admins can open which events. Owners can open every event without a row here.
+model EventAdmin {
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  adminId   String
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([eventId, adminId])
+  @@index([adminId])
+}
+
 model Registration {
   id           String  @id @default(cuid())
+  eventId      String
+  event        Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
   fullName     String
-  email        String  @unique
+  email        String
   phone        String  @default("")
   country      String  @default("")
   organization String?
@@ -113,6 +180,8 @@ model Registration {
   prospect      Prospect? // set when this registration was converted from a prospect
   paymentRecords PaymentRecord[]
 
+  @@unique([eventId, email])
+  @@index([eventId])
   @@index([createdAt])
   @@index([followUpStatus])
   @@index([reservedAt])
@@ -178,6 +247,8 @@ model EmailEvent {
 // purpose, so the trail survives an admin being removed.
 model AuditLog {
   id          String   @id @default(cuid())
+  eventId     String? // the event the action belongs to; null for team-wide actions (sign-ins, admin accounts)
+  event       Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
   adminId     String?
   adminName   String
   adminEmail  String?
@@ -192,6 +263,7 @@ model AuditLog {
   @@index([createdAt])
   @@index([adminId])
   @@index([action])
+  @@index([eventId, createdAt])
   @@index([entityType, entityId])
 }
 
@@ -203,22 +275,30 @@ model AuditLog {
 // now built into src/lib/notifications.ts and are not editable.)
 model EmailTemplate {
   id        String   @id @default(cuid())
-  key       String   @unique
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  key       String
   // one of: registration_confirmation, brochure_confirmation,
   //         seat_selection_invite, payment_reminder
   subject   String
   body      String   @db.Text
   replyTo   String?
   updatedAt DateTime @updatedAt
+
+  @@unique([eventId, key])
 }
 
 // Business-config values previously hardcoded in code.gs (programme name,
 // dates, fee, bank details, WhatsApp number, brochure URL, notification inbox).
 // Edited from /admin/settings; referenced by templates as {{key}}.
 model Setting {
-  key       String   @id
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  key       String
   value     String   @db.Text
   updatedAt DateTime @updatedAt
+
+  @@id([eventId, key])
 }
 
 enum CampaignAudience {
@@ -242,6 +322,8 @@ enum CampaignAudience {
 // (source: CAMPAIGN) so delivery/open tracking works the same as other mail.
 model Campaign {
   id             String           @id @default(cuid())
+  eventId        String
+  event          Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
   subject        String
   body           String           @db.Text
   audience       CampaignAudience
@@ -255,6 +337,7 @@ model Campaign {
   emailEvents EmailEvent[]
 
   @@index([sentAt])
+  @@index([eventId])
 }
 
 model Admin {
@@ -266,6 +349,8 @@ model Admin {
   createdAt    DateTime  @default(now())
   lastLoginAt  DateTime?
   archivedAt   DateTime? // set = archived: can't sign in, hidden from the default list
+
+  events EventAdmin[]
 }
 
 // The Day 7 venue floor plan: round tables labeled A, B, C... AA, AB...

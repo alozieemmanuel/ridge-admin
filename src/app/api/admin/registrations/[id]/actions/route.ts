@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { registrationActionSchema } from "@/lib/validation";
 import { getSettingsMap } from "@/lib/settings";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction, type AuditAction } from "@/lib/audit";
 import { missingEventDetails, sendInvitation, sendTicket } from "@/lib/notifications";
 import { releaseReservation, reserveSeat } from "@/lib/reservations";
@@ -20,7 +20,9 @@ export const runtime = "nodejs";
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   let raw: unknown;
   try {
@@ -34,7 +36,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
   const { action } = parsed.data;
 
-  const registration = await prisma.registration.findUnique({ where: { id } });
+  // Each action belongs to a module the event may have switched off.
+  const needed = action === "check_in" || action === "undo_check_in" ? "attendance" : "invitations";
+  if (!event.modules.includes(needed)) return NextResponse.json({ error: "That part is not switched on for this event." }, { status: 404 });
+
+  const registration = await prisma.registration.findFirst({ where: { id, eventId: event.id } });
   if (!registration) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
   const log = (name: AuditAction, details?: Record<string, string | boolean | null>) =>
@@ -45,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       case "send_invitation":
       case "send_reminder": {
         const kind = action === "send_reminder" ? "reminder" : "invitation";
-        const missing = missingEventDetails(await getSettingsMap());
+        const missing = missingEventDetails(await getSettingsMap(event.id));
         if (missing.length) {
           return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
         }

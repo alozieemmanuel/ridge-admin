@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { firstEventId } from "@/lib/event";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
 import { convertProspectSchema } from "@/lib/validation";
@@ -47,8 +48,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     );
   }
 
+  const eventId = await firstEventId();
   const registration = await prisma.registration.upsert({
-    where: { email },
+    where: { eventId_email: { eventId, email } },
     update: {
       fullName: prospect.fullName,
       phone: data.phone,
@@ -58,6 +60,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       regType,
     },
     create: {
+      eventId,
       fullName: prospect.fullName,
       email,
       phone: data.phone,

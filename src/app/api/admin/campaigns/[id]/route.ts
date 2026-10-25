@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -17,6 +17,9 @@ const RANK: Record<RecipientStatus, number> = { FAILED: 0, SENT: 1, DELIVERED: 2
  * is small.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const ctx = await requireEvent(request, { module: "campaigns" });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
   const { id } = await params;
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim().toLowerCase() || "";
@@ -24,7 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
   const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "25", 10) || 25));
 
-  const campaign = await prisma.campaign.findUnique({ where: { id } });
+  const campaign = await prisma.campaign.findFirst({ where: { id, eventId: event.id } });
   if (!campaign) return NextResponse.json({ error: "Campaign not found." }, { status: 404 });
 
   const events = await prisma.emailEvent.findMany({
@@ -102,14 +105,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 /** Owner only. Removes the campaign and, with it, its delivery events (they cascade). Emails already sent can't be recalled. */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can delete campaigns." }, { status: 403 });
-  }
+  const ctx = await requireEvent(request, { module: "campaigns", owner: true });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   const { id } = await params;
-  const existing = await prisma.campaign.findUnique({
-    where: { id },
+  const existing = await prisma.campaign.findFirst({
+    where: { id, eventId: event.id },
     select: { id: true, subject: true, audience: true, sentCount: true, recipientCount: true },
   });
   if (!existing) return NextResponse.json({ error: "Campaign not found." }, { status: 404 });

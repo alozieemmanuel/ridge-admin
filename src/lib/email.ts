@@ -1,23 +1,77 @@
 import { sendViaGmail, type GmailAttachment } from "./gmail";
 import { BRAND_NAME, LOGO_URL } from "./brand";
+import { DEFAULT_COLOR, mix, normalizeHex, onColor, textOnWhite } from "./eventTheme";
 
-// Brand palette: white and lemon green. Change here to restyle every email sent to
-// participants. Solid hex values only (no rgba) so it also renders correctly in
-// Outlook and other older mail apps. (The key called "red" is the accent colour: lemon green.)
+// Brand palette: white and lemon green (the platform default). An event with its own colour overrides the accent
+// parts (button, badges, borders, tints) while an email is being rendered; see withBrand() below.
+// Solid hex values only (no rgba) so it also renders correctly in Outlook and other older mail apps.
+// (The key called "red" is the accent colour.)
+export interface EmailBrand {
+  name: string;
+  color: string;
+  logoUrl: string;
+}
+
+let active: { name: string; color: string; logoUrl: string } | null = null;
+/** The event's colour, or null while it is the default one (the original palette is then used as it is). */
+function custom(): string | null {
+  return active && active.color !== DEFAULT_COLOR ? active.color : null;
+}
+
 const BRAND = {
-  pageBg: "#F4F9E4",
   cardBg: "#FFFFFF",
-  cardBorder: "#E1E8D2",
-  innerBorder: "#E1E8D2",
-  innerFill: "#F7FBEA",
   fg: "#141C08",
   muted: "#5B664A",
   footerMuted: "#7B876A",
-  red: "#A3E635",
-  redFg: "#141C08", // text on the lemon-green buttons
-  deep: "#4D7C0F", // deeper green, for small text accents on white
-  rule: "#E1E8D2",
+  get pageBg() {
+    const c = custom();
+    return c ? mix(c, "#FFFFFF", 0.92) : "#F4F9E4";
+  },
+  get cardBorder() {
+    const c = custom();
+    return c ? mix(c, "#FFFFFF", 0.8) : "#E1E8D2";
+  },
+  get innerBorder() {
+    return this.cardBorder;
+  },
+  get rule() {
+    return this.cardBorder;
+  },
+  get innerFill() {
+    const c = custom();
+    return c ? mix(c, "#FFFFFF", 0.94) : "#F7FBEA";
+  },
+  get red() {
+    return custom() ?? "#A3E635";
+  },
+  get redFg() {
+    const c = custom();
+    return c ? onColor(c) : "#141C08"; // text on the accent buttons
+  },
+  get deep() {
+    const c = custom();
+    return c ? textOnWhite(c) : "#4D7C0F"; // darker accent for small text on white
+  },
 };
+
+/** The brand of an event's emails, from its settings map. */
+export function emailBrand(settings: Record<string, string | undefined>): EmailBrand {
+  return {
+    name: settings.event_brand_name || BRAND_NAME,
+    color: normalizeHex(settings.event_color) ?? DEFAULT_COLOR,
+    logoUrl: settings.event_logo_url || LOGO_URL,
+  };
+}
+
+/** Renders one email in an event's brand. Rendering is synchronous, so the brand cannot leak into another email. */
+function withBrand<T>(brand: EmailBrand | undefined, render: () => T): T {
+  active = brand ?? null;
+  try {
+    return render();
+  } finally {
+    active = null;
+  }
+}
 
 /**
  * Public address of this app. Mail apps need full https:// links (not relative paths) for buttons,
@@ -30,7 +84,7 @@ export function appBaseUrl(): string {
 
 /** The logo at the top of every email (see src/lib/brand.ts). It is the dark logo, which suits the white card. */
 export function emailLogoUrl(): string {
-  return LOGO_URL;
+  return active?.logoUrl ?? LOGO_URL;
 }
 
 export function escapeHtml(value: string | null | undefined): string {
@@ -84,18 +138,19 @@ function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string })
   return `<div style="background:${BRAND.pageBg};padding:40px 16px;font-family:Georgia,'Times New Roman',serif;">
     <div style="max-width:${opts.maxWidth}px;margin:0 auto;background:${BRAND.cardBg};border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
       <div style="padding:36px 40px 0;text-align:center;">
-        <img src="${emailLogoUrl()}" alt="${escapeHtml(BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
+        <img src="${emailLogoUrl()}" alt="${escapeHtml(active?.name ?? BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
       </div>
       ${inner}
       <div style="padding:28px 40px 40px;text-align:center;">
         ${opts.ctaHtml ?? ""}
-        <p style="margin:22px 0 0;color:${BRAND.footerMuted};font-size:11.5px;font-family:Arial,sans-serif;">© ${new Date().getFullYear()} ${escapeHtml(BRAND_NAME)}. All rights reserved.</p>
+        <p style="margin:22px 0 0;color:${BRAND.footerMuted};font-size:11.5px;font-family:Arial,sans-serif;">© ${new Date().getFullYear()} ${escapeHtml(active?.name ?? BRAND_NAME)}. All rights reserved.</p>
       </div>
     </div>
   </div>`;
 }
 
 export interface BrandedEmailOptions {
+  brand?: EmailBrand;
   eyebrow: string;
   heading: string;
   bodyText: string; // plain text, blank line = new paragraph
@@ -106,6 +161,10 @@ export interface BrandedEmailOptions {
 
 /** Wraps admin-edited plain-text copy in the Investor Hangout brand HTML shell. */
 export function renderBrandedEmail(opts: BrandedEmailOptions): string {
+  return withBrand(opts.brand, () => renderBrandedEmailInner(opts));
+}
+
+function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
   const summaryHtml = (opts.summaryBlocks ?? [])
     .map(
       (block) => `
@@ -147,6 +206,7 @@ export interface ReceiptLine {
 }
 
 export interface ReceiptOptions {
+  brand?: EmailBrand;
   eyebrow: string;
   heading: string;
   intro: string; // plain text, blank line = new paragraph
@@ -189,6 +249,10 @@ function receiptBlock(label: string, values: (string | null | undefined)[]): str
  * stacks cleanly on a phone (no wide multi-column table).
  */
 export function renderReceiptEmail(opts: ReceiptOptions): string {
+  return withBrand(opts.brand, () => renderReceiptEmailInner(opts));
+}
+
+function renderReceiptEmailInner(opts: ReceiptOptions): string {
   const statusLabel = opts.paidInFull ? "Paid in full" : "Part payment";
   const statusBadge = `<span style="display:inline-block;border:1px solid ${BRAND.red};background:${opts.paidInFull ? BRAND.red : "transparent"};color:${
     opts.paidInFull ? BRAND.redFg : BRAND.fg
@@ -264,6 +328,7 @@ export function renderReceiptEmail(opts: ReceiptOptions): string {
 // ---------------------------------------------------------------------------
 
 export interface TicketEmailOptions {
+  brand?: EmailBrand;
   eventName: string;
   guestName: string;
   ticketCode: string;
@@ -290,6 +355,10 @@ function ticketField(label: string, value: string): string {
  * remote images are blocked.
  */
 export function renderTicketEmail(opts: TicketEmailOptions): string {
+  return withBrand(opts.brand, () => renderTicketEmailInner(opts));
+}
+
+function renderTicketEmailInner(opts: TicketEmailOptions): string {
   const inner = `
       <div style="padding:28px 40px 4px;text-align:center;">
         ${eyebrowPill("Your ticket")}

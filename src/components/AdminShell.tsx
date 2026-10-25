@@ -2,9 +2,11 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import { cacheClear, cacheGet, fetchAndCache } from "@/lib/clientCache";
+import { useEvent, useEventSlug, useTerms } from "@/lib/useEvent";
+import { themeStyle } from "@/lib/eventTheme";
 
 interface AdminSession {
   name: string;
@@ -14,14 +16,23 @@ interface AdminSession {
 
 type IconName = "overview" | "people" | "ticket" | "mail" | "settings" | "log" | "team";
 
-const NAV: { href: string; label: string; icon: IconName; ownerOnly?: boolean }[] = [
-  { href: "/admin", label: "Overview", icon: "overview" },
-  { href: "/admin/registrations", label: "Contacts", icon: "people" },
-  { href: "/admin/attendance", label: "Attendance", icon: "ticket" },
-  { href: "/admin/campaigns", label: "Campaigns", icon: "mail" },
-  { href: "/admin/settings", label: "Settings", icon: "settings" },
-  { href: "/admin/audit", label: "Activity log", icon: "log", ownerOnly: true },
-  { href: "/admin/admins", label: "Team", icon: "team" },
+interface NavItem {
+  /** Path after the event address ("" is the Overview). */
+  path: string;
+  label: string;
+  icon: IconName;
+  ownerOnly?: boolean;
+  /** Shown only when this part is switched on for the event. */
+  module?: string;
+}
+
+const EVENT_NAV: NavItem[] = [
+  { path: "", label: "Overview", icon: "overview" },
+  { path: "/contacts", label: "Contacts", icon: "people" },
+  { path: "/attendance", label: "Attendance", icon: "ticket", module: "attendance" },
+  { path: "/campaigns", label: "Campaigns", icon: "mail", module: "campaigns" },
+  { path: "/settings", label: "Settings", icon: "settings" },
+  { path: "/activity", label: "Activity log", icon: "log", ownerOnly: true },
 ];
 
 function Icon({ name }: { name: IconName }) {
@@ -93,28 +104,24 @@ function Icon({ name }: { name: IconName }) {
 }
 
 /**
- * True inside the sidebar frame. The frame lives in app/admin/layout.tsx so it stays on screen (and keeps its logo and signed-in admin)
+ * True inside the sidebar frame. The event frame lives in app/[slug]/(admin)/layout.tsx so it stays on screen (and keeps its logo and signed-in admin)
  * while the admin moves between modules; pages that still wrap themselves in <AdminShell> then simply render their content.
  */
 const InsideFrame = createContext(false);
 
-export default function AdminShell({ active, children }: { active: string; children: React.ReactNode }) {
+export default function AdminShell({ children }: { active?: string; children: React.ReactNode }) {
   const inside = useContext(InsideFrame);
-  return inside ? <>{children}</> : <ShellFrame active={active}>{children}</ShellFrame>;
+  return inside ? <>{children}</> : <ShellFrame>{children}</ShellFrame>;
 }
 
-/** The module a page belongs to, for highlighting the sidebar. */
-function isActive(href: string, active: string): boolean {
-  return href === "/admin" ? active === "/admin" : active === href || active.startsWith(`${href}/`);
-}
-
-export function ShellFrame({
-  active,
-  children,
-}: {
-  active: string;
-  children: React.ReactNode;
-}) {
+/** The sidebar frame: the event's menu inside an event, the event list and Team outside one. */
+export function ShellFrame({ children }: { active?: string; children: React.ReactNode }) {
+  const slug = useEventSlug();
+  const pathname = usePathname() || "/";
+  const { event, isOwner: eventOwner, has } = useEvent();
+  const { people } = useTerms();
+  const theme = slug ? themeStyle(event?.color) : undefined;
+  const logoNode = slug && event?.logoUrl ? <Logo className="h-9 w-auto" src={event.logoUrl} darkSrc={event.logoDarkUrl} name={event.brandName || event.name} /> : slug && !event ? <span className="block h-9" /> : <Logo className="h-9 w-auto" showFallbackText />;
   // The signed-in admin is remembered between modules, so the sidebar doesn't flash empty on every switch.
   const [session, setSession] = useState<AdminSession | null>(
     () => cacheGet<{ admin: AdminSession }>("/api/admin/me")?.admin ?? null
@@ -129,22 +136,41 @@ export function ShellFrame({
   async function handleLogout() {
     await fetch("/api/admin/logout", { method: "POST" });
     cacheClear();
-    router.push("/admin/login");
+    router.push("/login");
     router.refresh();
   }
 
-  const items = NAV.filter((item) => !item.ownerOnly || session?.role === "OWNER");
+  const owner = session?.role === "OWNER" || eventOwner;
+  const base = `/${slug}`;
+  const items: { href: string; label: string; icon: IconName; current: boolean }[] = slug
+    ? EVENT_NAV.filter((i) => (!i.ownerOnly || owner) && (!i.module || !event || has(i.module))).map((i) => {
+        const href = `${base}${i.path}`;
+        return { href, label: i.path === "/contacts" ? people : i.label, icon: i.icon, current: i.path === "" ? pathname === base : pathname === href || pathname.startsWith(`${href}/`) };
+      })
+    : [
+        { href: "/", label: "All events", icon: "overview", current: pathname === "/" || pathname.startsWith("/new") },
+        ...(owner ? [{ href: "/team", label: "Team", icon: "team" as IconName, current: pathname.startsWith("/team") }] : []),
+      ];
 
   const sidebar = (
     <div className="flex flex-col h-full">
       <div className="px-6 pt-7 pb-6">
-        <Logo className="h-9 w-auto" showFallbackText />
-        <p className="text-[11px] uppercase tracking-[0.25em] text-muted mt-3">Admin</p>
+        {logoNode}
+        {slug ? (
+          <div className="mt-4">
+            <Link href="/" onClick={() => setMenuOpen(false)} className="text-xs text-muted hover:text-fg">
+              ← All events
+            </Link>
+            <p className="font-serif text-lg leading-tight mt-1.5 break-words">{event?.name ?? "\u00a0"}</p>
+          </div>
+        ) : (
+          <p className="text-[11px] uppercase tracking-[0.25em] text-muted mt-3">Events</p>
+        )}
       </div>
 
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto" aria-label="Main">
         {items.map((item) => {
-          const isCurrent = isActive(item.href, active);
+          const isCurrent = item.current;
           return (
             <Link
               key={item.href}
@@ -184,13 +210,13 @@ export function ShellFrame({
   );
 
   return (
-    <div className="min-h-screen lg:flex">
+    <div className={`min-h-screen lg:flex${theme ? " event-themed" : ""}`} style={theme}>
       {/* Desktop sidebar */}
       <aside className="hidden lg:block w-64 shrink-0 border-r border-border bg-tint sticky top-0 h-screen no-print">{sidebar}</aside>
 
       {/* Mobile top bar + drawer */}
       <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-pagebg/95 backdrop-blur no-print">
-        <Logo className="h-7 w-auto" showFallbackText />
+        <div className="[&_img]:h-7 [&_img]:w-auto">{logoNode}</div>
         <button
           onClick={() => setMenuOpen((o) => !o)}
           aria-label="Open menu"

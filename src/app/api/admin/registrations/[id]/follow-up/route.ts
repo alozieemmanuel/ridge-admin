@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { FOLLOW_UP_VALUES } from "@/lib/followUp";
 
@@ -18,7 +18,9 @@ const schema = z.object({
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
+  const ctx = await requireEvent(request);
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   let raw: unknown;
   try {
@@ -30,12 +32,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid follow-up." }, { status: 400 });
   const { status, feedback } = parsed.data;
 
-  const existing = await prisma.registration.findUnique({ where: { id }, select: { fullName: true, followUpStatus: true } });
+  const existing = await prisma.registration.findFirst({ where: { id, eventId: event.id }, select: { fullName: true, followUpStatus: true } });
   if (!existing) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
   const [, entry] = await prisma.$transaction([
     prisma.registration.update({ where: { id }, data: { followUpStatus: status } }),
-    prisma.followUpNote.create({ data: { registrationId: id, status, body: feedback ?? "", authorName: session?.name ?? null } }),
+    prisma.followUpNote.create({ data: { registrationId: id, status, body: feedback ?? "", authorName: session.name } }),
   ]);
 
   await logAdminAction(

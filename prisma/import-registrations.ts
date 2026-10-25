@@ -9,6 +9,9 @@
  * Usage:
  *   npm run import:registrations -- path/to/export.csv
  *   npm run import:registrations -- path/to/export.csv --dry-run
+ *   EVENT_SLUG=investor-hangout npm run import:registrations -- path/to/export.csv
+ *
+ * The contacts go into the event named by EVENT_SLUG, or the oldest event when it is not set.
  *
  * Expected columns (case-insensitive, order doesn't matter). Common
  * header names are recognized automatically:
@@ -117,6 +120,12 @@ async function main() {
       : `Importing ${records.length} rows...\n`
   );
 
+  const slug = process.env.EVENT_SLUG?.trim().toLowerCase();
+  const target = slug ? await prisma.event.findUnique({ where: { slug } }) : await prisma.event.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!target) throw new Error(slug ? `There is no event with the address "${slug}".` : "There is no event yet. Run the seed first.");
+  const eventId = target.id;
+  console.log(`Importing into the event "${target.name}".`);
+
   for (const [i, row] of records.entries()) {
     const fullName = row[columnMap.fullName]?.trim();
     const email = row[columnMap.email]?.trim().toLowerCase();
@@ -142,12 +151,12 @@ async function main() {
       continue;
     }
 
-    const existing = await prisma.registration.findUnique({ where: { email } });
+    const existing = await prisma.registration.findUnique({ where: { eventId_email: { eventId, email } } });
 
     await prisma.registration.upsert({
-      where: { email },
+      where: { eventId_email: { eventId, email } },
       update: data,
-      create: { ...data, email, createdAt },
+      create: { ...data, eventId, email, createdAt },
     });
 
     if (existing) {
