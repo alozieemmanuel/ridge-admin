@@ -60,7 +60,7 @@ async function recordEvent(params: {
   id: string;
   type: "SENT" | "FAILED";
   kind?: EmailKind;
-  provider?: "GMAIL" | "BREVO";
+  provider?: "GMAIL" | "BREVO" | "MAILERSEND";
   subject?: string;
   providerMessageId?: string;
   errorMessage?: string;
@@ -121,6 +121,9 @@ async function deliverAttendeeEmail(opts: {
   } catch (err) {
     result = { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+
+  // Every sender is at its daily limit: nothing happened, so nothing is recorded. The caller queues it for tomorrow.
+  if (result.deferred) return result;
 
   await recordEvent({
     source: opts.source,

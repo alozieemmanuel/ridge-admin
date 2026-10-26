@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { loginSchema } from "@/lib/validation";
-import { verifyPassword, createSessionToken, setSessionCookie } from "@/lib/auth";
+import { verifyPassword, createSessionToken, applySessionCookie } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -37,15 +37,16 @@ export async function POST(request: NextRequest) {
     name: admin.name,
     role: admin.role,
   });
-  await setSessionCookie(token);
-
   await prisma.admin.update({
     where: { id: admin.id },
     data: { lastLoginAt: new Date() },
   });
 
-  return NextResponse.json({
-    result: "success",
-    admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
-  });
+  return applySessionCookie(
+    NextResponse.json({
+      result: "success",
+      admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
+    }),
+    token
+  );
 }

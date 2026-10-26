@@ -6,6 +6,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
 import Pagination from "@/components/Pagination";
+import SenderStrip from "@/components/SenderStrip";
 import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
 
 type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
@@ -37,6 +38,7 @@ interface Campaign {
   recipientCount: number;
   sentCount: number;
   failedCount: number;
+  waitingCount?: number;
   sentAt: string;
   sentByName: string | null;
   delivered?: number;
@@ -391,7 +393,7 @@ export default function CampaignsPage() {
         setMessage({
           text: `Sent to ${data.campaign.sentCount} of ${data.campaign.recipientCount}${
             data.campaign.failedCount ? ` (${data.campaign.failedCount} failed)` : ""
-          }.`,
+          }.${data.campaign.waitingCount ? ` ${data.campaign.waitingCount} are waiting: every sender used its daily limit, so they go out next.` : ""}`,
           ok: true,
         });
         setSubject("");
@@ -417,6 +419,8 @@ export default function CampaignsPage() {
           Send a one-off email to a group of guests, for example a note before the day. Invitations, reminders and tickets are separate: they are sent from the Attendance page.
         </p>
       </div>
+
+      <SenderStrip onChange={load} />
 
       <div className="border border-border rounded-xl p-6 mb-8">
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Send to</label>
@@ -584,6 +588,7 @@ export default function CampaignsPage() {
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {c.sentCount} of {c.recipientCount}
                         {c.failedCount > 0 && <span className="text-red-400"> ({c.failedCount} failed)</span>}
+                        {(c.waitingCount ?? 0) > 0 && <span className="text-amber-400"> ({c.waitingCount} waiting)</span>}
                       </td>
                       <td className="px-5 py-4 whitespace-nowrap text-emerald-400">
                         {delivered}

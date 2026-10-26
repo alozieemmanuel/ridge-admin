@@ -1,32 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { startConversationSchema } from "@/lib/validation";
 import { getOrCreateConversation, isWhatsAppConfigured, isWindowOpen, normalizePhone } from "@/lib/whatsapp";
 
 export const runtime = "nodejs";
 
-/** Conversation list, most recent first. Optional ?q= searches name and number. */
+/** This event's chats, most recent first. Optional ?q= searches name and number. */
 export async function GET(request: NextRequest) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
 
   const q = request.nextUrl.searchParams.get("q")?.trim() ?? "";
   const digits = q.replace(/\D/g, "");
 
-  let where = {};
+  let where: Record<string, unknown> = { eventId: event.id };
   if (q) {
-    const [regs, prospects] = await Promise.all([
-      prisma.registration.findMany({ where: { fullName: { contains: q, mode: "insensitive" } }, select: { id: true }, take: 50 }),
-      prisma.prospect.findMany({ where: { fullName: { contains: q, mode: "insensitive" } }, select: { id: true }, take: 50 }),
-    ]);
+    const regs = await prisma.registration.findMany({ where: { eventId: event.id, fullName: { contains: q, mode: "insensitive" } }, select: { id: true }, take: 50 });
     where = {
-      OR: [
-        { contactName: { contains: q, mode: "insensitive" } },
-        ...(digits.length >= 3 ? [{ waId: { contains: digits } }] : []),
-        { registrationId: { in: regs.map((r) => r.id) } },
-        { prospectId: { in: prospects.map((p) => p.id) } },
-      ],
+      eventId: event.id,
+      OR: [{ contactName: { contains: q, mode: "insensitive" } }, ...(digits.length >= 3 ? [{ waId: { contains: digits } }] : []), { registrationId: { in: regs.map((r) => r.id) } }],
     };
   }
 
@@ -38,13 +32,8 @@ export async function GET(request: NextRequest) {
   });
 
   const regIds = conversations.map((c) => c.registrationId).filter((v): v is string => Boolean(v));
-  const prospectIds = conversations.map((c) => c.prospectId).filter((v): v is string => Boolean(v));
-  const [regs, prospects] = await Promise.all([
-    prisma.registration.findMany({ where: { id: { in: regIds } }, select: { id: true, fullName: true } }),
-    prisma.prospect.findMany({ where: { id: { in: prospectIds } }, select: { id: true, fullName: true } }),
-  ]);
+  const regs = await prisma.registration.findMany({ where: { id: { in: regIds } }, select: { id: true, fullName: true } });
   const regName = new Map(regs.map((r) => [r.id, r.fullName]));
-  const prospectName = new Map(prospects.map((p) => [p.id, p.fullName]));
 
   return NextResponse.json({
     configured: isWhatsAppConfigured(),
@@ -54,12 +43,8 @@ export async function GET(request: NextRequest) {
       return {
         id: c.id,
         waId: c.waId,
-        name:
-          (c.registrationId && regName.get(c.registrationId)) ||
-          (c.prospectId && prospectName.get(c.prospectId)) ||
-          c.contactName ||
-          null,
-        kind: c.registrationId ? "registration" : c.prospectId ? "prospect" : null,
+        name: (c.registrationId && regName.get(c.registrationId)) || c.contactName || null,
+        kind: c.registrationId ? "registration" : null,
         unreadCount: c.unreadCount,
         lastMessageAt: c.lastMessageAt.toISOString(),
         windowOpen: isWindowOpen(c.lastInboundAt),
@@ -69,10 +54,10 @@ export async function GET(request: NextRequest) {
   });
 }
 
-/** Opens (or creates) the thread for a phone number, so a first message can be sent to it. */
+/** Opens (or creates) the chat for a phone number in this event, so a first message can be sent to it. */
 export async function POST(request: NextRequest) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
 
   let raw: unknown;
   try {
@@ -81,15 +66,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   const parsed = startConversationSchema.safeParse(raw);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
-  }
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
 
   const waId = normalizePhone(parsed.data.phone);
-  if (!waId) {
-    return NextResponse.json({ error: "That doesn't look like a valid phone number. Include the country code." }, { status: 400 });
-  }
+  if (!waId) return NextResponse.json({ error: "That doesn't look like a valid phone number. Include the country code." }, { status: 400 });
 
-  const conversation = await getOrCreateConversation(waId, { name: parsed.data.name });
+  const conversation = await getOrCreateConversation(waId, { name: parsed.data.name, eventId: ctx.event.id });
   return NextResponse.json({ result: "success", id: conversation.id });
 }

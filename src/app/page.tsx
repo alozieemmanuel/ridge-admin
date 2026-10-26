@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import EventCard, { type EventCardData } from "@/components/EventCard";
-import { inputClass, primaryButton } from "@/components/ui";
+import { inputClass, ghostButton, primaryButton } from "@/components/ui";
 import { cacheGet, cacheSet } from "@/lib/clientCache";
 
 interface EventRow extends EventCardData {
@@ -102,11 +102,16 @@ export default function EventsPage() {
           <h1 className="font-serif text-4xl">Your events</h1>
           <p className="text-muted mt-2 max-w-xl">Open an event to manage its contacts, invitations, attendance and emails.</p>
         </div>
-        {owner && events.length > 0 && (
-          <Link href="/new" className={primaryButton}>
-            New event
+        <div className="flex items-center gap-3 flex-wrap">
+          <Link href="/senders" className={ghostButton}>
+            Email senders
           </Link>
-        )}
+          {owner && events.length > 0 && (
+            <Link href="/new" className={primaryButton}>
+              New event
+            </Link>
+          )}
+        </div>
       </div>
 
       {data && counts.active > 0 && (
@@ -166,7 +171,7 @@ export default function EventsPage() {
       {data && events.length > 0 && (
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
           {shown.map((e) => (
-            <EventCard key={e.id} event={e} />
+            <EventCard key={e.id} event={e} canEdit={owner} />
           ))}
           {owner && !q && (filter === "active" || filter === "all") && (
             <Link href="/new" className="rounded-2xl border border-dashed border-border hover:border-gold hover:bg-gold/5 transition-colors min-h-[16rem] flex flex-col items-center justify-center gap-3 text-center p-6 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold">

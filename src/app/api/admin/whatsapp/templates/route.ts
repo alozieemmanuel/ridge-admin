@@ -1,13 +1,13 @@
-import { NextResponse } from "next/server";
-import { getSession } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { requireEvent } from "@/lib/event";
 import { listApprovedTemplates } from "@/lib/whatsapp";
 
 export const runtime = "nodejs";
 
-/** Approved WhatsApp message templates from the Business Account. */
-export async function GET() {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+/** Approved WhatsApp message templates from the company's WhatsApp Business Account (shared by all events). */
+export async function GET(request: NextRequest) {
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
 
   try {
     return NextResponse.json({ templates: await listApprovedTemplates() });

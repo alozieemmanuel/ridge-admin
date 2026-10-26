@@ -193,22 +193,7 @@ export const sendWhatsAppMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export const WHATSAPP_AUDIENCES = [
-  "ALL",
-  "EARLY_BIRD",
-  "LATE",
-  "NOT_PAID",
-  "PARTIAL",
-  "PAID",
-  "CHECKED_IN",
-  "NOT_CHECKED_IN",
-  "NOT_INVITED",
-  "INVITED_NOT_RESERVED",
-  "RESERVED",
-  "PROSPECTS_ALL",
-  "PROSPECTS_NOT_REGISTERED",
-  "PROSPECTS_FOLLOW_UP",
-] as const;
+export const WHATSAPP_AUDIENCES = ["ALL", "NOT_INVITED", "INVITED_NOT_RESERVED", "RESERVED", "CHECKED_IN", "NOT_CHECKED_IN"] as const;
 
 export const sendWhatsAppBroadcastSchema = z.object({
   audience: z.enum(WHATSAPP_AUDIENCES),

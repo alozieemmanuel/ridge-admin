@@ -18,14 +18,22 @@ function LoginForm() {
     setLoading(true);
     setError(null);
 
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch {
+      setError("Couldn't reach the server. Check your connection and try again.");
+      setLoading(false);
+      return;
+    }
 
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+    // A real sign-in answers JSON. Anything else (for example a redirect that ended on an HTML page) is not a success.
+    const data = res.headers.get("content-type")?.includes("application/json") ? await res.json().catch(() => ({})) : {};
+    if (!res.ok || data.result !== "success") {
       setError(data.error || "Something went wrong. Please try again.");
       setLoading(false);
       return;

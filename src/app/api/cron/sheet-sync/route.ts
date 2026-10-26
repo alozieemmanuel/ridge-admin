@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { SHEET_URL_KEY, getSheetInterval, syncContactSheet } from "@/lib/contactSheet";
+import { SUPABASE_KEY_KEY, syncSupabase } from "@/lib/contactSources";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 /**
- * Reads every connected live sheet on the server, so new registrations arrive even when nobody has the dashboard open.
+ * Reads every connected live sheet and Supabase table on the server, so new registrations arrive even when nobody has the dashboard open.
  * Each event is read only when its own interval (Contacts page, Live sheet) has passed. Nobody is emailed.
  *
  * Protected by CRON_SECRET: send it as "Authorization: Bearer <secret>" or as ?key=<secret>.
@@ -19,7 +20,9 @@ async function run(request: NextRequest) {
   const given = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || request.nextUrl.searchParams.get("key") || "";
   if (given !== secret) return NextResponse.json({ error: "Not allowed." }, { status: 401 });
 
-  const linked = await prisma.setting.findMany({ where: { key: SHEET_URL_KEY, value: { not: "" }, event: { status: { not: "ARCHIVED" } } }, select: { eventId: true, event: { select: { slug: true } } } });
+  const live = { status: "ACTIVE" as const };
+  const linked = await prisma.setting.findMany({ where: { key: SHEET_URL_KEY, value: { not: "" }, event: { ...live, dataSource: "sheet" } }, select: { eventId: true, event: { select: { slug: true } } } });
+  const tables = await prisma.setting.findMany({ where: { key: SUPABASE_KEY_KEY, value: { not: "" }, event: { ...live, dataSource: "supabase" } }, select: { eventId: true, event: { select: { slug: true } } } });
   const started = Date.now();
   const results: { event: string; result: string }[] = [];
 
@@ -37,6 +40,23 @@ async function run(request: NextRequest) {
       // A little under the interval, so a run that lands a few seconds early is not skipped.
       const res = await syncContactSheet(row.eventId, { minGapMs: Math.max(0, minutes * 60_000 - 30_000) });
       results.push({ event: row.event.slug, result: "skipped" in res ? "not due yet" : `${res.added ?? 0} added, ${res.updated ?? 0} updated` });
+    } catch (err) {
+      results.push({ event: row.event.slug, result: `failed: ${err instanceof Error ? err.message : "unknown error"}` });
+    }
+  }
+  for (const row of tables) {
+    if (Date.now() - started > 270_000) {
+      results.push({ event: row.event.slug, result: "skipped: out of time, next run" });
+      continue;
+    }
+    const minutes = await getSheetInterval(row.eventId);
+    if (minutes === 0) {
+      results.push({ event: row.event.slug, result: "manual only" });
+      continue;
+    }
+    try {
+      const res = await syncSupabase(row.eventId, { minGapMs: Math.max(0, minutes * 60_000 - 30_000) });
+      results.push({ event: row.event.slug, result: "skipped" in res ? "not due yet" : `supabase: ${res.added ?? 0} added, ${res.updated ?? 0} updated` });
     } catch (err) {
       results.push({ event: row.event.slug, result: `failed: ${err instanceof Error ? err.message : "unknown error"}` });
     }

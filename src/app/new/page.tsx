@@ -8,6 +8,9 @@ import EventBrandFields, { emptyLogo, useLogoPreview, type BrandDraft } from "@/
 import EventCard from "@/components/EventCard";
 import { ghostButton, inputClass, primaryButton } from "@/components/ui";
 import { EVENT_MODULES } from "@/lib/eventModules";
+import { DATA_SOURCES, type DataSourceId } from "@/lib/dataSources";
+import { PaymentFields } from "@/components/PaymentsPanel";
+import { formatPrice, paymentProblem, type PaymentConfig, PAY_METHODS } from "@/lib/payments";
 import { BASE_PATH, RESERVED_SLUGS } from "@/lib/basePath";
 import { cacheDeletePrefix } from "@/lib/clientCache";
 import { uploadLogo } from "@/lib/brandClient";
@@ -43,7 +46,9 @@ interface Draft {
   capacity: string;
   tagline: string;
   brand: BrandDraft;
-  source: "sheet" | "later";
+  source: DataSourceId;
+  sb: { url: string; table: string; key: string };
+  payment: PaymentConfig;
   sheetUrl: string;
   sheetInterval: number;
   modules: string[];
@@ -66,7 +71,7 @@ interface EventOption {
   name: string;
 }
 
-const STEPS = ["Basics", "Brand", "Wording", "Contacts", "Features", "Team", "Review"] as const;
+const ALL_STEPS = ["Basics", "Brand", "Wording", "Contacts", "Features", "Payments", "Team", "Review"] as const;
 
 const label = "block text-sm font-medium mb-1.5";
 const hint = "text-xs text-muted mt-1.5";
@@ -124,7 +129,9 @@ export default function NewEventPage() {
     capacity: "",
     tagline: "",
     brand: { brandName: "", color: DEFAULT_COLOR, logo: emptyLogo(), logoDark: emptyLogo(), terms: { ...first.terms, action: "Reserve my seat" } },
-    source: "later",
+    source: "manual",
+    sb: { url: "", table: "", key: "" },
+    payment: { price: "", currency: "NGN", method: "bank", details: "" },
     sheetUrl: "",
     sheetInterval: 5,
     modules: first.modules,
@@ -152,6 +159,9 @@ export default function NewEventPage() {
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const type = eventType(draft.type);
+  // The Payments step only exists for paid events.
+  const STEPS = ALL_STEPS.filter((x) => x !== "Payments" || type.paid);
+  const name = STEPS[step] ?? STEPS[0];
   const seats = draft.modules.includes("invitations");
   const problem = draft.slug ? slugProblem(draft.slug) : null;
 
@@ -161,11 +171,20 @@ export default function NewEventPage() {
   }
 
   const stepProblem = (i: number): string | null => {
-    if (i === 0) {
+    const n = STEPS[i];
+    if (n === "Basics") {
       if (draft.name.trim().length < 2) return "Give the event a name.";
       if (!draft.slug || problem) return problem ?? "Choose a web address.";
     }
-    if (i === 3 && draft.source === "sheet" && !/^https:\/\//.test(draft.sheetUrl.trim())) return "Paste the sheet link, or choose to add contacts later.";
+    if (n === "Contacts") {
+      if (draft.source === "sheet" && !/^https:\/\//.test(draft.sheetUrl.trim())) return "Paste the sheet link, or choose another way to add contacts.";
+      if (draft.source === "supabase") {
+        if (!/^https:\/\/[^\s/]+\.[^\s/]+/.test(draft.sb.url.trim())) return "Enter the Supabase project address, like https://abcd.supabase.co.";
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(draft.sb.table.trim())) return "Enter the table name. Letters, numbers and underscores only.";
+        if (draft.sb.key.trim().length < 20) return "Paste the Supabase API key.";
+      }
+    }
+    if (n === "Payments") return paymentProblem(draft.payment);
     return null;
   };
   const blocked = stepProblem(step);
@@ -211,6 +230,9 @@ export default function NewEventPage() {
       contactPhone: draft.contactPhone,
       senderName: draft.senderName,
       sheetUrl: draft.source === "sheet" ? draft.sheetUrl.trim() : "",
+      dataSource: draft.source,
+      supabase: draft.source === "supabase" ? draft.sb : undefined,
+      payment: type.paid ? draft.payment : undefined,
       sheetInterval: draft.sheetInterval,
       copyFrom: draft.copyFrom || undefined,
       adminIds: draft.adminIds,
@@ -297,7 +319,7 @@ export default function NewEventPage() {
 
         <div className="grid xl:grid-cols-[minmax(0,40rem)_minmax(0,22rem)] gap-12 items-start">
           <div>
-            {step === 0 && (
+            {name === "Basics" && (
               <section>
                 <Heading title="What kind of event is it?" text="This only sets sensible defaults. You can change everything later." />
                 <div className="grid sm:grid-cols-2 gap-3 mb-8" role="radiogroup" aria-label="Event type">
@@ -402,7 +424,7 @@ export default function NewEventPage() {
               </section>
             )}
 
-            {step === 1 && (
+            {name === "Brand" && (
               <section>
                 <Heading title="Give it a look" text="Most events have their own name and logo. The colour tells your team which event they are in." />
                 <div className="mb-7">
@@ -416,25 +438,23 @@ export default function NewEventPage() {
               </section>
             )}
 
-            {step === 2 && (
+            {name === "Wording" && (
               <section>
                 <Heading title="Choose your words" text="Pick what this event calls its people. The menus and headings follow it, so Sales Pro can say Registrations while another event says Contacts." />
                 <EventBrandFields section="wording" value={draft.brand} onChange={(brand) => set({ brand })} fallbackName={draft.name} />
               </section>
             )}
 
-            {step === 3 && (
+            {name === "Contacts" && (
               <section>
-                <Heading title={`Where do your ${draft.brand.terms.people.toLowerCase()} come from?`} text="You can change this at any time on the Contacts page." />
+                <Heading title={`Where do your ${draft.brand.terms.people.toLowerCase()} come from?`} text="You can change this at any time in Settings, Contacts source." />
                 <div className="grid sm:grid-cols-2 gap-3 mb-7" role="radiogroup" aria-label="Where contacts come from">
-                  <button type="button" role="radio" aria-checked={draft.source === "sheet"} onClick={() => set({ source: "sheet" })} className={`text-left rounded-xl border p-4 ${draft.source === "sheet" ? "border-gold bg-gold/10" : "border-border hover:border-gold/60"}`}>
-                    <span className="block font-medium text-sm">A live Google Sheet</span>
-                    <span className="block text-xs text-muted mt-1">New rows are added to the dashboard automatically.</span>
-                  </button>
-                  <button type="button" role="radio" aria-checked={draft.source === "later"} onClick={() => set({ source: "later" })} className={`text-left rounded-xl border p-4 ${draft.source === "later" ? "border-gold bg-gold/10" : "border-border hover:border-gold/60"}`}>
-                    <span className="block font-medium text-sm">I&apos;ll add them later</span>
-                    <span className="block text-xs text-muted mt-1">Upload a CSV file from the Contacts page whenever you are ready.</span>
-                  </button>
+                  {DATA_SOURCES.map((d) => (
+                    <button key={d.id} type="button" role="radio" aria-checked={draft.source === d.id} onClick={() => set({ source: d.id })} className={`text-left rounded-xl border p-4 ${draft.source === d.id ? "border-gold bg-gold/10" : "border-border hover:border-gold/60"}`}>
+                      <span className="block font-medium text-sm">{d.label}</span>
+                      <span className="block text-xs text-muted mt-1">{d.hint}</span>
+                    </button>
+                  ))}
                 </div>
                 {draft.source === "sheet" && (
                   <div className="space-y-5 mb-7">
@@ -445,34 +465,60 @@ export default function NewEventPage() {
                       <input id="ev-sheet" value={draft.sheetUrl} onChange={(e) => set({ sheetUrl: e.target.value })} placeholder="https://docs.google.com/spreadsheets/d/…" className={inputClass} />
                       <p className={hint}>In the sheet choose Share, then General access, then Anyone with the link as Viewer. The first row holds the column names, with at least a name and an email.</p>
                     </div>
+                  </div>
+                )}
+                {draft.source === "supabase" && (
+                  <div className="space-y-5 mb-7">
                     <div>
-                      <label htmlFor="ev-int" className={label}>
-                        How often should the dashboard check it?
+                      <label htmlFor="sb-url" className={label}>
+                        Project address
                       </label>
-                      <select id="ev-int" value={draft.sheetInterval} onChange={(e) => set({ sheetInterval: Number(e.target.value) })} className={inputClass}>
-                        {SYNC_INTERVALS.map((s) => (
-                          <option key={s.minutes} value={s.minutes}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className={hint}>Checking happens on the server, so new registrations arrive even when nobody has the dashboard open. Nobody is emailed by it.</p>
+                      <input id="sb-url" value={draft.sb.url} onChange={(e) => set({ sb: { ...draft.sb, url: e.target.value } })} placeholder="https://abcdefgh.supabase.co" className={inputClass} />
+                      <p className={hint}>In Supabase: Project Settings, then API, then Project URL.</p>
+                    </div>
+                    <div>
+                      <label htmlFor="sb-table" className={label}>
+                        Table name
+                      </label>
+                      <input id="sb-table" value={draft.sb.table} onChange={(e) => set({ sb: { ...draft.sb, table: e.target.value } })} placeholder="registrations" className={inputClass} />
+                      <p className={hint}>It needs a column for the email and one for the name, such as email and full_name.</p>
+                    </div>
+                    <div>
+                      <label htmlFor="sb-key" className={label}>
+                        API key
+                      </label>
+                      <input id="sb-key" type="password" autoComplete="off" value={draft.sb.key} onChange={(e) => set({ sb: { ...draft.sb, key: e.target.value } })} className={inputClass} />
+                      <p className={hint}>Stored on the server and never shown again. The service_role key can read every table, so keep it private.</p>
                     </div>
                   </div>
                 )}
-                <p className="text-xs text-muted">Website forms and Supabase tables as a source are coming in a later update.</p>
+                {(draft.source === "sheet" || draft.source === "supabase") && (
+                  <div className="mb-7">
+                    <label htmlFor="ev-int" className={label}>
+                      How often should the dashboard check it?
+                    </label>
+                    <select id="ev-int" value={draft.sheetInterval} onChange={(e) => set({ sheetInterval: Number(e.target.value) })} className={inputClass}>
+                      {SYNC_INTERVALS.map((s) => (
+                        <option key={s.minutes} value={s.minutes}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className={hint}>Checking happens on the server, so new registrations arrive even when nobody has the dashboard open. Nobody is emailed by it.</p>
+                  </div>
+                )}
+                {draft.source === "form" && <p className="text-sm text-muted mb-7">After you create the event, Settings, Contacts source shows the secret address and a ready-made form to paste into your website.</p>}
+                {draft.source === "manual" && <p className="text-sm text-muted mb-7">Upload a CSV file or use Add contact on the Contacts page.</p>}
               </section>
             )}
 
-            {step === 4 && (
+            {name === "Features" && (
               <section>
                 <Heading title="What does this event need?" text={`${draft.brand.terms.people} and the live sheet are always on. Switch on only what you will use.`} />
                 <div className="space-y-3 mb-8">
                   {EVENT_MODULES.map((m) => (
                     <Switch key={m.key} on={draft.modules.includes(m.key)} onChange={(v) => set({ modules: v ? [...draft.modules, m.key] : draft.modules.filter((x) => x !== m.key) })} title={m.label} text={m.hint} />
                   ))}
-                  {type.paid && <Switch on={false} onChange={() => undefined} disabled title="Payments" text="Take payment for tickets. Coming in a later update." />}
-                  <Switch on={false} onChange={() => undefined} disabled title="WhatsApp messaging" text="Direct and broadcast messages, and replies. Coming in the next update." />
                 </div>
                 <h3 className="font-medium mb-4">Contact details guests will see</h3>
                 <div className="grid sm:grid-cols-2 gap-5">
@@ -500,7 +546,14 @@ export default function NewEventPage() {
               </section>
             )}
 
-            {step === 5 && (
+            {name === "Payments" && (
+              <section>
+                <Heading title="Ticket price" text="Guests see the price and how to pay on their page. You can change it later in Settings, Payments." />
+                <PaymentFields value={draft.payment} onChange={(payment) => set({ payment })} />
+              </section>
+            )}
+
+            {name === "Team" && (
               <section>
                 <Heading title="Who can open it?" text="Owners can open every event. Choose which admins can open this one." />
                 {admins.length === 0 ? (
@@ -519,7 +572,7 @@ export default function NewEventPage() {
               </section>
             )}
 
-            {step === 6 && (
+            {name === "Review" && (
               <section>
                 <Heading title="Check and create" text="Everything here can be changed later in Settings." />
                 <dl className="rounded-xl border border-border px-5 py-2 mb-6">
@@ -531,7 +584,8 @@ export default function NewEventPage() {
                   <Row name="Colour" value={draft.brand.color} />
                   <Row name="Logo" value={draft.brand.logo.file ? draft.brand.logo.file.name : draft.brand.logo.link ? "From a link" : ""} />
                   <Row name="People are called" value={`${draft.brand.terms.people}, button "${draft.brand.terms.action}"`} />
-                  <Row name="Contacts from" value={draft.source === "sheet" ? "A live Google Sheet" : "Added later"} />
+                  <Row name="Contacts from" value={DATA_SOURCES.find((d) => d.id === draft.source)?.label ?? ""} />
+                  {type.paid && <Row name="Ticket" value={`${formatPrice(draft.payment.price, draft.payment.currency)}, ${PAY_METHODS.find((m) => m.id === draft.payment.method)?.label ?? ""}`} />}
                   <Row name="Uses" value={draft.modules.map((m) => EVENT_MODULES.find((x) => x.key === m)?.label.split(",")[0] ?? m).join(", ") || "Contacts only"} />
                   <Row name="Admins with access" value={draft.adminIds.length ? `${draft.adminIds.length} chosen, plus owners` : "Owners only"} />
                 </dl>
@@ -541,7 +595,7 @@ export default function NewEventPage() {
               </section>
             )}
 
-            {(error || (blocked && step < STEPS.length - 1 && reached >= step && false)) && (
+            {error && (
               <p role="alert" className="text-sm text-red-400 mt-6">
                 {error}
               </p>
@@ -570,7 +624,7 @@ export default function NewEventPage() {
                   {busy ? "Creating…" : draft.publish ? "Create event" : "Save draft"}
                 </button>
               )}
-              {step === 1 || step === 2 || step === 3 ? <span className="text-xs text-muted">You can skip this and come back to it later.</span> : null}
+              {name === "Brand" || name === "Wording" || name === "Contacts" ? <span className="text-xs text-muted">You can skip this and come back to it later.</span> : null}
             </div>
           </div>
 

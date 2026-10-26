@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap } from "@/lib/settings";
 import { updateSettingsSchema } from "@/lib/validation";
-import { SHEET_KEYS } from "@/lib/contactSheet";
+import { HIDDEN_SETTING_KEYS } from "@/lib/contactSources";
 import { requireEvent } from "@/lib/event";
 
 const DERIVED_KEYS = ["event_slug", "event_name", "event_id", "event_brand_name", "event_color", "event_logo_url", "event_timezone"];
 
-/** The live sheet link and its last result are managed from the Contacts page, not the Event details form. */
+/** The live sheet, Supabase connection and website-form settings have their own screens, not the Event details form. The Supabase key never leaves the server. */
 function withoutSheetKeys(settings: Record<string, string>) {
-  return Object.fromEntries(Object.entries(settings).filter(([key]) => !SHEET_KEYS.includes(key) && !DERIVED_KEYS.includes(key)));
+  return Object.fromEntries(Object.entries(settings).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key)));
 }
 
 export const runtime = "nodejs";
@@ -37,7 +37,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "Invalid settings payload." }, { status: 400 });
   }
 
-  const entries = Object.entries(parsed.data).filter(([key]) => !SHEET_KEYS.includes(key) && !DERIVED_KEYS.includes(key));
+  const entries = Object.entries(parsed.data).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key));
   await prisma.$transaction(
     entries.map(([key, value]) =>
       prisma.setting.upsert({

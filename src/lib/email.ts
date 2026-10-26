@@ -461,13 +461,15 @@ export interface SendEmailInput {
   attachments?: GmailAttachment[];
 }
 
-export type EmailProvider = "GMAIL" | "BREVO";
+export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND";
 
 export interface SendEmailResult {
   success: boolean;
   provider?: EmailProvider;
   providerMessageId?: string;
   error?: string;
+  /** Every sender in the pool has used its daily limit. Nothing was sent and nothing failed: the email waits for tomorrow. */
+  deferred?: boolean;
 }
 
 /** True for "a@b.co" or "Name <a@b.co>" — the two shapes accepted for from / reply-to. */
@@ -506,7 +508,7 @@ function describeBrevoError(status: number, body: string): string {
  *
  * The sender in EMAIL_FROM must be a sender/domain you have verified in Brevo.
  */
-async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
+export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
   const apiKey = process.env.BREVO_API_KEY;
   // EMAIL_FROM must be a sender/domain verified in Brevo. Without it, fall back to the Gmail account's address.
   const from = process.env.EMAIL_FROM || (process.env.GMAIL_USER ? `${BRAND_NAME} <${process.env.GMAIL_USER}>` : "");
@@ -560,7 +562,7 @@ async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResult> {
 }
 
 /** Sends via the Gmail / Google Workspace account in GMAIL_USER and maps the result to SendEmailResult. */
-async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResult> {
+export async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResult> {
   const res = await sendViaGmail({
     to: input.to,
     subject: input.subject,
@@ -574,14 +576,52 @@ async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEmailResu
 }
 
 /**
- * Routes one email to the right channel.
- * - campaign -> Brevo only.
- * - everything else -> Gmail only. There is no fallback to Brevo: Brevo is
- *   reserved for broadcasts.
+ * Sends via MailerSend's email API. Needs MAILERSEND_API_KEY and MAILERSEND_FROM (an address on a domain verified in MailerSend).
+ * Delivery and open tracking are not wired up for this sender yet, so those emails show as Sent only.
+ */
+export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmailResult> {
+  const apiKey = process.env.MAILERSEND_API_KEY;
+  const from = process.env.MAILERSEND_FROM || process.env.EMAIL_FROM || "";
+  if (!apiKey) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_API_KEY is not set on the server." };
+  if (!from) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_FROM is not set on the server (an address on a domain verified in MailerSend)." };
+  const sender = parseAddress(from);
+  const reply = input.replyTo ? parseAddress(input.replyTo) : null;
+  try {
+    const response = await fetch("https://api.mailersend.com/v1/email", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      body: JSON.stringify({
+        from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) },
+        to: [{ email: input.to }],
+        subject: input.subject,
+        html: input.html,
+        ...(reply ? { reply_to: { email: reply.email, ...(reply.name ? { name: reply.name } : {}) } } : {}),
+      }),
+    });
+    if (response.status === 202 || response.ok) return { success: true, provider: "MAILERSEND", providerMessageId: response.headers.get("x-message-id") ?? undefined };
+    const text = await response.text();
+    let message = text.slice(0, 300);
+    try {
+      const parsed = JSON.parse(text) as { message?: string };
+      if (parsed.message) message = parsed.message;
+    } catch {
+      // not JSON
+    }
+    return { success: false, provider: "MAILERSEND", error: `MailerSend ${response.status}: ${message}` };
+  } catch (err) {
+    return { success: false, provider: "MAILERSEND", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Routes one email to a sender.
+ * - When the sender pool has been set up (src/lib/senders.ts), the pool decides: senders in order, each with a daily limit.
+ * - Otherwise, as before: campaigns go through Brevo, everything else through Gmail.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  if (input.kind === "campaign") {
-    return sendViaBrevo(input);
-  }
+  const { sendThroughPool } = await import("@/lib/senders");
+  const pooled = await sendThroughPool(input);
+  if (pooled) return pooled;
+  if (input.kind === "campaign") return sendViaBrevo(input);
   return sendViaGmailChannel(input);
 }

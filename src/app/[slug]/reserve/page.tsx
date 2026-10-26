@@ -8,7 +8,7 @@ import { primaryButton } from "@/components/ui";
 
 interface View {
   guest: { fullName: string; email: string; phone: string | null };
-  event: { name: string; brandName: string | null; color: string | null; logoUrl: string | null; logoDarkUrl: string | null; action: string; caption: string; date: string; time: string; venue: string; contactEmail: string; contactPhone: string };
+  event: { name: string; brandName: string | null; color: string | null; logoUrl: string | null; logoDarkUrl: string | null; action: string; caption: string; date: string; time: string; venue: string; contactEmail: string; contactPhone: string; price?: string; payment?: string };
   reserved: boolean;
   full: boolean;
   ticket: { code: string; qrSvg: string; checkedIn: boolean } | null;
@@ -125,6 +125,14 @@ function ReserveInner() {
               </div>
             </section>
 
+            {view.event.price && (
+              <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+                <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Ticket</h2>
+                <p className="font-serif text-2xl">{view.event.price}</p>
+                {view.event.payment && <p className="text-sm text-muted mt-3 whitespace-pre-line break-words">{linkify(view.event.payment)}</p>}
+              </section>
+            )}
+
             <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
               <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
               <div className="grid sm:grid-cols-2 gap-5">
@@ -184,6 +192,19 @@ function ReserveInner() {
         )}
       </main>
     </div>
+  );
+}
+
+/** Makes web addresses in a plain text clickable. */
+function linkify(text: string) {
+  return text.split(/(https:\/\/[^\s]+)/g).map((part, i) =>
+    /^https:\/\//.test(part) ? (
+      <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline text-fg">
+        {part}
+      </a>
+    ) : (
+      part
+    )
   );
 }
 

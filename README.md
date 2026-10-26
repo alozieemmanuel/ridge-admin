@@ -40,8 +40,45 @@ Every event has its own contacts, settings, email templates, campaigns, activity
 Other admins open only the events they were added to. Invitations, Attendance and Campaigns can be switched on or off per
 event (Settings, Data tab, owners only).
 
-Prospects, Payments, Brochure Requests and WhatsApp are parked in `src/app/_parked` (Next ignores that folder) and their
-endpoints answer 404 (see `src/lib/modules.ts`).
+Prospects, Payments and Brochure Requests are parked in `src/app/_parked` (Next ignores that folder) and their
+endpoints answer 404 (see `src/lib/modules.ts`). WhatsApp is live per event (see below).
+
+### Creating and editing an event
+
+`/event/new` is a seven-step wizard (Basics, Brand, Wording, Contacts, Features, Payments for paid events, Team, Review) with a live preview.
+Owners edit an event any time: Settings, **Edit event** (name, kind, parts, time zone, archive), **Branding** (colour, logos, wording),
+**Contacts source**, **Payments** (paid events only). Event cards on the home page have an Edit link for owners.
+
+### Contacts source
+
+Each event picks one source in Settings, Contacts source: a live Google Sheet, a form on your website, a Supabase table, or manual.
+- Form: the event gets a secret address, `POST /event/api/public/intake/<slug>`, with a key. Settings shows a ready-made form.
+- Supabase: project address, table and key (stored on the server only). The table needs email and name columns.
+- Sheet and Supabase are read on a schedule by `/event/api/cron/sheet-sync`.
+- Add contact (Contacts page) adds one person by hand. CSV import works for every source.
+
+### Email sender pool
+
+`/event/senders` (owners edit) lists the senders in order of preference with a daily limit each: Gmail / Workspace, Brevo, MailerSend.
+Campaign emails use the first sender with room. A failing sender is skipped for a minute. When every limit is used, the rest wait
+in a queue and go out after midnight (Lagos time) through `/event/api/cron/email-queue`, or with "Send waiting emails now" on the
+Campaigns page. Tickets and confirmations ignore the limits. With no senders listed, the old rule applies (campaigns via Brevo, the
+rest via Gmail). Keys stay in the environment.
+
+### WhatsApp
+
+One company number, switched on per event (Settings, Edit event). Each event has an Inbox (one to one, with replies) and Broadcast
+(approved templates to a group). Setup steps: `docs/WHATSAPP_SETUP.md`.
+
+### Payments (paid events)
+
+Price, currency and how guests pay (bank transfer, payment link, pay at the door). Guests see it on their page, and
+`{{ticket_price}}` and `{{payment_instructions}}` work in email templates. Card checkout and payment tracking are not built yet.
+
+### Scheduled jobs
+
+Set `CRON_SECRET`, then call these every few minutes from cron-job.org or GitHub Actions (Vercel's free plan runs a job once a day):
+`/event/api/cron/sheet-sync?key=<CRON_SECRET>` every 5 minutes and `/event/api/cron/email-queue?key=<CRON_SECRET>` every 15 minutes.
 
 ## Getting started
 

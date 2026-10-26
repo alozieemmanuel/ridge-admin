@@ -20,6 +20,7 @@ export interface EventCardData {
   time?: string;
   venue?: string;
   sheetLinked?: boolean;
+  dataSource?: string;
   lastSyncAt?: string | null;
   total: number;
   invited?: number;
@@ -73,7 +74,14 @@ const icon = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke
  * One event as a card: a band in the event's colour with its logo, then its details and numbers.
  * Used on the events page and in the wizard's live preview (`preview` turns off the link).
  */
-export default function EventCard({ event: e, preview = false }: { event: EventCardData; preview?: boolean }) {
+function sourceNote(e: EventCardData, now: number): string {
+  if (e.dataSource === "form") return "Contacts from your website form";
+  if (e.dataSource === "supabase") return `Supabase table${e.lastSyncAt && now ? `, read ${ago(e.lastSyncAt, now)}` : ""}`;
+  if (e.dataSource === "manual") return "Contacts added by hand";
+  return e.sheetLinked ? `Live sheet, synced ${now ? ago(e.lastSyncAt, now) : ""}` : "No live sheet linked";
+}
+
+export default function EventCard({ event: e, preview = false, canEdit = false }: { event: EventCardData; preview?: boolean; canEdit?: boolean }) {
   const color = normalizeHex(e.color) ?? DEFAULT_COLOR;
   const ink = onColor(color);
   const brand = e.brandName?.trim() || e.name || "Event name";
@@ -145,8 +153,17 @@ export default function EventCard({ event: e, preview = false }: { event: EventC
         </div>
 
         <div className="mt-auto pt-5 flex items-center justify-between gap-3 text-xs text-muted">
-          <span className="truncate">{preview ? "Live sheet and numbers appear here" : e.sheetLinked ? `Live sheet, synced ${now ? ago(e.lastSyncAt, now) : ""}` : "No live sheet linked"}</span>
-          {!preview && <span className="font-medium text-fg group-hover:underline shrink-0">Open</span>}
+          <span className="truncate">{preview ? "Numbers appear here" : sourceNote(e, now)}</span>
+          {!preview && (
+            <span className="flex items-center gap-4 shrink-0">
+              {canEdit && (
+                <Link href={`/${e.slug}/settings?tab=data`} className="relative z-10 font-medium text-muted hover:text-fg hover:underline">
+                  Edit
+                </Link>
+              )}
+              <span className="font-medium text-fg group-hover:underline">Open</span>
+            </span>
+          )}
         </div>
       </div>
     </>
@@ -155,8 +172,9 @@ export default function EventCard({ event: e, preview = false }: { event: EventC
   const shell = "group flex flex-col rounded-2xl border border-border bg-cardbg overflow-hidden text-left";
   if (preview) return <div className={shell}>{body}</div>;
   return (
-    <Link href={`/${e.slug}`} className={`${shell} transition-shadow hover:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-gold ${e.status === "ARCHIVED" ? "opacity-75" : ""}`}>
+    <div className={`${shell} relative transition-shadow hover:shadow-lg focus-within:ring-2 focus-within:ring-gold ${e.status === "ARCHIVED" ? "opacity-75" : ""}`}>
+      <Link href={`/${e.slug}`} aria-label={`Open ${e.name}`} className="absolute inset-0 z-0 focus:outline-none" />
       {body}
-    </Link>
+    </div>
   );
 }

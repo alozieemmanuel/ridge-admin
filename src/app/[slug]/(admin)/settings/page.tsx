@@ -6,7 +6,9 @@ import { useEvent, useEventPath } from "@/lib/useEvent";
 import { EVENT_MODULES } from "@/lib/eventModules";
 import EventBrandFields, { emptyLogo, type BrandDraft } from "@/components/EventBrandFields";
 import { removeLogo, uploadLogo } from "@/lib/brandClient";
-import { DEFAULT_COLOR, TIMEZONES, termsOf } from "@/lib/eventTheme";
+import { DEFAULT_COLOR, EVENT_TYPES, TIMEZONES, termsOf } from "@/lib/eventTheme";
+import DataSourcePanel from "@/components/DataSourcePanel";
+import PaymentsPanel from "@/components/PaymentsPanel";
 import AdminShell from "@/components/AdminShell";
 import { useIsOwner } from "@/lib/useIsOwner";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -181,6 +183,8 @@ function EventPanel() {
   const router = useRouter();
   const [modules, setModules] = useState<string[] | null>(null);
   const [timezone, setTimezone] = useState<string | null>(null);
+  const [name, setName] = useState<string | null>(null);
+  const [type, setType] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const current = modules ?? event?.modules ?? [];
@@ -201,8 +205,31 @@ function EventPanel() {
   if (!event) return null;
   return (
     <div className="border border-border rounded-xl p-6 max-w-2xl mb-6">
-      <h3 className="font-serif text-xl mb-1">Parts of this event</h3>
-      <p className="text-sm text-muted mb-4">Contacts, the live sheet and settings are always on. Switch the rest on or off.</p>
+      <h3 className="font-serif text-xl mb-1">Edit this event</h3>
+      <p className="text-sm text-muted mb-5">Change the name, the kind of event and which parts it uses. The address of the event stays the same.</p>
+      <div className="grid sm:grid-cols-2 gap-5 mb-6">
+        <div>
+          <label htmlFor="ev-name" className="block text-sm font-medium mb-1.5">
+            Event name
+          </label>
+          <input id="ev-name" value={name ?? event.name} onChange={(e) => setName(e.target.value)} maxLength={120} className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold" />
+        </div>
+        <div>
+          <label htmlFor="ev-type" className="block text-sm font-medium mb-1.5">
+            Kind of event
+          </label>
+          <select id="ev-type" value={type ?? event.type} onChange={(e) => setType(e.target.value)} className="w-full bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold">
+            {EVENT_TYPES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          {(type ?? event.type) === "paid" && event.type !== "paid" && <p className="text-xs text-muted mt-1.5">A Payments tab will appear after you save.</p>}
+        </div>
+      </div>
+      <p className="text-sm font-medium mb-2">Parts of this event</p>
+      <p className="text-xs text-muted mb-3">Contacts, the contact source and settings are always on. Switch the rest on or off.</p>
       <div className="space-y-3 mb-4">
         {EVENT_MODULES.map((m) => (
           <label key={m.key} className="flex items-start gap-3 text-sm cursor-pointer">
@@ -232,7 +259,7 @@ function EventPanel() {
         </select>
       </div>
       <div className="flex items-center gap-3 flex-wrap">
-        <button disabled={busy || (modules === null && timezone === null)} onClick={() => patch({ modules: current, timezone: timezone ?? event.timezone }, "Saved.")} className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-50">
+        <button disabled={busy || (modules === null && timezone === null && name === null && type === null)} onClick={() => patch({ modules: current, timezone: timezone ?? event.timezone, name: name ?? event.name, type: type ?? event.type }, "Saved.")} className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-50">
           Save
         </button>
         <button
@@ -261,7 +288,7 @@ function SettingsInner() {
   const router = useRouter();
   const params = useSearchParams();
   const requested = params.get("tab");
-  const tab = requested === "templates" || requested === "appearance" || ((requested === "data" || requested === "branding") && isOwner) ? requested : "event";
+  const tab = requested === "templates" || requested === "appearance" || ((requested === "data" || requested === "branding" || requested === "source" || requested === "payments") && isOwner) ? requested : "event";
 
   useEffect(() => {
     fetch("/api/admin/settings")
@@ -282,11 +309,19 @@ function SettingsInner() {
     setMessage(res.ok ? "Saved." : "Failed to save.");
   }
 
+  const { event } = useEvent();
   const TABS = [
     { id: "event", label: "Event details" },
     { id: "templates", label: "Email templates" },
     { id: "appearance", label: "Appearance" },
-    ...(isOwner ? [{ id: "branding", label: "Branding" }, { id: "data", label: "Event setup and data" }] : []),
+    ...(isOwner
+      ? [
+          { id: "branding", label: "Branding" },
+          { id: "source", label: "Contacts source" },
+          ...(event?.type === "paid" ? [{ id: "payments", label: "Payments" }] : []),
+          { id: "data", label: "Edit event" },
+        ]
+      : []),
   ];
 
   return (
@@ -321,6 +356,10 @@ function SettingsInner() {
       {tab === "templates" && <TemplatesPanel />}
 
       {tab === "branding" && isOwner && <BrandingPanel />}
+
+      {tab === "source" && isOwner && <DataSourcePanel />}
+
+      {tab === "payments" && isOwner && event?.type === "paid" && <PaymentsPanel />}
 
       {tab === "data" && isOwner && (
         <>

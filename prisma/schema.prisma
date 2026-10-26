@@ -35,6 +35,7 @@ enum EmailProvider {
   GMAIL // transactional mail: confirmations, reminders, seat invites, internal alerts
   RESEND // legacy: campaigns sent before the move to Brevo. Kept so old rows still read; never written now.
   BREVO // campaigns (broadcast email)
+  MAILERSEND // a sender in the pool (see EmailSender)
 }
 
 enum ProofStatus {
@@ -99,6 +100,10 @@ model Event {
   // What this event calls its people, e.g. { "person": "Registration", "people": "Registrations", "action": "Reserve my seat" }.
   terms     Json?
   timezone  String      @default("Africa/Lagos")
+  // Where this event's contacts come from: "sheet" | "supabase" | "form" | "manual".
+  dataSource  String    @default("sheet")
+  // Secret in the address the event's website form posts to. Changing it switches the old form address off.
+  intakeToken String?   @unique
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
@@ -179,6 +184,7 @@ model Registration {
   paymentProofs PaymentProof[]
   prospect      Prospect? // set when this registration was converted from a prospect
   paymentRecords PaymentRecord[]
+  queuedEmails   QueuedEmail[]
 
   @@unique([eventId, email])
   @@index([eventId])
@@ -334,7 +340,8 @@ model Campaign {
   sentAt         DateTime         @default(now())
   sentByName     String?
 
-  emailEvents EmailEvent[]
+  emailEvents  EmailEvent[]
+  queuedEmails QueuedEmail[]
 
   @@index([sentAt])
   @@index([eventId])
@@ -487,6 +494,7 @@ model WhatsAppConversation {
   id             String    @id @default(cuid())
   waId           String    @unique // digits only, international format, e.g. 2348012345678
   contactName    String? // profile name WhatsApp gave us, if any
+  eventId        String? // the event this chat belongs to (set when we write to the person, or from their registration)
   registrationId String? // soft links (no foreign key) to who this number belongs to
   prospectId     String?
   lastMessageAt  DateTime  @default(now())
@@ -497,6 +505,7 @@ model WhatsAppConversation {
   messages WhatsAppMessage[]
 
   @@index([lastMessageAt])
+  @@index([eventId])
 }
 
 model WhatsAppMessage {
@@ -522,6 +531,7 @@ model WhatsAppMessage {
 // A one-off template message sent to many people from Campaigns > WhatsApp.
 model WhatsAppBroadcast {
   id               String   @id @default(cuid())
+  eventId          String?
   audience         String // "ALL" | "PAID" | ... | "PROSPECTS_ALL" (see src/lib/whatsapp-audience.ts)
   category         String? // optional extra filter for registrant audiences
   templateName     String
@@ -537,6 +547,7 @@ model WhatsAppBroadcast {
   messages WhatsAppMessage[]
 
   @@index([sentAt])
+  @@index([eventId])
 }
 
 
@@ -556,4 +567,34 @@ model PaymentRecord {
   recordedByName String?
 
   @@index([registrationId])
+}
+
+// The email sender pool: the services mail can go out through, in order of preference. One row per service. The service's
+// own keys stay in the environment (GMAIL_*, BREVO_API_KEY, MAILERSEND_API_KEY). dailyLimit 0 means no limit.
+model EmailSender {
+  id         String   @id @default(cuid())
+  kind       String   @unique // "GMAIL" | "BREVO" | "MAILERSEND"
+  label      String
+  position   Int
+  dailyLimit Int      @default(0)
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// A campaign email that could not go out today because every sender had used its daily limit. Sent later by the queue job.
+model QueuedEmail {
+  id             String       @id @default(cuid())
+  campaignId     String
+  campaign       Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  status         String       @default("PENDING") // PENDING | SENT | FAILED
+  attempts       Int          @default(0)
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  doneAt         DateTime?
+
+  @@index([status, createdAt])
+  @@index([campaignId])
 }

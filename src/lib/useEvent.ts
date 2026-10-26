@@ -12,6 +12,7 @@ export interface EventInfo {
   status: "DRAFT" | "ACTIVE" | "ARCHIVED";
   modules: string[];
   type: string;
+  dataSource: string;
   brandName: string | null;
   color: string | null;
   logoUrl: string | null;

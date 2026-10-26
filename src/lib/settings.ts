@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { brandOf } from "@/lib/eventBrand";
+import { formatPrice, paymentFrom, paymentInstructions } from "@/lib/payments";
 
 // Business-config values for an event. Each event has its own set, stored in the Setting table (editable from the
 // event's Settings page), so a date, venue or seat limit can be changed without a redeploy. Any value an event has not
@@ -25,7 +26,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
  */
 export async function getSettingsMap(eventId: string): Promise<Record<string, string>> {
   const [event, rows] = await Promise.all([
-    prisma.event.findUnique({ where: { id: eventId }, select: { slug: true, name: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, timezone: true } }),
+    prisma.event.findUnique({ where: { id: eventId }, select: { slug: true, name: true, type: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, timezone: true } }),
     prisma.setting.findMany({ where: { eventId } }),
   ]);
   const map: Record<string, string> = { ...DEFAULT_SETTINGS, programme_name: event?.name ?? DEFAULT_SETTINGS.programme_name };
@@ -41,6 +42,12 @@ export async function getSettingsMap(eventId: string): Promise<Record<string, st
     map.event_color = event.color ?? "";
     map.event_logo_url = brand.hasOwnLogo ? brand.logoUrl : "";
     map.event_timezone = event.timezone;
+    // Paid events: {{ticket_price}} and {{payment_instructions}} can be used in any email template.
+    if (event.type === "paid") {
+      const pay = paymentFrom(map);
+      map.ticket_price = pay.price ? formatPrice(pay.price, pay.currency) : "";
+      map.payment_instructions = paymentInstructions(pay);
+    }
   }
   return map;
 }

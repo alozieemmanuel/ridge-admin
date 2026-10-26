@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { sendWhatsAppMessageSchema } from "@/lib/validation";
 import {
@@ -17,10 +17,10 @@ export const runtime = "nodejs";
 /** The thread. Pass ?markRead=1 when the admin is actually looking at it. */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
 
-  const conversation = await prisma.whatsAppConversation.findUnique({ where: { id } });
+  const conversation = await prisma.whatsAppConversation.findFirst({ where: { id, eventId: ctx.event.id } });
   if (!conversation) return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
 
   if (request.nextUrl.searchParams.get("markRead") === "1" && conversation.unreadCount > 0) {
@@ -33,21 +33,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     take: 300,
   });
 
-  const [registration, prospect] = await Promise.all([
-    conversation.registrationId
-      ? prisma.registration.findUnique({ where: { id: conversation.registrationId }, select: { fullName: true } })
-      : null,
-    conversation.prospectId
-      ? prisma.prospect.findUnique({ where: { id: conversation.prospectId }, select: { fullName: true } })
-      : null,
-  ]);
+  const registration = conversation.registrationId ? await prisma.registration.findUnique({ where: { id: conversation.registrationId }, select: { fullName: true } }) : null;
 
   return NextResponse.json({
     conversation: {
       id: conversation.id,
       waId: conversation.waId,
-      name: registration?.fullName ?? prospect?.fullName ?? conversation.contactName ?? null,
-      kind: registration ? "registration" : prospect ? "prospect" : null,
+      name: registration?.fullName ?? conversation.contactName ?? null,
+      kind: registration ? "registration" : null,
       windowOpen: isWindowOpen(conversation.lastInboundAt),
       windowClosesAt: conversation.lastInboundAt ? new Date(conversation.lastInboundAt.getTime() + 24 * 60 * 60 * 1000).toISOString() : null,
     },
@@ -69,8 +62,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 /** Sends a free-text reply (inside the 24-hour window) or an approved template message. */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
+  const { session, event } = ctx;
 
   let raw: unknown;
   try {
@@ -83,7 +77,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
   }
 
-  const conversation = await prisma.whatsAppConversation.findUnique({ where: { id } });
+  const conversation = await prisma.whatsAppConversation.findFirst({ where: { id, eventId: event.id } });
   if (!conversation) return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
 
   const data = parsed.data;
@@ -130,6 +124,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       entityType: "whatsapp",
       entityId: id,
       entityLabel: `+${conversation.waId}`,
+      eventId: event.id,
       details: { type: data.type, ok: result.ok, ...(templateName ? { template: templateName } : {}) },
     },
     request

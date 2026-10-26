@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
 import { requireEvent } from "@/lib/event";
 import { getSheetState, saveSheetInterval, saveSheetUrl, syncContactSheet } from "@/lib/contactSheet";
@@ -29,6 +30,8 @@ export async function PUT(request: NextRequest) {
   const saved = await saveSheetUrl(event.id, body.url);
   if (!saved.ok) return NextResponse.json({ error: saved.error }, { status: 400 });
   if (body.url.trim() && typeof body.interval === "number") await saveSheetInterval(event.id, body.interval);
+  // Linking a sheet makes it the event's source, so the scheduled sync reads it.
+  if (body.url.trim() && event.dataSource !== "sheet") await prisma.event.update({ where: { id: event.id }, data: { dataSource: "sheet" } });
 
   await logAdminAction(session, { action: "contacts.sheet_link", entityType: "data", eventId: event.id, details: { linked: Boolean(body.url.trim()) } }, request);
   return NextResponse.json({ result: "saved", ...(await getSheetState(event.id)) });

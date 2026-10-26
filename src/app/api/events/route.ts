@@ -8,6 +8,8 @@ import { MODULE_KEYS, slugify, validateSlug } from "@/lib/event";
 import { SHEET_INTERVAL_KEY, SHEET_URL_KEY } from "@/lib/contactSheet";
 import { cleanColor, cleanLink, cleanTerms, cleanText, cleanTimezone, cleanType } from "@/lib/eventInput";
 import { termsOf } from "@/lib/eventTheme";
+import { SUPABASE_KEY_KEY, SUPABASE_TABLE_KEY, SUPABASE_URL_KEY, SOURCE_KEYS, cleanSupabaseTable, cleanSupabaseUrl, isDataSource, newIntakeToken } from "@/lib/contactSources";
+import { PAY_KEYS, paymentProblem, type PaymentConfig } from "@/lib/payments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,6 +76,7 @@ export async function GET() {
         logoUrl: e.logoUrl,
         logoDarkUrl: e.logoDarkUrl,
         type: e.type,
+        dataSource: e.dataSource,
         status: e.status,
         modules: e.modules,
         terms: termsOf(e.terms),
@@ -144,7 +147,7 @@ export async function POST(request: NextRequest) {
     if (tpls.length) templates = tpls.map((t) => ({ key: t.key, subject: t.subject, body: t.body, replyTo: t.replyTo }));
   }
   // An event's own details never carry over from the one it was copied from.
-  for (const k of [SHEET_URL_KEY, "contacts_sheet_last_sync", SHEET_INTERVAL_KEY, "seat_capacity", "event_date", "event_time", "event_venue"]) delete settings[k];
+  for (const k of [SHEET_URL_KEY, "contacts_sheet_last_sync", SHEET_INTERVAL_KEY, "seat_capacity", "event_date", "event_time", "event_venue", ...SOURCE_KEYS, ...PAY_KEYS]) delete settings[k];
   settings.programme_name = name;
   settings.sender_name = cleanText(b.senderName, 80) || brandName || name;
   const set = (key: string, value: string) => {
@@ -164,6 +167,33 @@ export async function POST(request: NextRequest) {
     settings[SHEET_INTERVAL_KEY] = String([0, 5, 15, 60].includes(Number(b.sheetInterval)) ? Number(b.sheetInterval) : 5);
   }
 
+  // Where the contacts come from.
+  const dataSource = isDataSource(b.dataSource) ? b.dataSource : sheetUrl ? "sheet" : "manual";
+  if (dataSource === "supabase") {
+    const sb = (b.supabase ?? {}) as { url?: unknown; table?: unknown; key?: unknown };
+    const url = cleanSupabaseUrl(String(sb.url ?? ""));
+    const table = cleanSupabaseTable(String(sb.table ?? ""));
+    const key = typeof sb.key === "string" ? sb.key.trim() : "";
+    if (!url || !table || key.length < 20) return NextResponse.json({ error: "Fill in the Supabase project address, the table name and the API key." }, { status: 400 });
+    settings[SUPABASE_URL_KEY] = url;
+    settings[SUPABASE_TABLE_KEY] = table;
+    settings[SUPABASE_KEY_KEY] = key;
+    settings[SHEET_INTERVAL_KEY] = String([0, 5, 15, 60].includes(Number(b.sheetInterval)) ? Number(b.sheetInterval) : 5);
+  }
+
+  // Price, currency and how guests pay (paid events).
+  const type = cleanType(b.type) ?? "free";
+  if (type === "paid" && b.payment) {
+    const p = b.payment as Partial<PaymentConfig>;
+    const cfg: PaymentConfig = { price: String(p.price ?? ""), currency: String(p.currency ?? "NGN"), method: String(p.method ?? "bank"), details: String(p.details ?? "").slice(0, 1000) };
+    const problem = paymentProblem(cfg);
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+    settings.pay_price = cfg.price.replace(/,/g, "").trim();
+    settings.pay_currency = cfg.currency;
+    settings.pay_method = cfg.method;
+    settings.pay_details = cfg.details.trim();
+  }
+
   // Only real, active, non-owner admins can be given access here.
   const adminIds = Array.isArray(b.adminIds) ? b.adminIds.filter((x): x is string => typeof x === "string") : [];
   const admins = adminIds.length ? await prisma.admin.findMany({ where: { id: { in: adminIds }, role: "ADMIN", archivedAt: null }, select: { id: true } }) : [];
@@ -174,7 +204,9 @@ export async function POST(request: NextRequest) {
       name,
       status,
       modules,
-      type: cleanType(b.type) ?? "free",
+      type,
+      dataSource,
+      intakeToken: dataSource === "form" ? newIntakeToken() : null,
       brandName: brandName || null,
       color,
       logoUrl: logoUrl || null,

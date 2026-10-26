@@ -1,6 +1,7 @@
 {
   "regions": ["dub1"],
   "crons": [
-    { "path": "/event/api/cron/sheet-sync", "schedule": "0 6 * * *" }
+    { "path": "/event/api/cron/sheet-sync", "schedule": "0 6 * * *" },
+    { "path": "/event/api/cron/email-queue", "schedule": "0 7 * * *" }
   ]
 }

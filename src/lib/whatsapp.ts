@@ -212,37 +212,50 @@ export function fillTemplateBody(bodyText: string, params: string[]): string {
 
 export interface ContactMatch {
   registrationId?: string;
-  prospectId?: string;
+  eventId?: string;
   name?: string;
 }
 
-/** Finds who a phone number belongs to by comparing normalized numbers. */
-export async function findContactByWaId(waId: string): Promise<ContactMatch> {
-  const [registrations, prospects] = await Promise.all([
-    prisma.registration.findMany({ select: { id: true, fullName: true, phone: true } }),
-    prisma.prospect.findMany({ where: { phone: { not: null } }, select: { id: true, fullName: true, phone: true } }),
-  ]);
+/**
+ * Finds who a phone number belongs to by comparing normalized numbers. With an eventId only that event's contacts are looked at.
+ * Without one, the most recently added contact with that number wins, which decides which event an unknown sender's chat lands in.
+ */
+export async function findContactByWaId(waId: string, eventId?: string): Promise<ContactMatch> {
+  const registrations = await prisma.registration.findMany({
+    where: eventId ? { eventId } : {},
+    orderBy: { createdAt: "desc" },
+    select: { id: true, eventId: true, fullName: true, phone: true },
+  });
   const registration = registrations.find((r) => normalizePhone(r.phone) === waId);
-  const prospect = prospects.find((p) => normalizePhone(p.phone) === waId);
-  return {
-    registrationId: registration?.id,
-    prospectId: prospect?.id,
-    name: registration?.fullName ?? prospect?.fullName,
-  };
+  return { registrationId: registration?.id, eventId: registration?.eventId, name: registration?.fullName };
 }
 
-export async function getOrCreateConversation(waId: string, hint: { name?: string } = {}) {
+/**
+ * The chat with one phone number. A chat belongs to the event it was last used for: writing to someone from an event
+ * (a new chat or a broadcast) moves the chat to that event, so their replies show up there.
+ */
+export async function getOrCreateConversation(waId: string, hint: { name?: string; eventId?: string } = {}) {
   const existing = await prisma.whatsAppConversation.findUnique({ where: { waId } });
-  if (existing) return existing;
+  if (existing) {
+    if (hint.eventId && existing.eventId !== hint.eventId) {
+      const match = await findContactByWaId(waId, hint.eventId);
+      return prisma.whatsAppConversation.update({ where: { id: existing.id }, data: { eventId: hint.eventId, ...(match.registrationId ? { registrationId: match.registrationId } : {}) } });
+    }
+    if (!existing.eventId) {
+      const match = await findContactByWaId(waId);
+      if (match.eventId) return prisma.whatsAppConversation.update({ where: { id: existing.id }, data: { eventId: match.eventId, registrationId: existing.registrationId ?? match.registrationId } });
+    }
+    return existing;
+  }
 
-  const match = await findContactByWaId(waId);
+  const match = await findContactByWaId(waId, hint.eventId);
   try {
     return await prisma.whatsAppConversation.create({
       data: {
         waId,
+        eventId: hint.eventId ?? match.eventId,
         contactName: hint.name ?? match.name ?? null,
         registrationId: match.registrationId,
-        prospectId: match.prospectId,
       },
     });
   } catch {

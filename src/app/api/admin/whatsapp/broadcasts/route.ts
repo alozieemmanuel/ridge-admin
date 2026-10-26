@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { sendWhatsAppBroadcastSchema } from "@/lib/validation";
 import { isCategory } from "@/lib/categories";
@@ -12,13 +12,14 @@ export const maxDuration = 300;
 
 /** Past broadcasts plus how many people each audience has a usable number for. */
 export async function GET(request: NextRequest) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
+  const { event } = ctx;
 
   const categoryParam = request.nextUrl.searchParams.get("category");
   const [broadcasts, counts] = await Promise.all([
-    prisma.whatsAppBroadcast.findMany({ orderBy: { sentAt: "desc" }, take: 50 }),
-    whatsappAudienceCounts(isCategory(categoryParam) ? categoryParam : null),
+    prisma.whatsAppBroadcast.findMany({ where: { eventId: event.id }, orderBy: { sentAt: "desc" }, take: 50 }),
+    whatsappAudienceCounts(event.id, isCategory(categoryParam) ? categoryParam : null),
   ]);
 
   const ids = broadcasts.map((b) => b.id);
@@ -66,8 +67,9 @@ export async function GET(request: NextRequest) {
  * person's conversation, so replies land in the WhatsApp inbox.
  */
 export async function POST(request: NextRequest) {
-  const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  const ctx = await requireEvent(request, { module: "whatsapp" });
+  if (!ctx.ok) return ctx.response;
+  const { event, session } = ctx;
 
   let raw: unknown;
   try {
@@ -95,7 +97,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Fill in all ${template.variableCount} template variable(s).` }, { status: 400 });
   }
 
-  const all = await resolveWhatsAppAudience(audience as WhatsAppAudience, category);
+  const all = await resolveWhatsAppAudience(event.id, audience as WhatsAppAudience, category);
   const recipients = all.filter((r): r is typeof r & { waId: string } => Boolean(r.waId));
   if (recipients.length === 0) {
     return NextResponse.json({ error: "Nobody in that audience has a usable phone number." }, { status: 400 });
@@ -103,6 +105,7 @@ export async function POST(request: NextRequest) {
 
   const broadcast = await prisma.whatsAppBroadcast.create({
     data: {
+      eventId: event.id,
       audience,
       category,
       templateName,
@@ -128,7 +131,7 @@ export async function POST(request: NextRequest) {
           const personal = usedParams.map((p) => p.replace(/\{\{\s*first_name\s*\}\}/g, first).replace(/\{\{\s*full_name\s*\}\}/g, r.fullName));
           const result = await sendWhatsAppTemplate(r.waId, templateName, language, personal);
           try {
-            const conversation = await getOrCreateConversation(r.waId, { name: r.fullName });
+            const conversation = await getOrCreateConversation(r.waId, { name: r.fullName, eventId: event.id });
             await recordOutbound({
               conversationId: conversation.id,
               type: "template",
@@ -157,6 +160,7 @@ export async function POST(request: NextRequest) {
       entityType: "whatsapp_broadcast",
       entityId: broadcast.id,
       entityLabel: templateName,
+      eventId: event.id,
       details: { audience, category, recipients: recipients.length, sent: sentCount, failed: failedCount },
     },
     request

@@ -15,11 +15,9 @@ export const DISABLED_API_PREFIXES = [
   "/api/public/payment-info",
   "/api/public/payment-proofs",
   "/api/public/pay-later",
-  "/api/webhooks/whatsapp",
   "/api/cron/pay-later-reminders",
   "/api/admin/prospects",
   "/api/admin/payment-proofs",
-  "/api/admin/whatsapp",
   "/api/admin/brochure-requests",
 ];
 

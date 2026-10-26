@@ -22,6 +22,7 @@ export async function GET(request: NextRequest) {
       status: event.status,
       modules: event.modules,
       type: event.type,
+      dataSource: event.dataSource,
       brandName: event.brandName,
       color: event.color,
       logoUrl: event.logoUrl,
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
 /**
  * Owner only. Body (all optional): modules[], status ("DRAFT" | "ACTIVE" | "ARCHIVED"), type, brandName, color (hex, or null for the default),
  * logoUrl / logoDarkUrl (https links, "" to remove), terms { person, people, action }, timezone.
- * The event's name is changed in Settings, Event details. Logo files are uploaded to /api/admin/event/logo.
+ * name (2 to 120 characters). Logo files are uploaded to /api/admin/event/logo.
  */
 export async function PATCH(request: NextRequest) {
   const ctx = await requireEvent(request, { owner: true });
@@ -56,6 +57,11 @@ export async function PATCH(request: NextRequest) {
     // Parts that are not offered in the form (WhatsApp, for now) are kept as they are.
     const chosen = b.modules.filter((m): m is string => typeof m === "string" && MODULE_KEYS.includes(m));
     data.modules = Array.from(new Set([...event.modules.filter((m) => !MODULE_KEYS.includes(m)), ...chosen]));
+  }
+  if ("name" in b) {
+    const name = cleanText(b.name, 120);
+    if (name.length < 2) return NextResponse.json({ error: "Give the event a name (2 to 120 characters)." }, { status: 400 });
+    data.name = name;
   }
   if (b.status === "ACTIVE" || b.status === "ARCHIVED" || b.status === "DRAFT") data.status = b.status;
   if ("type" in b) {
@@ -87,6 +93,8 @@ export async function PATCH(request: NextRequest) {
   if (!Object.keys(data).length) return NextResponse.json({ error: "Nothing to change." }, { status: 400 });
 
   const updated = await prisma.event.update({ where: { id: event.id }, data });
+  // The name shown on invitations and tickets follows the event's name.
+  if (typeof data.name === "string") await prisma.setting.upsert({ where: { eventId_key: { eventId: event.id, key: "programme_name" } }, update: { value: data.name }, create: { eventId: event.id, key: "programme_name", value: data.name } });
   await logAdminAction(session, { action: "event.update", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { changed: Object.keys(data) } }, request);
   return NextResponse.json({
     result: "success",

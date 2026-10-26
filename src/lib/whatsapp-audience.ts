@@ -3,28 +3,19 @@ import { audienceWhere } from "@/lib/campaigns";
 import { normalizePhone } from "@/lib/whatsapp";
 import type { CampaignAudience } from "@prisma/client";
 
-export type WhatsAppAudience =
-  | CampaignAudience
-  | "PROSPECTS_ALL"
-  | "PROSPECTS_NOT_REGISTERED"
-  | "PROSPECTS_FOLLOW_UP";
+/** Who an event's WhatsApp broadcast can go to. The same groups as the event's email campaigns. */
+export type WhatsAppAudience = CampaignAudience;
 
-export const WHATSAPP_AUDIENCE_LABELS: Record<WhatsAppAudience, string> = {
-  ALL: "All registrants",
-  EARLY_BIRD: "Early Bird",
-  LATE: "Late",
-  NOT_PAID: "Not paid",
-  PARTIAL: "Partially paid",
-  PAID: "Fully paid",
-  CHECKED_IN: "Checked in",
-  NOT_CHECKED_IN: "Not checked in",
+export const WHATSAPP_AUDIENCE_LABELS: Partial<Record<WhatsAppAudience, string>> = {
+  ALL: "Everyone",
   NOT_INVITED: "Not invited yet",
   INVITED_NOT_RESERVED: "Invited, not reserved",
   RESERVED: "Seat reserved",
-  PROSPECTS_ALL: "All prospects",
-  PROSPECTS_NOT_REGISTERED: "Prospects not yet registered",
-  PROSPECTS_FOLLOW_UP: "Prospects needing follow-up",
+  CHECKED_IN: "Checked in",
+  NOT_CHECKED_IN: "Not checked in",
 };
+
+export const WHATSAPP_AUDIENCE_KEYS = Object.keys(WHATSAPP_AUDIENCE_LABELS) as WhatsAppAudience[];
 
 export interface BroadcastRecipient {
   /** digits-only international number, or null if the saved number is unusable */
@@ -34,24 +25,11 @@ export interface BroadcastRecipient {
 }
 
 /**
- * People in an audience, one entry per phone number (duplicates collapsed). Unusable numbers are kept with waId null so they can be counted.
- * `category` narrows the registrant audiences only; prospects have no category.
+ * People of one event in an audience, one entry per phone number (duplicates collapsed). Unusable numbers are kept with
+ * waId null so they can be counted.
  */
-export async function resolveWhatsAppAudience(audience: WhatsAppAudience, category?: string | null): Promise<BroadcastRecipient[]> {
-  let people: { fullName: string; phone: string | null }[];
-
-  if (audience === "PROSPECTS_ALL") {
-    people = await prisma.prospect.findMany({ select: { fullName: true, phone: true } });
-  } else if (audience === "PROSPECTS_NOT_REGISTERED") {
-    people = await prisma.prospect.findMany({ where: { registrationId: null }, select: { fullName: true, phone: true } });
-  } else if (audience === "PROSPECTS_FOLLOW_UP") {
-    people = await prisma.prospect.findMany({
-      where: { followUpRequired: true, registrationId: null },
-      select: { fullName: true, phone: true },
-    });
-  } else {
-    people = await prisma.registration.findMany({ where: audienceWhere(audience, category), select: { fullName: true, phone: true } });
-  }
+export async function resolveWhatsAppAudience(eventId: string, audience: WhatsAppAudience, category?: string | null): Promise<BroadcastRecipient[]> {
+  const people = await prisma.registration.findMany({ where: { AND: [{ eventId }, audienceWhere(audience, category)] }, select: { fullName: true, phone: true } });
 
   const seen = new Set<string>();
   const out: BroadcastRecipient[] = [];
@@ -66,12 +44,12 @@ export async function resolveWhatsAppAudience(audience: WhatsAppAudience, catego
   return out;
 }
 
-export async function whatsappAudienceCounts(category?: string | null): Promise<Record<WhatsAppAudience, number>> {
+export async function whatsappAudienceCounts(eventId: string, category?: string | null): Promise<Record<string, number>> {
   const entries = await Promise.all(
-    (Object.keys(WHATSAPP_AUDIENCE_LABELS) as WhatsAppAudience[]).map(async (a) => {
-      const recipients = await resolveWhatsAppAudience(a, category);
+    WHATSAPP_AUDIENCE_KEYS.map(async (a) => {
+      const recipients = await resolveWhatsAppAudience(eventId, a, category);
       return [a, recipients.filter((r) => r.waId).length] as const;
     })
   );
-  return Object.fromEntries(entries) as Record<WhatsAppAudience, number>;
+  return Object.fromEntries(entries);
 }

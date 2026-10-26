@@ -38,6 +38,8 @@ async function view(registrationId: string) {
       venue: settings.event_venue,
       contactEmail: settings.contact_email,
       contactPhone: settings.contact_phone,
+      price: settings.ticket_price || "",
+      payment: settings.payment_instructions || "",
     },
     reserved,
     full: !reserved && capacity !== null && taken >= capacity,

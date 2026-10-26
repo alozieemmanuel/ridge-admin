@@ -38,6 +38,10 @@ export type AuditAction =
   | "event.create"
   | "event.update"
   | "event.access"
+  | "event.source"
+  | "participant.create"
+  | "senders.update"
+  | "email.queue_flush"
   | "campaign.delete"
   | "reply.send"
   | "seat.update"
@@ -74,6 +78,7 @@ export interface AuditEntry {
     | "whatsapp"
     | "whatsapp_broadcast"
     | "event"
+    | "sender"
     | "data";
   /** The event this belongs to. Left out, it is taken from the request's event (x-event header); team-wide actions have none. */
   eventId?: string | null;

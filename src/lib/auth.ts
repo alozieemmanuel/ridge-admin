@@ -99,21 +99,28 @@ export async function getSession(): Promise<SessionPayload | null> {
   };
 }
 
-export async function setSessionCookie(token: string) {
-  const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: BASE_PATH || "/",
-    maxAge: SESSION_DURATION_SECONDS,
-  });
-  // A cookie from the old address layout (path "/") would shadow the new one, so remove it.
-  if (BASE_PATH) cookieStore.set(SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
+/**
+ * Cookie helpers. They write Set-Cookie headers straight onto the response instead of using cookies() from next/headers,
+ * because cookies().set() keeps ONE entry per cookie name: setting the same name twice (the new /event cookie, then the
+ * removal of the old "/" cookie) silently drops the first, so the browser only ever received the removal and no session
+ * cookie was stored. Raw headers can carry both.
+ */
+function serializeCookie(value: string, path: string, maxAge: number): string {
+  const parts = [`${SESSION_COOKIE_NAME}=${value}`, `Path=${path}`, `Max-Age=${maxAge}`, "HttpOnly", "SameSite=Lax"];
+  if (process.env.NODE_ENV === "production") parts.push("Secure");
+  return parts.join("; ");
 }
 
-export async function clearSessionCookie() {
-  const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE_NAME, "", { path: BASE_PATH || "/", maxAge: 0 });
-  if (BASE_PATH) cookieStore.set(SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
+/** Adds the session cookie (scoped to the base path) to a response, and removes any cookie left over from the old "/" address layout. */
+export function applySessionCookie<T extends Response>(response: T, token: string): T {
+  response.headers.append("Set-Cookie", serializeCookie(token, BASE_PATH || "/", SESSION_DURATION_SECONDS));
+  if (BASE_PATH) response.headers.append("Set-Cookie", serializeCookie("", "/", 0));
+  return response;
+}
+
+/** Adds headers to a response that remove the session cookie at both the base path and the old "/" path. */
+export function applyClearedSessionCookie<T extends Response>(response: T): T {
+  response.headers.append("Set-Cookie", serializeCookie("", BASE_PATH || "/", 0));
+  if (BASE_PATH) response.headers.append("Set-Cookie", serializeCookie("", "/", 0));
+  return response;
 }

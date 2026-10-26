@@ -15,4 +15,4 @@ export function slugFromPathname(pathname: string): string {
 }
 
 /** Words that can never be an event address, because they are pages of the dashboard itself. */
-export const RESERVED_SLUGS = ["login", "new", "team", "api", "admin", "events", "event", "_next", "static", "public", "favicon.ico"];
+export const RESERVED_SLUGS = ["login", "new", "team", "senders", "api", "admin", "events", "event", "_next", "static", "public", "favicon.ico"];

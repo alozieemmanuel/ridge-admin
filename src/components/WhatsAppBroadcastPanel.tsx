@@ -21,10 +21,7 @@ interface Broadcast {
   read: number;
 }
 
-const GROUPS: { title: string; keys: string[] }[] = [
-  { title: "Registrants", keys: ["ALL", "EARLY_BIRD", "LATE", "NOT_PAID", "PARTIAL", "PAID", "CHECKED_IN", "NOT_CHECKED_IN"] },
-  { title: "Prospects", keys: ["PROSPECTS_ALL", "PROSPECTS_NOT_REGISTERED", "PROSPECTS_FOLLOW_UP"] },
-];
+const GROUPS: { title: string; keys: string[] }[] = [{ title: "Group", keys: ["ALL", "NOT_INVITED", "INVITED_NOT_RESERVED", "RESERVED", "CHECKED_IN", "NOT_CHECKED_IN"] }];
 
 const goldButton =
   "text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-black font-semibold uppercase tracking-widest disabled:opacity-50";
@@ -58,9 +55,7 @@ export default function WhatsAppBroadcastPanel() {
   }, [load]);
   useAutoRefresh(() => load(), 15_000);
 
-  // Categories only describe registrants, so prospect audiences ignore the category choice.
-  const isProspectAudience = audience.startsWith("PROSPECTS_");
-  const activeCategory = isProspectAudience ? "" : category;
+  const activeCategory = category;
 
   const recipientCount = counts[audience] ?? 0;
   const canSend = pick.ready && recipientCount > 0;
@@ -96,12 +91,12 @@ export default function WhatsAppBroadcastPanel() {
       <div className="border border-border rounded-xl p-6 mb-8">
         <p className="text-sm text-muted mb-5">
           WhatsApp only lets a business start a chat with an approved template, so broadcasts use one. Replies from
-          people appear in the WhatsApp tab.
+          people appear in the Inbox tab.
         </p>
 
         {GROUPS.map((g) => (
           <div key={g.title} className="mb-4">
-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">Send to: {g.title}</label>
+            <label className="block text-xs uppercase tracking-wider text-muted mb-2">Send to</label>
             <div className="flex gap-2 flex-wrap">
               {g.keys.map((k) => (
                 <button
@@ -121,12 +116,6 @@ export default function WhatsAppBroadcastPanel() {
             </div>
           </div>
         ))}
-        {!isProspectAudience && (
-          <div className="mb-4">
-            <label className="block text-xs uppercase tracking-wider text-muted mb-2">Category</label>
-            <CategoryFilter value={category} onChange={setCategory} allLabel="Any category" />
-          </div>
-        )}
         <p className="text-xs text-muted mb-6">Counts include only people with a usable phone number.</p>
 
         <div className="mb-5">

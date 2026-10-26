@@ -2,7 +2,8 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEventPath, useTerms } from "@/lib/useEvent";
+import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
+import AddContactDialog from "@/components/AddContactDialog";
 import { apiHref } from "@/lib/clientFetch";
 import AdminShell from "@/components/AdminShell";
 import ImportDialog from "@/components/ImportDialog";
@@ -31,7 +32,10 @@ interface Response {
 
 function RegistrationsInner() {
   const ep = useEventPath();
-  const { people, lpeople } = useTerms();
+  const { people, lpeople, person } = useTerms();
+  const { event } = useEvent();
+  const [adding, setAdding] = useState(false);
+  const showSheet = !event || event.dataSource === "sheet";
   const params = useSearchParams();
   const router = useRouter();
   const [pageSize, setPageSize] = useState(() => getStoredPageSize());
@@ -116,18 +120,20 @@ function RegistrationsInner() {
   useEffect(() => {
     syncSheetRef.current = syncSheet;
   }, [syncSheet]);
+  const source = event?.dataSource;
   useEffect(() => {
+    if (!source) return; // wait until the event is known, so only a sheet-based event reads its sheet
     fetch("/api/admin/registrations/sheet", { cache: "no-store" })
       .then((res) => res.json())
       .then((data) => {
         const linked = Boolean(data.url);
         setSheetLinked(linked);
-        if (linked) void syncSheetRef.current();
+        if (linked && source === "sheet") void syncSheetRef.current();
       })
       .catch(() => {});
-  }, []);
+  }, [source]);
   useAutoRefresh(() => {
-    if (sheetLinked) void syncSheet();
+    if (sheetLinked && showSheet) void syncSheet();
   }, 300_000);
 
   const anyFilter = Boolean(query || followUp || seat);
@@ -142,8 +148,13 @@ function RegistrationsInner() {
             <a href={apiHref("/api/admin/registrations/export")} className={ghostButton}>
               Export CSV
             </a>
-            <button onClick={() => setSheetOpen(true)} className={ghostButton}>
-              {sheetLinked ? "Live sheet" : "Connect live sheet"}
+            {showSheet && (
+              <button onClick={() => setSheetOpen(true)} className={ghostButton}>
+                {sheetLinked ? "Live sheet" : "Connect live sheet"}
+              </button>
+            )}
+            <button onClick={() => setAdding(true)} className={ghostButton}>
+              Add {person.toLowerCase()}
             </button>
             <button onClick={() => setImporting(true)} className={primaryButton}>
               Import CSV
@@ -278,6 +289,7 @@ function RegistrationsInner() {
         />
       </div>
 
+      {adding && <AddContactDialog person={person} onClose={() => setAdding(false)} onAdded={() => load(true)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
       {sheetOpen && (
         <SheetSyncDialog

@@ -5,12 +5,15 @@ import { useSearchParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import TemplatePicker, { type TemplateInfo } from "@/components/TemplatePicker";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
+import { useEvent, useEventPath } from "@/lib/useEvent";
+import { useRouter } from "next/navigation";
 
 interface ConversationRow {
   id: string;
   waId: string;
   name: string | null;
-  kind: "registration" | "prospect" | null;
+  kind: "registration" | null;
   unreadCount: number;
   lastMessageAt: string;
   windowOpen: boolean;
@@ -34,7 +37,7 @@ interface Thread {
   id: string;
   waId: string;
   name: string | null;
-  kind: "registration" | "prospect" | null;
+  kind: "registration" | null;
   windowOpen: boolean;
   windowClosesAt: string | null;
 }
@@ -69,6 +72,9 @@ function StatusTick({ status }: { status: Message["status"] }) {
 
 function WhatsAppInbox() {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const ep = useEventPath();
+  const tab = searchParams.get("tab") === "broadcast" ? "broadcast" : "inbox";
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -123,7 +129,7 @@ function WhatsAppInbox() {
   useAutoRefresh(() => loadList(), 6_000);
   useAutoRefresh(() => loadThread(activeId), 4_000);
 
-  // Arriving from the Prospects page: /admin/whatsapp?to=<phone>&name=<name>
+  // A link with ?to=<phone>&name=<name> opens a chat with that number
   const startedFor = useRef<string | null>(null);
   useEffect(() => {
     const to = searchParams.get("to");
@@ -151,32 +157,50 @@ function WhatsAppInbox() {
   }
 
   return (
-    <AdminShell active="/admin/whatsapp">
+    <AdminShell>
       <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="font-serif text-2xl">WhatsApp</h2>
           <p className="text-muted text-sm mt-1 max-w-2xl">
-            Message people one to one and see their replies as they arrive. To message everyone at once, use
-            Campaigns &gt; WhatsApp.
+            Message people one to one and see their replies as they arrive, or send one message to a whole group.
           </p>
         </div>
-        <button onClick={() => setShowNew(true)} className={goldButton}>
-          New chat
-        </button>
+        {tab === "inbox" && (
+          <button onClick={() => setShowNew(true)} className={goldButton}>
+            New chat
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-2 mb-6" role="tablist">
+        {(["inbox", "broadcast"] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => router.replace(t === "inbox" ? ep("/whatsapp") : ep("/whatsapp?tab=broadcast"), { scroll: false })}
+            className={`text-sm px-4 py-2 rounded-full border transition-colors ${tab === t ? "border-gold bg-gold/15 font-medium" : "border-border text-muted hover:text-fg hover:border-gold/60"}`}
+          >
+            {t === "inbox" ? "Inbox" : "Broadcast"}
+          </button>
+        ))}
       </div>
 
       {!configured && (
         <div className="border border-amber-400/40 rounded-xl p-4 mb-6 text-sm">
           <p className="text-amber-300 mb-1">WhatsApp isn&apos;t connected on the server yet.</p>
           <p className="text-muted">
-            Add <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code> and{" "}
-            <code>WHATSAPP_BUSINESS_ACCOUNT_ID</code>, then point Meta&apos;s webhook to{" "}
-            <code>/api/webhooks/whatsapp</code>. Messages you send until then are saved as failed.
+            Add <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>,{" "}
+            <code>WHATSAPP_BUSINESS_ACCOUNT_ID</code>, <code>WHATSAPP_APP_SECRET</code> and <code>WHATSAPP_VERIFY_TOKEN</code> to the server settings, then point Meta&apos;s webhook to{" "}
+            <code>/event/api/webhooks/whatsapp</code>. The step by step guide is in <code>docs/WHATSAPP_SETUP.md</code>. Messages you send until then are saved as failed.
           </p>
         </div>
       )}
       {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
 
+      {tab === "broadcast" && <WhatsAppBroadcastPanel />}
+
+      {tab === "inbox" && (
       <div className="grid md:grid-cols-[20rem_1fr] border border-border rounded-xl overflow-hidden min-h-[32rem]">
         <div className="border-b md:border-b-0 md:border-r border-border flex flex-col max-h-[70vh]">
           <div className="p-3 border-b border-border">
@@ -226,6 +250,8 @@ function WhatsAppInbox() {
           )}
         </div>
       </div>
+
+      )}
 
       {showNew && <NewChatDialog onClose={() => setShowNew(false)} onStart={startChat} />}
     </AdminShell>
@@ -286,8 +312,7 @@ function ChatPane({
         {thread && (
           <div className="text-xs text-muted mt-0.5">
             +{thread.waId}
-            {thread.kind === "registration" && " · Registered"}
-            {thread.kind === "prospect" && " · Prospect"}
+            {thread.kind === "registration" && " · On the contact list"}
           </div>
         )}
       </div>
@@ -398,7 +423,7 @@ function NewChatDialog({ onClose, onStart }: { onClose: () => void; onStart: (ph
           autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search a registrant or prospect, or type a number"
+          placeholder="Search this event's contacts, or type a number"
           className={inputClass}
         />
         <div className="mt-3 max-h-64 overflow-y-auto">

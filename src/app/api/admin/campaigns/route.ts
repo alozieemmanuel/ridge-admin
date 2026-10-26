@@ -5,6 +5,7 @@ import { audienceWhere } from "@/lib/campaigns";
 import { getSettingsMap } from "@/lib/settings";
 import { sendCampaignEmail } from "@/lib/notifications";
 import { requireEvent } from "@/lib/event";
+import { queueCampaignEmails } from "@/lib/emailQueue";
 import type { Campaign, Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -30,6 +31,8 @@ export async function GET(request: NextRequest) {
 
   const perCampaign: Record<string, StatCounts> = {};
   const totals = emptyCounts();
+  const waitingRows = campaignIds.length ? await prisma.queuedEmail.groupBy({ by: ["campaignId"], where: { campaignId: { in: campaignIds }, status: "PENDING" }, _count: { _all: true } }) : [];
+  const waiting: Record<string, number> = Object.fromEntries(waitingRows.map((w) => [w.campaignId, w._count._all]));
 
   if (campaignIds.length > 0) {
     // One row per (campaign, event type, recipient), so repeat opens collapse to one.
@@ -62,6 +65,7 @@ export async function GET(request: NextRequest) {
         recipientCount: c.recipientCount,
         sentCount: c.sentCount,
         failedCount: c.failedCount,
+        waitingCount: waiting[c.id] ?? 0,
         sentAt: c.sentAt.toISOString(),
         sentByName: c.sentByName,
         delivered: counts.delivered,
@@ -132,6 +136,7 @@ export async function POST(request: NextRequest) {
 
   let sentCount = 0;
   let failedCount = 0;
+  const deferredIds: string[] = [];
 
   try {
     const CONCURRENCY = 5;
@@ -140,9 +145,15 @@ export async function POST(request: NextRequest) {
       const results = await Promise.all(
         batch.map((r: Registration) => sendCampaignEmail(r, subject, body, settings, campaign.id))
       );
-      for (const r of results) {
-        if (r.success) sentCount++;
+      results.forEach((r, index) => {
+        if (r.deferred) deferredIds.push(batch[index].id);
+        else if (r.success) sentCount++;
         else failedCount++;
+      });
+      // Every sender has used its daily limit: the rest waits for tomorrow instead of failing.
+      if (deferredIds.length) {
+        deferredIds.push(...recipients.slice(i + CONCURRENCY).map((x: Registration) => x.id));
+        break;
       }
     }
   } finally {
@@ -152,10 +163,11 @@ export async function POST(request: NextRequest) {
       where: { id: campaign.id },
       data: { sentCount, failedCount },
     });
+    await queueCampaignEmails(campaign.id, deferredIds);
   }
 
   return NextResponse.json({
     result: "success",
-    campaign: { id: campaign.id, recipientCount: recipients.length, sentCount, failedCount },
+    campaign: { id: campaign.id, recipientCount: recipients.length, sentCount, failedCount, waitingCount: deferredIds.length },
   });
 }
