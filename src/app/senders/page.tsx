@@ -77,7 +77,7 @@ export default function SendersPage() {
         <h1 className="font-serif text-4xl mt-3">Email senders</h1>
         <p className="text-muted text-sm mt-2 max-w-2xl">
           List the services that send your email, best first. Each email goes through the first one that has room today. If it reaches its limit or fails, the next one takes over.
-          If every limit is used, campaign emails wait and go out after the count resets at midnight.
+          If every limit is used, campaign emails wait and go out after the count resets at midnight. This list is shared: it applies to every event, now and any you create later.
         </p>
       </div>
 

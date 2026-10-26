@@ -18,15 +18,16 @@ function custom(): string | null {
   return active && active.color !== DEFAULT_COLOR ? active.color : null;
 }
 
+/** A white that Gmail's and Outlook's dark modes leave alone: a solid colour plus a gradient of the same colour. */
+const WHITE = "background-color:#FFFFFF;background-image:linear-gradient(#FFFFFF,#FFFFFF);";
+
 const BRAND = {
   cardBg: "#FFFFFF",
-  fg: "#141C08",
+  fg: "#000000",
   muted: "#5B664A",
   footerMuted: "#7B876A",
-  get pageBg() {
-    const c = custom();
-    return c ? mix(c, "#FFFFFF", 0.92) : "#F4F9E4";
-  },
+  // The page behind the card is white too. Gmail's dark mode darkens light backgrounds unless they are a gradient (see WHITE).
+  pageBg: "#FFFFFF",
   get cardBorder() {
     const c = custom();
     return c ? mix(c, "#FFFFFF", 0.8) : "#E1E8D2";
@@ -78,8 +79,24 @@ function withBrand<T>(brand: EmailBrand | undefined, render: () => T): T {
  * so set APP_BASE_URL in the environment to the address this dashboard is served from.
  */
 export function appBaseUrl(): string {
-  const configured = process.env.APP_BASE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
-  return (configured || "http://localhost:3000").replace(/\/+$/, "");
+  // 1. APP_BASE_URL, the address you set. Change it (and redeploy) when the dashboard moves, for example to your own domain.
+  const configured = (process.env.APP_BASE_URL || "").trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  // 2. Otherwise the project's Vercel address, which Vercel supplies and keeps current.
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  return "http://localhost:3000";
+}
+
+const VERCEL_LINK = /https?:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app/gi;
+
+/**
+ * Keeps links current: a *.vercel.app address left over in an email (an older deployment, or a template typed by hand)
+ * is replaced with the address the dashboard is served from now.
+ */
+export function fixSiteLinks(html: string): string {
+  const base = appBaseUrl();
+  if (!/^https?:\/\/(?!localhost)/i.test(base)) return html;
+  return html.replace(VERCEL_LINK, (found) => (found.toLowerCase() === base.toLowerCase() ? found : base));
 }
 
 /** The logo at the top of every email (see src/lib/brand.ts). It is the dark logo, which suits the white card. */
@@ -101,7 +118,7 @@ function paragraphsFromPlainText(text: string): string {
     .filter(Boolean)
     .map(
       (block) =>
-        `<p style="margin:0 0 14px;color:${BRAND.muted};font-size:14.5px;line-height:1.6;font-family:Arial,sans-serif;">${escapeHtml(
+        `<p style="margin:0 0 14px;color:#000000;font-size:15px;line-height:1.6;font-family:Arial,sans-serif;">${escapeHtml(
           block
         ).replace(/\n/g, "<br/>")}</p>`
     )
@@ -133,10 +150,10 @@ function eyebrowPill(text: string): string {
   )}</span>`;
 }
 
-/** Outer pale-green page, white bordered card, logo on top and the footer line at the bottom. */
+/** White page, white bordered card (no subject repeated inside: it is in the Subject line), logo on top and the footer line at the bottom. */
 function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string }): string {
-  return `<div style="background:${BRAND.pageBg};padding:40px 16px;font-family:Georgia,'Times New Roman',serif;">
-    <div style="max-width:${opts.maxWidth}px;margin:0 auto;background:${BRAND.cardBg};border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
+  return `<div style="${WHITE}color-scheme:light only;supported-color-schemes:light;padding:40px 16px;font-family:Georgia,'Times New Roman',serif;color:#000000;">
+    <div style="${WHITE}max-width:${opts.maxWidth}px;margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
       <div style="padding:36px 40px 0;text-align:center;">
         <img src="${emailLogoUrl()}" alt="${escapeHtml(active?.name ?? BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
       </div>
@@ -182,8 +199,7 @@ function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
   const inner = `
       <div style="padding:28px 40px 8px;text-align:center;">
         ${eyebrowPill(opts.eyebrow)}
-        <h1 style="margin:22px 0 0;color:${BRAND.fg};font-size:26px;line-height:1.3;font-weight:600;">${escapeHtml(opts.heading)}</h1>
-        <div style="margin-top:16px;text-align:left;">${paragraphsFromPlainText(opts.bodyText)}</div>
+        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(opts.bodyText)}</div>
       </div>
       ${summaryHtml}`;
 
@@ -283,7 +299,6 @@ function renderReceiptEmailInner(opts: ReceiptOptions): string {
   const inner = `
       <div style="padding:28px 24px 0;text-align:center;">
         ${eyebrowPill(opts.eyebrow)}
-        <h1 style="margin:22px 0 0;color:${BRAND.fg};font-size:26px;line-height:1.3;font-weight:600;">${escapeHtml(opts.heading)}</h1>
         <div style="margin-top:16px;text-align:left;">${paragraphsFromPlainText(opts.intro)}</div>
       </div>
 
@@ -362,11 +377,10 @@ function renderTicketEmailInner(opts: TicketEmailOptions): string {
   const inner = `
       <div style="padding:28px 40px 4px;text-align:center;">
         ${eyebrowPill("Your ticket")}
-        <h1 style="margin:20px 0 0;color:${BRAND.fg};font-size:26px;line-height:1.3;font-weight:600;">Your seat is reserved</h1>
         <div style="margin-top:14px;text-align:left;">${paragraphsFromPlainText(opts.intro)}</div>
       </div>
 
-      <div style="margin:18px 24px 0;border:2px solid ${BRAND.red};border-radius:16px;overflow:hidden;background:${BRAND.cardBg};">
+      <div style="margin:18px 24px 0;border:2px solid ${BRAND.red};border-radius:16px;overflow:hidden;${WHITE}">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
           <tr>
             <td style="background:${BRAND.red};padding:14px 22px;font-family:Arial,sans-serif;">
@@ -618,7 +632,8 @@ export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmai
  * - When the sender pool has been set up (src/lib/senders.ts), the pool decides: senders in order, each with a daily limit.
  * - Otherwise, as before: campaigns go through Brevo, everything else through Gmail.
  */
-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+export async function sendEmail(original: SendEmailInput): Promise<SendEmailResult> {
+  const input = { ...original, html: fixSiteLinks(original.html) };
   const { sendThroughPool } = await import("@/lib/senders");
   const pooled = await sendThroughPool(input);
   if (pooled) return pooled;

@@ -1,0 +1,97 @@
+diff --git a/.env.example b/.env.example
+index a66478f..2afe717 100644
+--- a/.env.example
++++ b/.env.example
+@@ -4,8 +4,8 @@ SESSION_SECRET=
+ 
+ # Public address of this dashboard (no trailing slash). Used for the unique "Reserve My Seat" links
+ # and the QR codes in emails, so it MUST be the real address guests can open.
+-APP_BASE_URL=https://pertinencegroup.com
+-# Where the dashboard lives under that address. Leave as is for https://pertinencegroup.com/event.
++APP_BASE_URL=https://YOUR-PROJECT.vercel.app
++# Where the dashboard lives under that address, e.g. https://YOUR-PROJECT.vercel.app/event. Keep it as it is now.
+ # Must be set at build time too. Use an empty value to serve from the site root.
+ NEXT_PUBLIC_BASE_PATH=/event
+ # Optional. Override the logos and the site icon (defaults are the Pertinence Group files, see src/lib/brand.ts).
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index 2467e2b..77182ed 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -1,11 +1,11 @@
+ import type { Metadata } from "next";
+-import { Roboto } from "next/font/google";
++import { Inter } from "next/font/google";
+ import "./globals.css";
+ import { BRAND_NAME, ICON_URL } from "@/lib/brand";
+ import ClientBoot from "@/components/ClientBoot";
+ 
+ // One simple, legible font for every page (names, headings, text, buttons). It is bundled with the app, so it shows at once with no flash.
+-const roboto = Roboto({ subsets: ["latin"], weight: ["300", "400", "500", "700"], display: "swap", variable: "--font-roboto" });
++const inter = Inter({ subsets: ["latin"], weight: ["300", "400", "500", "600", "700"], display: "swap", variable: "--font-inter" });
+ 
+ export const metadata: Metadata = {
+   title: `${BRAND_NAME} Events`,
+@@ -17,7 +17,7 @@ const THEME_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem('hangout-t
+ 
+ export default function RootLayout({ children }: { children: React.ReactNode }) {
+   return (
+-    <html lang="en" data-theme="light" className={roboto.variable} suppressHydrationWarning>
++    <html lang="en" data-theme="light" className={inter.variable} suppressHydrationWarning>
+       <head>
+         {/* Sets the theme before first paint so there is no flash of the wrong colors. */}
+         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index 970d166..16c06cd 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -79,21 +79,24 @@ function withBrand<T>(brand: EmailBrand | undefined, render: () => T): T {
+  * so set APP_BASE_URL in the environment to the address this dashboard is served from.
+  */
+ export function appBaseUrl(): string {
++  // 1. APP_BASE_URL, the address you set. Change it (and redeploy) when the dashboard moves, for example to your own domain.
+   const configured = (process.env.APP_BASE_URL || "").trim();
+-  // A *.vercel.app address is never what guests should be sent to: it is slow to open and may be an old deployment.
+-  if (configured && !VERCEL_HOST.test(configured)) return configured.replace(/\/+$/, "");
+-  if (process.env.NODE_ENV === "production") return PRODUCTION_SITE;
++  if (configured) return configured.replace(/\/+$/, "");
++  // 2. Otherwise the project's Vercel address, which Vercel supplies and keeps current.
++  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+   return "http://localhost:3000";
+ }
+ 
+-const PRODUCTION_SITE = "https://pertinencegroup.com";
+-const VERCEL_HOST = /^https?:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app/i;
++const VERCEL_LINK = /https?:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app/gi;
+ 
+-/** Rewrites any old *.vercel.app address left in an email (a template typed by hand, say) to the real site address. */
++/**
++ * Keeps links current: a *.vercel.app address left over in an email (an older deployment, or a template typed by hand)
++ * is replaced with the address the dashboard is served from now.
++ */
+ export function fixSiteLinks(html: string): string {
+   const base = appBaseUrl();
+-  if (VERCEL_HOST.test(base)) return html;
+-  return html.replace(/https?:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app/gi, base.replace(/\/event$/i, ""));
++  if (!/^https?:\/\/(?!localhost)/i.test(base)) return html;
++  return html.replace(VERCEL_LINK, (found) => (found.toLowerCase() === base.toLowerCase() ? found : base));
+ }
+ 
+ /** The logo at the top of every email (see src/lib/brand.ts). It is the dark logo, which suits the white card. */
+diff --git a/tailwind.config.ts b/tailwind.config.ts
+index b0bee84..f25cd4e 100644
+--- a/tailwind.config.ts
++++ b/tailwind.config.ts
+@@ -18,10 +18,10 @@ const config: Config = {
+         golddark: "rgb(var(--c-golddark) / <alpha-value>)",
+         goldlight: "rgb(var(--c-goldlight) / <alpha-value>)",
+       },
+-      // Roboto everywhere. "serif" is kept as a name because the headings use font-serif; it now maps to Roboto too.
++      // Inter everywhere. "serif" is kept as a name because the headings use font-serif; it now maps to Inter too.
+       fontFamily: {
+-        sans: ["var(--font-roboto)", "Roboto", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
+-        serif: ["var(--font-roboto)", "Roboto", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
++        sans: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
++        serif: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
+       },
+     },
+   },

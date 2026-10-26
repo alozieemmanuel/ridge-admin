@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
   if (raw.dryRun === true) return NextResponse.json({ count: people.length });
   if (people.length === 0) return NextResponse.json({ error: "There is nobody to send to." }, { status: 400 });
 
-  const missing = missingEventDetails(await getSettingsMap(event.id));
+  const settings = await getSettingsMap(event.id);
+  const missing = missingEventDetails(settings);
   if (missing.length) {
     return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
   }
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
     await Promise.all(
       people.slice(i, i + CONCURRENCY).map(async (p) => {
         try {
-          await sendInvitation(p, kind);
+          await sendInvitation(p, kind, settings);
           sent++;
         } catch (err) {
           failures.push({ name: p.fullName, email: p.email, error: err instanceof Error ? err.message : "Failed" });

@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Logo from "@/components/Logo";
 import { themeStyle } from "@/lib/eventTheme";
+import { useEventSeed } from "@/components/EventSeed";
 import { primaryButton } from "@/components/ui";
 
 interface View {
@@ -25,6 +26,7 @@ function Field({ label, value }: { label: string; value?: string | null }) {
 
 function ReserveInner() {
   const token = useSearchParams().get("t") || "";
+  const seed = useEventSeed();
   const [view, setView] = useState<View | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,14 +75,19 @@ function ReserveInner() {
     }
   }
 
-  const theme = themeStyle(view?.event.color);
+  const theme = themeStyle(view?.event.color ?? seed?.color);
   const contact = view ? [view.event.contactEmail, view.event.contactPhone].filter(Boolean).join(" or ") : "";
 
   return (
     <div className={`min-h-screen bg-tint${theme ? " event-themed" : ""}`} style={theme}>
       <header className="bg-pagebg border-b border-border">
         <div className="max-w-2xl mx-auto px-5 py-5 flex justify-center min-h-[4.5rem]">
-          {loading ? null : view?.event.logoUrl ? <Logo className="h-10 w-auto" src={view.event.logoUrl} darkSrc={view.event.logoDarkUrl} name={view.event.brandName || view.event.name} /> : <Logo className="h-10 w-auto" />}
+          {(() => {
+            const logo = view?.event.logoUrl ?? seed?.logoUrl;
+            if (!logo) return loading ? null : <Logo className="h-10 w-auto" />;
+            const darkLogo = view ? view.event.logoDarkUrl : seed?.logoDarkUrl;
+            return <Logo className="h-10 w-auto" src={logo} darkSrc={darkLogo} name={view?.event.brandName || view?.event.name || seed?.brandName || seed?.name} />;
+          })()}
         </div>
       </header>
 

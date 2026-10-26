@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettingsMap } from "@/lib/settings";
 import { updateSettingsSchema } from "@/lib/validation";
 import { HIDDEN_SETTING_KEYS } from "@/lib/contactSources";
-import { requireEvent } from "@/lib/event";
+import { requireEvent, forgetEvent } from "@/lib/event";
 
 const DERIVED_KEYS = ["event_slug", "event_name", "event_id", "event_brand_name", "event_color", "event_logo_url", "event_timezone"];
 
@@ -51,6 +51,7 @@ export async function PUT(request: NextRequest) {
   // The event's name in the event list follows the "Event name" setting.
   const name = parsed.data.programme_name?.trim();
   if (name && name !== event.name) await prisma.event.update({ where: { id: event.id }, data: { name } });
+  forgetEvent();
 
   const settings = withoutSheetKeys(await getSettingsMap(event.id));
   return NextResponse.json({ result: "success", settings });

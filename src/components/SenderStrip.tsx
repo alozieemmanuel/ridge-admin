@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { ghostButton } from "@/components/ui";
 
@@ -63,12 +62,9 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
           <p className="text-xs text-muted mt-1">
             {data.senders.length === 0
               ? "No sender list yet. Campaigns go through Brevo and everything else through Gmail."
-              : `Each email goes through the first sender with room left. The count resets at ${resets}.`}
+              : `Each email goes through the first sender with room left. The count resets at ${resets}. Senders are set once for all events, from Email senders on the All events page.`}
           </p>
         </div>
-        <Link href="/senders" className={ghostButton}>
-          {data.isOwner ? "Manage senders" : "View senders"}
-        </Link>
       </div>
 
       {data.senders.length > 0 && (

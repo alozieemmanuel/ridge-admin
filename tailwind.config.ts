@@ -18,8 +18,10 @@ const config: Config = {
         golddark: "rgb(var(--c-golddark) / <alpha-value>)",
         goldlight: "rgb(var(--c-goldlight) / <alpha-value>)",
       },
+      // Inter everywhere. "serif" is kept as a name because the headings use font-serif; it now maps to Inter too.
       fontFamily: {
-        serif: ["Georgia", "Times New Roman", "serif"],
+        sans: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
+        serif: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "Segoe UI", "Arial", "sans-serif"],
       },
     },
   },

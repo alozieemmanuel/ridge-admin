@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
-import { requireEvent } from "@/lib/event";
+import { requireEvent, forgetEvent } from "@/lib/event";
 
 export const runtime = "nodejs";
 
@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
   await prisma.eventAsset.upsert({ where: { id }, update: { contentType: type, data: Buffer.from(bytes) }, create: { id, eventId: event.id, variant, contentType: type, data: Buffer.from(bytes) } });
   const url = `/api/public/event-logo/${event.slug}/${variant}?v=${Date.now()}`;
   await prisma.event.update({ where: { id: event.id }, data: variant === "dark" ? { logoDarkUrl: url } : { logoUrl: url } });
+  forgetEvent();
 
   await logAdminAction(session, { action: "event.update", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { logo: variant, uploaded: true } }, request);
   return NextResponse.json({ result: "success", url });
@@ -58,6 +59,7 @@ export async function DELETE(request: NextRequest) {
   const variant = request.nextUrl.searchParams.get("variant") === "dark" ? "dark" : "light";
   await prisma.eventAsset.deleteMany({ where: { id: `${event.id}:${variant}` } });
   await prisma.event.update({ where: { id: event.id }, data: variant === "dark" ? { logoDarkUrl: null } : { logoUrl: null } });
+  forgetEvent();
   await logAdminAction(session, { action: "event.update", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { logo: variant, removed: true } }, request);
   return NextResponse.json({ result: "success" });
 }

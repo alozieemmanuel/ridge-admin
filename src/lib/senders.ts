@@ -38,8 +38,17 @@ export function isConfigured(kind: SenderKind): boolean {
   return def.env.every((name) => Boolean(process.env[name]));
 }
 
-export async function getPool() {
+// The sender list rarely changes, so each server instance remembers it for a short while (savePool clears it).
+let poolMemo: { at: number; rows: Awaited<ReturnType<typeof readPool>> } | null = null;
+const POOL_TTL_MS = 30_000;
+async function readPool() {
   return prisma.emailSender.findMany({ orderBy: { position: "asc" } });
+}
+export async function getPool() {
+  if (poolMemo && Date.now() - poolMemo.at < POOL_TTL_MS) return poolMemo.rows;
+  const rows = await readPool();
+  poolMemo = { at: Date.now(), rows };
+  return rows;
 }
 
 /** What each service has sent since midnight. Failed attempts are not counted. */
@@ -127,7 +136,8 @@ export async function sendThroughPool(input: SendEmailInput): Promise<SendEmailR
   const candidates = input.attachments?.length ? pool.filter((p) => p.kind === "GMAIL") : pool;
   if (candidates.length === 0) return null;
 
-  const used = await currentCounts();
+  // Daily limits only apply to campaigns, so a single invitation or ticket does not wait for the count.
+  const used = isCampaign ? await currentCounts() : {};
   let lastError = "";
   let skippedFull = false;
   let tried = false;
@@ -173,5 +183,6 @@ export async function savePool(items: { kind: SenderKind; label?: string; dailyL
     ),
   ]);
   counts = null;
+  poolMemo = null;
   cooling.clear();
 }

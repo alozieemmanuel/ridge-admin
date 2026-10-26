@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
-import { requireEvent } from "@/lib/event";
+import { requireEvent, forgetEvent } from "@/lib/event";
 import { getSheetState, saveSheetInterval } from "@/lib/contactSheet";
 import { appBaseUrl } from "@/lib/email";
 import { BASE_PATH } from "@/lib/basePath";
@@ -64,6 +64,7 @@ export async function PUT(request: NextRequest) {
 
   const token = b.dataSource === "form" ? event.intakeToken ?? newIntakeToken() : event.intakeToken;
   const updated = await prisma.event.update({ where: { id: event.id }, data: { dataSource: b.dataSource, intakeToken: token } });
+  forgetEvent();
   if (b.dataSource !== "supabase" && event.dataSource === "supabase") await clearSupabase(event.id);
 
   await logAdminAction(session, { action: "event.source", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { dataSource: b.dataSource } }, request);
@@ -83,6 +84,7 @@ export async function POST(request: NextRequest) {
 
   if (b.action === "regenerate_key") {
     const updated = await prisma.event.update({ where: { id: event.id }, data: { intakeToken: newIntakeToken() } });
+    forgetEvent();
     await logAdminAction(session, { action: "event.source", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { form_key: "changed" } }, request);
     return NextResponse.json({ result: "saved", ...(await state(event.id, event.slug, updated.dataSource, updated.intakeToken)) });
   }

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { registrationActionSchema } from "@/lib/validation";
 import { getSettingsMap } from "@/lib/settings";
@@ -40,18 +40,32 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const needed = action === "check_in" || action === "undo_check_in" ? "attendance" : "invitations";
   if (!event.modules.includes(needed)) return NextResponse.json({ error: "That part is not switched on for this event." }, { status: 404 });
 
-  const registration = await prisma.registration.findFirst({ where: { id, eventId: event.id } });
+  // Looked up together: the settings are needed by every send and cost a round trip of their own.
+  const [registration, settings] = await Promise.all([
+    prisma.registration.findFirst({ where: { id, eventId: event.id } }),
+    action === "send_invitation" || action === "send_reminder" || action === "send_ticket" || action === "reserve" ? getSettingsMap(event.id) : Promise.resolve(undefined),
+  ]);
   if (!registration) return NextResponse.json({ error: "Participant not found." }, { status: 404 });
 
-  const log = (name: AuditAction, details?: Record<string, string | boolean | null>) =>
-    logAdminAction(session, { action: name, entityType: "registration", entityId: id, entityLabel: registration.fullName, details: details ?? {} }, request);
+  // The activity log entry is written while the answer is on its way back, not before it.
+  const log = (name: AuditAction, details?: Record<string, string | boolean | null>): Promise<void> => {
+    const write = logAdminAction(session, { action: name, entityType: "registration", entityId: id, entityLabel: registration.fullName, details: details ?? {} }, request);
+    try {
+      after(async () => {
+        await write.catch((err) => console.error("[audit] Could not write the log entry:", err));
+      });
+      return Promise.resolve();
+    } catch {
+      return write;
+    }
+  };
 
   try {
     switch (action) {
       case "send_invitation":
       case "send_reminder": {
         const kind = action === "send_reminder" ? "reminder" : "invitation";
-        const missing = missingEventDetails(await getSettingsMap(event.id));
+        const missing = missingEventDetails(settings ?? (await getSettingsMap(event.id)));
         if (missing.length) {
           return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
         }
@@ -59,7 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           return NextResponse.json({ error: `${registration.fullName} has already reserved a seat.` }, { status: 409 });
         }
         try {
-          await sendInvitation(registration, kind);
+          await sendInvitation(registration, kind, settings);
         } catch (err) {
           const message = err instanceof Error ? err.message : "Failed to send the email.";
           await log("participant.send_invitation", { outcome: "failed", kind, error: message.slice(0, 300) });
@@ -83,7 +97,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         let ticketSent = true;
         let ticketError: string | null = null;
         try {
-          await sendTicket(result.registration);
+          await sendTicket(result.registration, settings);
           await log("participant.send_ticket", { outcome: "sent", to: registration.email });
         } catch (err) {
           ticketSent = false;
@@ -110,7 +124,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat yet, so there is no ticket to send.` }, { status: 409 });
         }
         try {
-          await sendTicket(registration);
+          await sendTicket(registration, settings);
         } catch (err) {
           const message = err instanceof Error ? err.message : "Failed to send the ticket.";
           await log("participant.send_ticket", { outcome: "failed", error: message.slice(0, 300) });

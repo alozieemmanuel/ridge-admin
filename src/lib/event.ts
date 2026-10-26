@@ -47,6 +47,25 @@ export async function canAccessEvent(session: SessionPayload, eventId: string): 
  *   if (!ctx.ok) return ctx.response;
  *   const { event, session } = ctx;
  */
+// An event row is asked for by almost every request, so each server instance keeps it for a few seconds. Saving the event clears it.
+const eventMemo = new Map<string, { at: number; row: Awaited<ReturnType<typeof readEvent>> }>();
+const EVENT_TTL_MS = 5_000;
+function readEvent(slug: string) {
+  return prisma.event.findUnique({ where: { slug } });
+}
+async function findEventBySlug(slug: string) {
+  const hit = eventMemo.get(slug);
+  if (hit && Date.now() - hit.at < EVENT_TTL_MS) return hit.row;
+  const row = await readEvent(slug);
+  if (row) eventMemo.set(slug, { at: Date.now(), row });
+  return row;
+}
+/** Call after the event is changed so the next request sees the change at once. */
+export function forgetEvent(slug?: string): void {
+  if (slug) eventMemo.delete(slug);
+  else eventMemo.clear();
+}
+
 export async function requireEvent(request: Request, opts: { module?: ModuleKey | ModuleKey[]; owner?: boolean } = {}): Promise<EventContext> {
   const session = await getSession();
   if (!session) return fail("Not signed in.", 401);
@@ -55,7 +74,7 @@ export async function requireEvent(request: Request, opts: { module?: ModuleKey 
   const slug = (request.headers.get("x-event") || url.searchParams.get("event") || "").trim().toLowerCase();
   if (!slug) return fail("No event was chosen.", 400);
 
-  const event = await prisma.event.findUnique({ where: { slug } });
+  const event = await findEventBySlug(slug);
   if (!event) return fail("That event does not exist.", 404);
   if (!(await canAccessEvent(session, event.id))) return fail("You don't have access to this event.", 403);
   if (opts.owner && session.role !== "OWNER") return fail("Only an owner can do this.", 403);

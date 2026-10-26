@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import EventCard, { type EventCardData } from "@/components/EventCard";
-import { inputClass, ghostButton, primaryButton } from "@/components/ui";
+import { inputClass, primaryButton } from "@/components/ui";
 import { cacheGet, cacheSet } from "@/lib/clientCache";
 
 interface EventRow extends EventCardData {
@@ -29,15 +29,6 @@ function Skeleton() {
         <div className="h-4 w-1/2 rounded bg-tint" />
         <div className="h-16 rounded bg-tint mt-5" />
       </div>
-    </div>
-  );
-}
-
-function Total({ value, label }: { value: number; label: string }) {
-  return (
-    <div>
-      <p className="font-serif text-4xl leading-none tabular-nums">{value.toLocaleString()}</p>
-      <p className="text-sm text-muted mt-2">{label}</p>
     </div>
   );
 }
@@ -78,13 +69,6 @@ export default function EventsPage() {
     [events]
   );
 
-  const live = events.filter((e) => e.status === "ACTIVE");
-  const totals = {
-    people: live.reduce((n, e) => n + e.total, 0),
-    reserved: live.reduce((n, e) => n + e.reserved, 0),
-    checked: live.reduce((n, e) => n + e.checkedIn, 0),
-  };
-
   const q = query.trim().toLowerCase();
   const shown = events.filter((e) => (filter === "all" || e.status === filter.toUpperCase()) && (!q || `${e.name} ${e.brandName ?? ""} ${e.slug}`.toLowerCase().includes(q)));
   const tabs: { id: Filter; label: string }[] = [
@@ -103,9 +87,6 @@ export default function EventsPage() {
           <p className="text-muted mt-2 max-w-xl">Open an event to manage its contacts, invitations, attendance and emails.</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <Link href="/senders" className={ghostButton}>
-            Email senders
-          </Link>
           {owner && events.length > 0 && (
             <Link href="/new" className={primaryButton}>
               New event
@@ -113,15 +94,6 @@ export default function EventsPage() {
           )}
         </div>
       </div>
-
-      {data && counts.active > 0 && (
-        <div className="flex flex-wrap gap-x-14 gap-y-5 mb-9 pb-8 border-b border-border">
-          <Total value={counts.active} label={counts.active === 1 ? "active event" : "active events"} />
-          <Total value={totals.people} label="people across them" />
-          <Total value={totals.reserved} label="seats reserved" />
-          <Total value={totals.checked} label="checked in" />
-        </div>
-      )}
 
       {data && events.length > 0 && (
         <div className="flex items-center justify-between gap-4 flex-wrap mb-6">

@@ -40,6 +40,12 @@
   color-scheme: dark;
 }
 
+/* Headings use the same font as the text, a little heavier so they stand out. */
+.font-serif {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
 html,
 body {
   background: rgb(var(--c-pagebg));

@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettingsMap, mergeTemplate, buildWhatsAppUrl } from "@/lib/settings";
 import { BASE_PATH } from "@/lib/basePath";
 import { firstEventId } from "@/lib/event";
+import { after } from "next/server";
 import { renderBrandedEmail, emailBrand, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
 import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
 import { defaultTemplate } from "@/lib/emailDefaults";
@@ -92,6 +93,19 @@ async function recordEvent(params: {
  * `kind` picks the channel: "campaign" goes through Brevo, everything else
  * goes through Gmail (see sendEmail in email.ts).
  */
+/** Runs `task` after the response has gone out (single sends), or before returning (bulk work, where the count must be right). */
+async function runAfterResponse(task: () => Promise<unknown>, later: boolean): Promise<void> {
+  if (later) {
+    try {
+      after(() => task().catch((err) => console.error("[email] Could not record the email event:", err)));
+      return;
+    } catch {
+      // not inside a request (a script or a cron): fall through and wait for it
+    }
+  }
+  await task();
+}
+
 async function deliverAttendeeEmail(opts: {
   source: EventSource;
   kind: EmailKind;
@@ -125,18 +139,21 @@ async function deliverAttendeeEmail(opts: {
   // Every sender is at its daily limit: nothing happened, so nothing is recorded. The caller queues it for tomorrow.
   if (result.deferred) return result;
 
-  await recordEvent({
-    source: opts.source,
-    audience: "ATTENDEE",
-    id: opts.id,
-    type: result.success ? "SENT" : "FAILED",
-    kind: opts.kind,
-    provider: result.provider,
-    subject,
-    providerMessageId: result.providerMessageId,
-    errorMessage: result.error,
-    campaignId: opts.campaignId,
-  });
+  // Writing the record is not needed to answer, so it runs after the response where Next allows it.
+  const write = () =>
+    recordEvent({
+      source: opts.source,
+      audience: "ATTENDEE",
+      id: opts.id,
+      type: result.success ? "SENT" : "FAILED",
+      kind: opts.kind,
+      provider: result.provider,
+      subject,
+      providerMessageId: result.providerMessageId,
+      errorMessage: result.error,
+      campaignId: opts.campaignId,
+    });
+  await runAfterResponse(write, opts.kind !== "campaign");
   return result;
 }
 
@@ -711,8 +728,8 @@ async function buildInvitation(
  * Emails a guest their unique reserve link. kind "reminder" uses the reminder wording, for people who were
  * invited but have not reserved yet. Throws (with the reason) if the send fails; the outcome is recorded either way.
  */
-export async function sendInvitation(registration: Registration, kind: "invitation" | "reminder" = "invitation"): Promise<void> {
-  const settings = await getSettingsMap(registration.eventId);
+export async function sendInvitation(registration: Registration, kind: "invitation" | "reminder" = "invitation", knownSettings?: Settings): Promise<void> {
+  const settings = knownSettings ?? (await getSettingsMap(registration.eventId));
   throwIfFailed(
     await deliverAttendeeEmail({
       source: "REGISTRATION",
@@ -733,12 +750,12 @@ export async function sendInvitation(registration: Registration, kind: "invitati
  * Emails the entry ticket (designed like a ticket, with a QR code and the ticket code) to a guest who has reserved.
  * Throws if the guest has no ticket yet or the send fails. The seat stays reserved either way.
  */
-export async function sendTicket(registration: Registration): Promise<void> {
+export async function sendTicket(registration: Registration, knownSettings?: Settings): Promise<void> {
   const code = registration.ticketCode;
   if (!code || !registration.reservedAt) {
     throw new Error("This guest has no ticket yet. They need to reserve a seat first.");
   }
-  const settings = await getSettingsMap(registration.eventId);
+  const settings = knownSettings ?? (await getSettingsMap(registration.eventId));
 
   throwIfFailed(
     await deliverAttendeeEmail({

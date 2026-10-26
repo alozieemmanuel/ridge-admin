@@ -156,6 +156,7 @@ export function ShellFrame({ children }: { active?: string; children: React.Reac
       })
     : [
         { href: "/", label: "All events", icon: "overview", current: pathname === "/" || pathname.startsWith("/new") },
+        { href: "/senders", label: "Email senders", icon: "mail" as IconName, current: pathname.startsWith("/senders") },
         ...(owner ? [{ href: "/team", label: "Team", icon: "team" as IconName, current: pathname.startsWith("/team") }] : []),
       ];
 

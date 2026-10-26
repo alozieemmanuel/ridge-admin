@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { BRAND_NAME, ICON_URL } from "@/lib/brand";
 import ClientBoot from "@/components/ClientBoot";
+
+// One simple, legible font for every page (names, headings, text, buttons). It is bundled with the app, so it shows at once with no flash.
+const inter = Inter({ subsets: ["latin"], weight: ["300", "400", "500", "600", "700"], display: "swap", variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: `${BRAND_NAME} Events`,
@@ -13,7 +17,7 @@ const THEME_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem('hangout-t
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="light" suppressHydrationWarning>
+    <html lang="en" data-theme="light" className={inter.variable} suppressHydrationWarning>
       <head>
         {/* Sets the theme before first paint so there is no flash of the wrong colors. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />

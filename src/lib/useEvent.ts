@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { cacheGet, fetchAndCache } from "@/lib/clientCache";
 import { lower, termsOf, type Terms } from "@/lib/eventTheme";
+import { useEventSeed } from "@/components/EventSeed";
 
 export interface EventInfo {
   id: string;
@@ -49,6 +50,7 @@ export function useTerms() {
 /** The open event, which parts of it are switched on, and who is looking. `denied` is true when it doesn't exist or the admin has no access. */
 export function useEvent() {
   const slug = useEventSlug();
+  const seed = useEventSeed();
   const [data, setData] = useState<EventResponse | null>(() => (slug ? cacheGet<EventResponse>("/api/admin/event") ?? null : null));
   const [denied, setDenied] = useState(false);
 
@@ -65,12 +67,14 @@ export function useEvent() {
     };
   }, [slug]);
 
+  // Until the API answers, the event details sent with the page are used, so the colour and logo are right from the first paint.
+  const event = data?.event ?? (seed && seed.slug === slug ? seed : null);
   return {
-    event: data?.event ?? null,
+    event,
     role: data?.role ?? null,
     admin: data?.admin ?? null,
     isOwner: data?.role === "OWNER",
-    has: (module: string) => Boolean(data?.event.modules.includes(module)),
+    has: (module: string) => Boolean(event?.modules.includes(module)),
     denied,
   };
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
-import { MODULE_KEYS, requireEvent } from "@/lib/event";
+import { MODULE_KEYS, requireEvent, forgetEvent } from "@/lib/event";
 import { cleanColor, cleanLink, cleanTerms, cleanText, cleanTimezone, cleanType } from "@/lib/eventInput";
 import { termsOf } from "@/lib/eventTheme";
 
@@ -93,6 +93,7 @@ export async function PATCH(request: NextRequest) {
   if (!Object.keys(data).length) return NextResponse.json({ error: "Nothing to change." }, { status: 400 });
 
   const updated = await prisma.event.update({ where: { id: event.id }, data });
+  forgetEvent();
   // The name shown on invitations and tickets follows the event's name.
   if (typeof data.name === "string") await prisma.setting.upsert({ where: { eventId_key: { eventId: event.id, key: "programme_name" } }, update: { value: data.name }, create: { eventId: event.id, key: "programme_name", value: data.name } });
   await logAdminAction(session, { action: "event.update", entityType: "event", entityId: event.id, entityLabel: event.name, eventId: event.id, details: { changed: Object.keys(data) } }, request);
