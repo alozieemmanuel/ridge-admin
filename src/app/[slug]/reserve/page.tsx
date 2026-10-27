@@ -124,6 +124,15 @@ function ReserveInner() {
             )}
 
             <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
+              <div className="grid sm:grid-cols-2 gap-5">
+                <Field label="Name" value={view.guest.fullName} />
+                <Field label="Email" value={view.guest.email} />
+                {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
+              </div>
+            </section>
+
+            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
               <h2 className="text-xs uppercase tracking-wider text-muted mb-4">The event</h2>
               <div className="grid sm:grid-cols-3 gap-5">
                 <Field label="Date" value={view.event.date} />
@@ -139,15 +148,6 @@ function ReserveInner() {
                 {view.event.payment && <p className="text-sm text-muted mt-3 whitespace-pre-line break-words">{linkify(view.event.payment)}</p>}
               </section>
             )}
-
-            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
-              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
-              <div className="grid sm:grid-cols-2 gap-5">
-                <Field label="Name" value={view.guest.fullName} />
-                <Field label="Email" value={view.guest.email} />
-                {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
-              </div>
-            </section>
 
             {!view.reserved && !view.full && (
               <div className="text-center">

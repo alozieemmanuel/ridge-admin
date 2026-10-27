@@ -1,0 +1,36 @@
+diff --git a/src/app/[slug]/reserve/page.tsx b/src/app/[slug]/reserve/page.tsx
+index 110f2db..6d91519 100644
+--- a/src/app/[slug]/reserve/page.tsx
++++ b/src/app/[slug]/reserve/page.tsx
+@@ -123,6 +123,15 @@ function ReserveInner() {
+               </p>
+             )}
+ 
++            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
++              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
++              <div className="grid sm:grid-cols-2 gap-5">
++                <Field label="Name" value={view.guest.fullName} />
++                <Field label="Email" value={view.guest.email} />
++                {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
++              </div>
++            </section>
++
+             <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+               <h2 className="text-xs uppercase tracking-wider text-muted mb-4">The event</h2>
+               <div className="grid sm:grid-cols-3 gap-5">
+@@ -140,15 +149,6 @@ function ReserveInner() {
+               </section>
+             )}
+ 
+-            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+-              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
+-              <div className="grid sm:grid-cols-2 gap-5">
+-                <Field label="Name" value={view.guest.fullName} />
+-                <Field label="Email" value={view.guest.email} />
+-                {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
+-              </div>
+-            </section>
+-
+             {!view.reserved && !view.full && (
+               <div className="text-center">
+                 <button onClick={reserve} disabled={busy} className={`${primaryButton} text-base px-10 py-4`}>
