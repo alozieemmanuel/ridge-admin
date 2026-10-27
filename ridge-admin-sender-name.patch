@@ -1,0 +1,133 @@
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index 16c06cd..c447621 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -10,9 +10,11 @@ export interface EmailBrand {
+   name: string;
+   color: string;
+   logoUrl: string;
++  /** The name guests see as the sender ("From"). */
++  fromName?: string;
+ }
+ 
+-let active: { name: string; color: string; logoUrl: string } | null = null;
++let active: { name: string; color: string; logoUrl: string; fromName?: string } | null = null;
+ /** The event's colour, or null while it is the default one (the original palette is then used as it is). */
+ function custom(): string | null {
+   return active && active.color !== DEFAULT_COLOR ? active.color : null;
+@@ -57,10 +59,16 @@ const BRAND = {
+ 
+ /** The brand of an event's emails, from its settings map. */
+ export function emailBrand(settings: Record<string, string | undefined>): EmailBrand {
++  const name = settings.event_brand_name || BRAND_NAME;
++  // The sender is the "Email sender name" of the event (Settings). The old shared default is ignored, so an event
++  // that never set it is sent as its own brand or event name, never as another event.
++  const typed = (settings.sender_name || "").trim();
++  const fromName = (typed && typed !== "Investor Hangout" ? typed : "") || settings.event_brand_name || settings.event_name || name;
+   return {
+-    name: settings.event_brand_name || BRAND_NAME,
++    name,
+     color: normalizeHex(settings.event_color) ?? DEFAULT_COLOR,
+     logoUrl: settings.event_logo_url || LOGO_URL,
++    fromName,
+   };
+ }
+ 
+@@ -152,7 +160,7 @@ function eyebrowPill(text: string): string {
+ 
+ /** White page, white bordered card (no subject repeated inside: it is in the Subject line), logo on top and the footer line at the bottom. */
+ function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string }): string {
+-  return `<div style="${WHITE}color-scheme:light only;supported-color-schemes:light;padding:40px 16px;font-family:Georgia,'Times New Roman',serif;color:#000000;">
++  return `<!--from:${encodeURIComponent(active?.fromName || active?.name || BRAND_NAME)}--><div style="${WHITE}color-scheme:light only;supported-color-schemes:light;padding:40px 16px;font-family:Georgia,'Times New Roman',serif;color:#000000;">
+     <div style="${WHITE}max-width:${opts.maxWidth}px;margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
+       <div style="padding:36px 40px 0;text-align:center;">
+         <img src="${emailLogoUrl()}" alt="${escapeHtml(active?.name ?? BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
+@@ -470,6 +478,8 @@ export interface SendEmailInput {
+   subject: string;
+   html: string;
+   replyTo?: string | null;
++  /** The sender name guests see. When left out, it is read from the email itself (see sendEmail). */
++  fromName?: string;
+   tags?: { name: string; value: string }[];
+   /** Inline images (Gmail channel only), referenced in the html as <img src="cid:...">. */
+   attachments?: GmailAttachment[];
+@@ -493,6 +503,12 @@ export function isValidEmailAddress(value: string): boolean {
+ }
+ 
+ /** Splits "Name <a@b.co>" or "a@b.co" into the { name, email } shape Brevo expects. */
++/** The same address with the event's sender name on it. */
++function withName(addr: { name?: string; email: string }, fromName?: string): { name?: string; email: string } {
++  const name = (fromName || "").replace(/["<>\r\n]/g, "").trim();
++  return name ? { ...addr, name } : addr;
++}
++
+ function parseAddress(value: string): { name?: string; email: string } {
+   const v = value.trim();
+   const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+@@ -551,7 +567,7 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
+         Accept: "application/json",
+       },
+       body: JSON.stringify({
+-        sender: parseAddress(from),
++        sender: withName(parseAddress(from), input.fromName),
+         to: [{ email: input.to }],
+         subject: input.subject,
+         htmlContent: input.html,
+@@ -582,6 +598,7 @@ export async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEm
+     subject: input.subject,
+     html: input.html,
+     replyTo: input.replyTo || undefined,
++    fromName: input.fromName,
+     attachments: input.attachments,
+   });
+   return res.ok
+@@ -598,7 +615,7 @@ export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmai
+   const from = process.env.MAILERSEND_FROM || process.env.EMAIL_FROM || "";
+   if (!apiKey) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_API_KEY is not set on the server." };
+   if (!from) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_FROM is not set on the server (an address on a domain verified in MailerSend)." };
+-  const sender = parseAddress(from);
++  const sender = withName(parseAddress(from), input.fromName);
+   const reply = input.replyTo ? parseAddress(input.replyTo) : null;
+   try {
+     const response = await fetch("https://api.mailersend.com/v1/email", {
+@@ -633,7 +650,17 @@ export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmai
+  * - Otherwise, as before: campaigns go through Brevo, everything else through Gmail.
+  */
+ export async function sendEmail(original: SendEmailInput): Promise<SendEmailResult> {
+-  const input = { ...original, html: fixSiteLinks(original.html) };
++  // The sender name travels inside the email as a comment (written by emailShell), so every kind of email carries its own event's name.
++  const marker = /^<!--from:([^>]*?)-->/.exec(original.html);
++  let fromName = original.fromName;
++  if (!fromName && marker) {
++    try {
++      fromName = decodeURIComponent(marker[1]);
++    } catch {
++      fromName = undefined;
++    }
++  }
++  const input = { ...original, fromName, html: fixSiteLinks(marker ? original.html.slice(marker[0].length) : original.html) };
+   const { sendThroughPool } = await import("@/lib/senders");
+   const pooled = await sendThroughPool(input);
+   if (pooled) return pooled;
+diff --git a/src/lib/gmail.ts b/src/lib/gmail.ts
+index 593833d..4777e37 100644
+--- a/src/lib/gmail.ts
++++ b/src/lib/gmail.ts
+@@ -14,6 +14,8 @@ export type GmailSendInput = {
+   html: string;
+   text?: string;
+   replyTo?: string;
++  /** Overrides GMAIL_FROM_NAME: the name guests see as the sender. */
++  fromName?: string;
+   cc?: string | string[];
+   bcc?: string | string[];
+   attachments?: GmailAttachment[];
+@@ -78,7 +80,7 @@ export async function sendViaGmail(
+   }
+ 
+   const user = process.env.GMAIL_USER as string;
+-  const fromName = process.env.GMAIL_FROM_NAME || "Investor Hangout";
++  const fromName = (input.fromName || process.env.GMAIL_FROM_NAME || "Investor Hangout").replace(/["<>\r\n]/g, "").trim();
+ 
+   const message = {
+     from: `"${fromName}" <${user}>`,

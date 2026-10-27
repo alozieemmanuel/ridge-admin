@@ -14,6 +14,8 @@ export type GmailSendInput = {
   html: string;
   text?: string;
   replyTo?: string;
+  /** Overrides GMAIL_FROM_NAME: the name guests see as the sender. */
+  fromName?: string;
   cc?: string | string[];
   bcc?: string | string[];
   attachments?: GmailAttachment[];
@@ -78,7 +80,7 @@ export async function sendViaGmail(
   }
 
   const user = process.env.GMAIL_USER as string;
-  const fromName = process.env.GMAIL_FROM_NAME || "Investor Hangout";
+  const fromName = (input.fromName || process.env.GMAIL_FROM_NAME || "Investor Hangout").replace(/["<>\r\n]/g, "").trim();
 
   const message = {
     from: `"${fromName}" <${user}>`,
