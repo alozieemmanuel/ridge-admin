@@ -7,6 +7,7 @@ import { useEventPath, useTerms } from "@/lib/useEvent";
 import AdminShell from "@/components/AdminShell";
 import { Pill, PageHeader, StatCard, formatDateTime, ghostButton, inputClass, primaryButton } from "@/components/ui";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import InvitationPreviewDialog from "@/components/InvitationPreviewDialog";
 
 interface Person {
   id: string;
@@ -43,6 +44,7 @@ function AttendanceInner() {
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [capacityInput, setCapacityInput] = useState("");
   const [editingCapacity, setEditingCapacity] = useState(false);
+  const [previewing, setPreviewing] = useState<"invitation" | "reminder" | null>(null);
   const [bulk, setBulk] = useState<{ audience: "NOT_INVITED" | "INVITED_NOT_RESERVED"; count: number } | null>(null);
   const [sending, setSending] = useState(false);
 
@@ -184,7 +186,10 @@ function AttendanceInner() {
             <p className="text-sm mb-3">
               Send {bulk.audience === "NOT_INVITED" ? "the invitation" : "a reminder"} to <strong>{bulk.count}</strong> guest{bulk.count === 1 ? "" : "s"} now?
             </p>
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
+              <button onClick={() => setPreviewing(bulk.audience === "NOT_INVITED" ? "invitation" : "reminder")} className={ghostButton} disabled={sending}>
+                Preview the email
+              </button>
               <button onClick={() => setBulk(null)} className={ghostButton} disabled={sending}>
                 Cancel
               </button>
@@ -200,6 +205,9 @@ function AttendanceInner() {
             </button>
             <button onClick={() => askBulk("INVITED_NOT_RESERVED")} className={ghostButton}>
               Remind those who haven&apos;t reserved
+            </button>
+            <button onClick={() => setPreviewing("invitation")} className={ghostButton}>
+              Preview and test the emails
             </button>
           </div>
         )}
@@ -316,6 +324,7 @@ function AttendanceInner() {
         </div>
       </div>
 
+          {previewing && <InvitationPreviewDialog initial={previewing} onClose={() => setPreviewing(null)} />}
     </AdminShell>
   );
 }

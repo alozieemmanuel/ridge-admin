@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { audience, subject, body } = parsed.data;
+  const { audience, subject, body, ctaLabel } = parsed.data;
   const category = parsed.data.category || null;
 
   const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, audienceWhere(audience, category)] } });
@@ -131,6 +131,7 @@ export async function POST(request: NextRequest) {
       sentCount: 0,
       failedCount: 0,
       sentByName: session.name,
+      ctaLabel: ctaLabel ?? null,
     },
   });
 
@@ -143,7 +144,7 @@ export async function POST(request: NextRequest) {
     for (let i = 0; i < recipients.length; i += CONCURRENCY) {
       const batch = recipients.slice(i, i + CONCURRENCY);
       const results = await Promise.all(
-        batch.map((r: Registration) => sendCampaignEmail(r, subject, body, settings, campaign.id))
+        batch.map((r: Registration) => sendCampaignEmail(r, subject, body, settings, campaign.id, ctaLabel))
       );
       results.forEach((r, index) => {
         if (r.deferred) deferredIds.push(batch[index].id);

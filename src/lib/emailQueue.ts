@@ -44,7 +44,7 @@ export async function drainEmailQueue(opts: { max?: number; campaignId?: string 
           settings = await getSettingsMap(q.campaign.eventId);
           settingsByEvent.set(q.campaign.eventId, settings);
         }
-        const result = await sendCampaignEmail(q.registration, q.campaign.subject, q.campaign.body, settings, q.campaignId);
+        const result = await sendCampaignEmail(q.registration, q.campaign.subject, q.campaign.body, settings, q.campaignId, q.campaign.ctaLabel);
         if (result.deferred) {
           outOfSenders = true;
           return;

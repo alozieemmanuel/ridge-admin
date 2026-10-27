@@ -122,6 +122,8 @@ export const sendCampaignSchema = z.object({
   category: categoryFilter,
   subject: z.string().trim().min(1, "Subject can't be empty.").max(300),
   body: z.string().trim().min(1, "Message can't be empty.").max(20000),
+  // A button that opens the guest's own reserve link. Empty or missing means no button.
+  ctaLabel: z.string().trim().max(40).optional().transform((v) => v || undefined),
 });
 
 

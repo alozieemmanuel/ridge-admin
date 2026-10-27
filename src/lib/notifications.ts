@@ -441,9 +441,12 @@ export async function sendCampaignEmail(
   subject: string,
   bodyText: string,
   settings: Settings,
-  campaignId?: string
+  campaignId?: string,
+  ctaLabel?: string | null
 ): Promise<SendEmailResult> {
-  const vars = registrationVars(registration, settings);
+  // {{reserve_link}} works in the text, and ctaLabel adds a button, both with this guest's own link.
+  const link = reserveLink(registration, settings.event_slug);
+  const vars = { ...registrationVars(registration, settings), reserve_link: link };
   const mergedSubject = mergeTemplate(subject, vars);
   const mergedBody = mergeTemplate(bodyText, vars);
 
@@ -460,6 +463,7 @@ export async function sendCampaignEmail(
         eyebrow: settings.event_caption,
         heading: mergedSubject,
         bodyText: mergedBody,
+        ...(ctaLabel ? { ctaLabel, ctaUrl: link } : {}),
       }),
     }),
   });
@@ -470,7 +474,7 @@ export async function sendCampaignEmail(
  * It uses the same sender, layout and merge values as the real send (the name is the admin's own), is marked [TEST] in the
  * subject, and is not recorded against any contact or campaign.
  */
-export async function sendCampaignTest(opts: { to: string; subject: string; bodyText: string; settings: Settings; sampleName: string }): Promise<SendEmailResult> {
+export async function sendCampaignTest(opts: { to: string; subject: string; bodyText: string; settings: Settings; sampleName: string; ctaLabel?: string }): Promise<SendEmailResult> {
   const vars: Settings = {
     first_name: firstNameOf(opts.sampleName),
     full_name: opts.sampleName,
@@ -486,7 +490,7 @@ export async function sendCampaignTest(opts: { to: string; subject: string; body
       kind: "campaign",
       to: opts.to,
       subject: `[TEST] ${subject}`,
-      html: renderBrandedEmail({ brand: emailBrand(opts.settings), eyebrow: opts.settings.event_caption, heading: subject, bodyText: body }),
+      html: renderBrandedEmail({ brand: emailBrand(opts.settings), eyebrow: opts.settings.event_caption, heading: subject, bodyText: body, ...(opts.ctaLabel ? { ctaLabel: opts.ctaLabel, ctaUrl: vars.reserve_link } : {}) }),
       tags: [{ name: "source", value: "campaign-test" }],
     });
   } catch (err) {
@@ -693,9 +697,10 @@ export function missingEventDetails(settings: Settings): string[] {
 async function buildInvitation(
   registration: Registration,
   settings: Settings,
-  kind: "invitation" | "reminder"
+  kind: "invitation" | "reminder",
+  linkOverride?: string
 ): Promise<BuiltEmail> {
-  const link = reserveLink(registration, settings.event_slug);
+  const link = linkOverride ?? reserveLink(registration, settings.event_slug);
   const vars = { ...registrationVars(registration, settings), reserve_link: link };
   const template = await getTemplate(registration.eventId, kind === "reminder" ? "reservation_reminder" : "invitation");
   const subject = mergeTemplate(template.subject, vars);
@@ -722,6 +727,26 @@ async function buildInvitation(
   });
 
   return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
+}
+
+/**
+ * What the invitation (or reminder) looks like, with the admin as the sample guest. Used to preview it and to send a test before
+ * a bulk send. The button in a test points to a link that does nothing. Nothing is recorded and no guest is touched.
+ */
+export async function previewInvitation(opts: { eventId: string; kind: "invitation" | "reminder"; sampleName: string; sampleEmail: string; settings?: Settings }): Promise<BuiltEmail> {
+  const settings = opts.settings ?? (await getSettingsMap(opts.eventId));
+  const sample = { id: "preview", eventId: opts.eventId, fullName: opts.sampleName, email: opts.sampleEmail, phone: "", country: "", notes: null, regType: "EARLY" } as unknown as Registration;
+  return buildInvitation(sample, settings, opts.kind, `${appBaseUrl()}${BASE_PATH}/${settings.event_slug}/reserve?t=TEST-LINK-NOT-ACTIVE`);
+}
+
+/** Sends that preview to one address, marked [TEST]. */
+export async function sendInvitationTest(opts: { eventId: string; kind: "invitation" | "reminder"; to: string; sampleName: string }): Promise<SendEmailResult> {
+  try {
+    const built = await previewInvitation({ eventId: opts.eventId, kind: opts.kind, sampleName: opts.sampleName, sampleEmail: opts.to });
+    return await sendEmail({ kind: "invitation", to: opts.to, subject: `[TEST] ${built.subject}`, html: built.html, replyTo: built.replyTo, tags: [{ name: "source", value: "invitation-test" }] });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**

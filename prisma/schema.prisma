@@ -340,6 +340,7 @@ model Campaign {
   failedCount    Int              @default(0)
   sentAt         DateTime         @default(now())
   sentByName     String?
+  ctaLabel       String? // when set, every email of this campaign carries a button with this label that opens the guest's own reserve link
 
   emailEvents  EmailEvent[]
   queuedEmails QueuedEmail[]

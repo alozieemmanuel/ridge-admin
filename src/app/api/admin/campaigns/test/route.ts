@@ -11,6 +11,7 @@ const schema = z.object({
   subject: z.string().trim().min(1, "Write a subject first.").max(300),
   body: z.string().trim().min(1, "Write the message first.").max(20000),
   to: z.string().trim().email("Enter a valid email address.").max(320),
+  ctaLabel: z.string().trim().max(40).optional(),
 });
 
 /**
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid test." }, { status: 400 });
 
   const settings = await getSettingsMap(event.id);
-  const result = await sendCampaignTest({ to: parsed.data.to, subject: parsed.data.subject, bodyText: parsed.data.body, settings, sampleName: session.name });
+  const result = await sendCampaignTest({ to: parsed.data.to, subject: parsed.data.subject, bodyText: parsed.data.body, settings, sampleName: session.name, ctaLabel: parsed.data.ctaLabel || undefined });
   if (!result.success) return NextResponse.json({ error: result.error || "The test email could not be sent." }, { status: 502 });
 
   await logAdminAction(session, { action: "campaign.test", entityType: "campaign", eventId: event.id, details: { to: parsed.data.to, subject: parsed.data.subject.slice(0, 200) } }, request);

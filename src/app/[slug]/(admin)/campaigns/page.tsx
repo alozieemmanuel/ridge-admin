@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useEvent, useEventPath } from "@/lib/useEvent";
+import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
 import AdminShell from "@/components/AdminShell";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
@@ -302,6 +302,10 @@ export default function CampaignsPage() {
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const { admin } = useEvent();
+  const terms = useTerms();
+  const [withButton, setWithButton] = useState(false);
+  const [buttonLabel, setButtonLabel] = useState("");
+  const ctaLabel = withButton ? (buttonLabel.trim() || terms.action) : undefined;
   const [testTo, setTestTo] = useState("");
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -314,7 +318,7 @@ export default function CampaignsPage() {
       const res = await fetch("/api/admin/campaigns/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, body, to }),
+        body: JSON.stringify({ subject, body, to, ctaLabel }),
       });
       const data = await res.json().catch(() => ({}));
       setTestMessage(res.ok ? { text: `Test sent to ${to}. Check the inbox and the spam folder.`, ok: true } : { text: data.error || "The test could not be sent.", ok: false });
@@ -386,7 +390,7 @@ export default function CampaignsPage() {
       const res = await fetch("/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audience, subject, body }),
+        body: JSON.stringify({ audience, subject, body, ctaLabel }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -458,6 +462,34 @@ export default function CampaignsPage() {
         <p className="text-xs text-muted mb-5">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize.
         </p>
+
+        <div className="border border-border rounded-xl p-4 mb-5">
+          <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+            <input type="checkbox" checked={withButton} onChange={(e) => setWithButton(e.target.checked)} className="mt-1 accent-[rgb(var(--c-gold))]" />
+            <span>
+              <span className="font-medium">Add a reserve button</span>
+              <span className="block text-xs text-muted mt-1 leading-relaxed">
+                Each guest gets a button under your message that opens their own reserve page, where one click reserves their seat and emails their ticket. Use your message to explain what reserving means and how limited the seats are.
+                You can also put {"{{reserve_link}}"} inside the text.
+              </span>
+            </span>
+          </label>
+          {withButton && (
+            <div className="mt-3">
+              <label className="block text-xs uppercase tracking-wider text-muted mb-2" htmlFor="cta-label">
+                Button text
+              </label>
+              <input
+                id="cta-label"
+                value={buttonLabel}
+                onChange={(e) => setButtonLabel(e.target.value)}
+                maxLength={40}
+                placeholder={terms.action}
+                className="w-full sm:w-72 bg-inputbg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-gold"
+              />
+            </div>
+          )}
+        </div>
 
         <div className="border border-border rounded-xl p-4 mb-5">
           <p className="text-xs uppercase tracking-wider text-muted mb-2">Send a test first</p>
