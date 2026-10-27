@@ -1,0 +1,258 @@
+diff --git a/src/app/[slug]/(admin)/contacts/page.tsx b/src/app/[slug]/(admin)/contacts/page.tsx
+index 7f940bd..6c7efea 100644
+--- a/src/app/[slug]/(admin)/contacts/page.tsx
++++ b/src/app/[slug]/(admin)/contacts/page.tsx
+@@ -100,7 +100,7 @@ function RegistrationsInner() {
+   useEffect(() => {
+     load();
+   }, [load]);
+-  useAutoRefresh(() => load(true), 30_000);
++  useAutoRefresh(() => load(true), 10_000);
+ 
+   // With a live sheet linked, the list is synced when this page opens and every 5 minutes while it stays open.
+   const syncSheet = useCallback(async () => {
+diff --git a/src/app/[slug]/(admin)/page.tsx b/src/app/[slug]/(admin)/page.tsx
+index 9f9caf1..9b831d6 100644
+--- a/src/app/[slug]/(admin)/page.tsx
++++ b/src/app/[slug]/(admin)/page.tsx
+@@ -66,7 +66,7 @@ export default function OverviewPage() {
+   useEffect(() => {
+     load();
+   }, [load]);
+-  useAutoRefresh(load, 30_000);
++  useAutoRefresh(load, 10_000);
+ 
+   const d = data;
+   const funnelMax = d?.total ?? 0;
+diff --git a/src/app/api/admin/registrations/sheet/route.ts b/src/app/api/admin/registrations/sheet/route.ts
+index 4e75e56..ab4df7b 100644
+--- a/src/app/api/admin/registrations/sheet/route.ts
++++ b/src/app/api/admin/registrations/sheet/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { logAdminAction } from "@/lib/audit";
+ import { requireEvent, forgetEvent } from "@/lib/event";
++import { pingUrl } from "@/lib/sheetPing";
+ import { getSheetState, saveSheetInterval, saveSheetUrl, syncContactSheet } from "@/lib/contactSheet";
+ 
+ export const runtime = "nodejs";
+@@ -11,7 +12,10 @@ export const maxDuration = 120;
+ export async function GET(request: NextRequest) {
+   const ctx = await requireEvent(request);
+   if (!ctx.ok) return ctx.response;
+-  return NextResponse.json(await getSheetState(ctx.event.id));
++  const state = await getSheetState(ctx.event.id);
++  // Only owners get the private address that makes the sheet update instantly (see src/lib/sheetPing.ts).
++  const ping = ctx.session.role === "OWNER" && state.url ? { url: pingUrl(ctx.event.slug, ctx.event.id) } : undefined;
++  return NextResponse.json({ ...state, ping });
+ }
+ 
+ /** Saves the event's sheet link. Body: { url: string, interval?: minutes }. An empty url removes the link. */
+diff --git a/src/app/api/public/sheet-ping/[slug]/route.ts b/src/app/api/public/sheet-ping/[slug]/route.ts
+new file mode 100644
+index 0000000..1c41c38
+--- /dev/null
++++ b/src/app/api/public/sheet-ping/[slug]/route.ts
+@@ -0,0 +1,28 @@
++import { NextRequest, NextResponse, after } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { SHEET_URL_KEY } from "@/lib/contactSheet";
++import { pingKeyIsValid, requestSheetSync } from "@/lib/sheetPing";
++
++export const runtime = "nodejs";
++export const dynamic = "force-dynamic";
++export const maxDuration = 60;
++
++/**
++ * Called by the event's Google Sheet script when a row is added. It answers at once and reads the sheet in the background,
++ * so registrations on the website are never held up. The key in the address belongs to this event only.
++ */
++async function ping(request: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
++  const { slug } = await params;
++  const event = await prisma.event.findUnique({ where: { slug: slug.toLowerCase() }, select: { id: true, status: true, dataSource: true } });
++  // The same answer for a wrong event and a wrong key, so addresses cannot be guessed.
++  if (!event || !pingKeyIsValid(event.id, request.nextUrl.searchParams.get("key") || "")) return NextResponse.json({ error: "Not allowed." }, { status: 401 });
++  if (event.status !== "ACTIVE" || event.dataSource !== "sheet") return NextResponse.json({ ok: false, reason: "This event does not read a live sheet." }, { status: 409 });
++  const linked = await prisma.setting.findFirst({ where: { eventId: event.id, key: SHEET_URL_KEY, value: { not: "" } }, select: { eventId: true } });
++  if (!linked) return NextResponse.json({ ok: false, reason: "No sheet is linked yet." }, { status: 409 });
++
++  after(() => requestSheetSync(event.id));
++  return NextResponse.json({ ok: true }, { status: 202 });
++}
++
++export const GET = ping;
++export const POST = ping;
+diff --git a/src/components/SheetSyncDialog.tsx b/src/components/SheetSyncDialog.tsx
+index 92c08c4..db40a32 100644
+--- a/src/components/SheetSyncDialog.tsx
++++ b/src/components/SheetSyncDialog.tsx
+@@ -33,6 +33,8 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () =>
+   const [problems, setProblems] = useState<Problem[]>([]);
+   const [replace, setReplace] = useState(false);
+   const [confirmText, setConfirmText] = useState("");
++  const [pingUrl, setPingUrl] = useState("");
++  const [copied, setCopied] = useState(false);
+ 
+   useEffect(() => {
+     fetch("/api/admin/registrations/sheet", { cache: "no-store" })
+@@ -41,6 +43,7 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () =>
+         setUrl(data.url ?? "");
+         setSavedUrl(data.url ?? "");
+         setLast(data.lastSync ?? null);
++        setPingUrl(data.ping?.url ?? "");
+       })
+       .catch(() => setMessage({ text: "Couldn't load the saved link.", ok: false }))
+       .finally(() => setLoading(false));
+@@ -61,6 +64,7 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () =>
+     if (!res || !res.ok) return setMessage({ text: json.error || "Couldn't save the link.", ok: false });
+     setSavedUrl(json.url ?? "");
+     setLast(json.lastSync ?? null);
++    setPingUrl(json.ping?.url ?? "");
+     setMessage({ text: url.trim() ? "Link saved." : "Link removed.", ok: true });
+   }
+ 
+@@ -90,6 +94,29 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () =>
+     refreshLists();
+   }
+ 
++
++  const script = `// Instant updates: tells the dashboard the moment someone registers.
++const DASHBOARD_PING_URL = '${pingUrl}';
++
++function pingDashboard() {
++  try {
++    SpreadsheetApp.flush(); // make sure the new row is saved before the dashboard reads the sheet
++    UrlFetchApp.fetch(DASHBOARD_PING_URL, { method: 'post', muteHttpExceptions: true });
++  } catch (err) {
++    console.error('Dashboard ping failed: ' + err);
++  }
++}`;
++
++  async function copyScript() {
++    try {
++      await navigator.clipboard.writeText(script);
++      setCopied(true);
++      setTimeout(() => setCopied(false), 2000);
++    } catch {
++      setMessage({ text: "Couldn't copy. Select the code and copy it by hand.", ok: false });
++    }
++  }
++
+   const linked = Boolean(savedUrl);
+   const dirty = url.trim() !== savedUrl;
+ 
+@@ -162,6 +189,35 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () =>
+               </details>
+             )}
+ 
++            {isOwner && linked && pingUrl && (
++              <div className="border border-border rounded-xl p-4 mt-6">
++                <h4 className="font-medium text-sm">Instant updates</h4>
++                <p className="text-xs text-muted mt-1 leading-relaxed">
++                  Without this, new rows arrive within a few minutes. With it, your sheet&apos;s script tells the dashboard the moment someone registers, and they show up within seconds. It works next to the script you already have.
++                </p>
++                <ol className="text-xs text-muted mt-3 space-y-1.5 list-decimal pl-4 leading-relaxed">
++                  <li>In the sheet open Extensions, then Apps Script.</li>
++                  <li>Paste the code below at the very bottom of your script.</li>
++                  <li>
++                    Rename your function <code>handleRegistration</code> to <code>handleRegistrationCore</code>, then paste this above it:
++                    <pre className="mt-1.5 bg-tint border border-border rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-fg">{`function handleRegistration(data) {
++  const response = handleRegistrationCore(data);
++  try {
++    if (JSON.parse(response.getContent()).status === 'success') pingDashboard();
++  } catch (err) {}
++  return response;
++}`}</pre>
++                  </li>
++                  <li>Deploy, then New version on your existing deployment, so the live address keeps working.</li>
++                </ol>
++                <pre className="mt-3 bg-tint border border-border rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-fg">{script}</pre>
++                <button onClick={copyScript} className={`${ghostButton} mt-3`}>
++                  {copied ? "Copied" : "Copy the code"}
++                </button>
++                <p className="text-[11px] text-muted mt-2">This address is private to this event. Keep it out of anything public.</p>
++              </div>
++            )}
++
+             {isOwner && linked && (
+               <div className="border border-red-400/40 rounded-xl p-4 mt-6">
+                 <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+diff --git a/src/lib/contactSheet.ts b/src/lib/contactSheet.ts
+index cd447cc..28942bf 100644
+--- a/src/lib/contactSheet.ts
++++ b/src/lib/contactSheet.ts
+@@ -68,6 +68,10 @@ const NOT_SHARED = "Google did not let this app read the sheet. In the sheet cho
+ async function fetchCsv(csvUrl: string): Promise<string> {
+   let res: Response;
+   try {
++    // A changing value on the address stops Google (or anything in between) from handing back an older copy of the sheet.
++    const fresh = new URL(csvUrl);
++    if (fresh.hostname === "docs.google.com") fresh.searchParams.set("_", String(Date.now()));
++    csvUrl = fresh.toString();
+     res = await fetch(csvUrl, { redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(30_000) });
+   } catch {
+     throw new Error("Could not reach the sheet. Check the link and try again.");
+diff --git a/src/lib/sheetPing.ts b/src/lib/sheetPing.ts
+new file mode 100644
+index 0000000..972597e
+--- /dev/null
++++ b/src/lib/sheetPing.ts
+@@ -0,0 +1,58 @@
++import { createHmac, timingSafeEqual } from "crypto";
++import { BASE_PATH } from "@/lib/basePath";
++import { appBaseUrl } from "@/lib/email";
++import { syncContactSheet } from "@/lib/contactSheet";
++
++/**
++ * "Sheet ping": the Google Sheet's own script calls this app the moment a row is added, and the app reads the sheet at once.
++ * The key is derived from SESSION_SECRET and the event id, so there is nothing to store and every event has its own.
++ */
++export function pingKey(eventId: string): string {
++  const secret = process.env.SESSION_SECRET || "";
++  return createHmac("sha256", secret).update(`sheet-ping:${eventId}`).digest("hex").slice(0, 32);
++}
++
++export function pingKeyIsValid(eventId: string, given: string): boolean {
++  const a = Buffer.from(pingKey(eventId));
++  const b = Buffer.from(given || "");
++  return a.length === b.length && timingSafeEqual(a, b);
++}
++
++/** The address the sheet's script calls, for one event. */
++export function pingUrl(slug: string, eventId: string): string {
++  return `${appBaseUrl()}${BASE_PATH}/api/public/sheet-ping/${slug}?key=${pingKey(eventId)}`;
++}
++
++// ---- One read at a time per event ----
++// People may register every second. Pings that arrive while a read is running are folded into ONE more read right after it,
++// and reads are at least MIN_GAP_MS apart, so the sheet is never hammered.
++const MIN_GAP_MS = 3_000;
++const MAX_LOOP_MS = 50_000;
++const running = new Map<string, { again: boolean }>();
++
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
++
++export async function requestSheetSync(eventId: string): Promise<void> {
++  const state = running.get(eventId);
++  if (state) {
++    state.again = true;
++    return;
++  }
++  const mine = { again: false };
++  running.set(eventId, mine);
++  const begun = Date.now();
++  try {
++    do {
++      mine.again = false;
++      const started = Date.now();
++      try {
++        await syncContactSheet(eventId);
++      } catch (err) {
++        console.error("[sheet-ping] sync failed:", err instanceof Error ? err.message : err);
++      }
++      if (mine.again) await sleep(Math.max(0, MIN_GAP_MS - (Date.now() - started)));
++    } while (mine.again && Date.now() - begun < MAX_LOOP_MS);
++  } finally {
++    running.delete(eventId);
++  }
++}

@@ -100,7 +100,7 @@ function RegistrationsInner() {
   useEffect(() => {
     load();
   }, [load]);
-  useAutoRefresh(() => load(true), 30_000);
+  useAutoRefresh(() => load(true), 10_000);
 
   // With a live sheet linked, the list is synced when this page opens and every 5 minutes while it stays open.
   const syncSheet = useCallback(async () => {

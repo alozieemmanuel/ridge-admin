@@ -68,6 +68,10 @@ const NOT_SHARED = "Google did not let this app read the sheet. In the sheet cho
 async function fetchCsv(csvUrl: string): Promise<string> {
   let res: Response;
   try {
+    // A changing value on the address stops Google (or anything in between) from handing back an older copy of the sheet.
+    const fresh = new URL(csvUrl);
+    if (fresh.hostname === "docs.google.com") fresh.searchParams.set("_", String(Date.now()));
+    csvUrl = fresh.toString();
     res = await fetch(csvUrl, { redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(30_000) });
   } catch {
     throw new Error("Could not reach the sheet. Check the link and try again.");

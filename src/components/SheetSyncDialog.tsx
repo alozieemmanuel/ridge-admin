@@ -33,6 +33,8 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => 
   const [problems, setProblems] = useState<Problem[]>([]);
   const [replace, setReplace] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [pingUrl, setPingUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     fetch("/api/admin/registrations/sheet", { cache: "no-store" })
@@ -41,6 +43,7 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => 
         setUrl(data.url ?? "");
         setSavedUrl(data.url ?? "");
         setLast(data.lastSync ?? null);
+        setPingUrl(data.ping?.url ?? "");
       })
       .catch(() => setMessage({ text: "Couldn't load the saved link.", ok: false }))
       .finally(() => setLoading(false));
@@ -61,6 +64,7 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => 
     if (!res || !res.ok) return setMessage({ text: json.error || "Couldn't save the link.", ok: false });
     setSavedUrl(json.url ?? "");
     setLast(json.lastSync ?? null);
+    setPingUrl(json.ping?.url ?? "");
     setMessage({ text: url.trim() ? "Link saved." : "Link removed.", ok: true });
   }
 
@@ -88,6 +92,29 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => 
       setConfirmText("");
     }
     refreshLists();
+  }
+
+
+  const script = `// Instant updates: tells the dashboard the moment someone registers.
+const DASHBOARD_PING_URL = '${pingUrl}';
+
+function pingDashboard() {
+  try {
+    SpreadsheetApp.flush(); // make sure the new row is saved before the dashboard reads the sheet
+    UrlFetchApp.fetch(DASHBOARD_PING_URL, { method: 'post', muteHttpExceptions: true });
+  } catch (err) {
+    console.error('Dashboard ping failed: ' + err);
+  }
+}`;
+
+  async function copyScript() {
+    try {
+      await navigator.clipboard.writeText(script);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setMessage({ text: "Couldn't copy. Select the code and copy it by hand.", ok: false });
+    }
   }
 
   const linked = Boolean(savedUrl);
@@ -160,6 +187,35 @@ export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => 
                   ))}
                 </ul>
               </details>
+            )}
+
+            {isOwner && linked && pingUrl && (
+              <div className="border border-border rounded-xl p-4 mt-6">
+                <h4 className="font-medium text-sm">Instant updates</h4>
+                <p className="text-xs text-muted mt-1 leading-relaxed">
+                  Without this, new rows arrive within a few minutes. With it, your sheet&apos;s script tells the dashboard the moment someone registers, and they show up within seconds. It works next to the script you already have.
+                </p>
+                <ol className="text-xs text-muted mt-3 space-y-1.5 list-decimal pl-4 leading-relaxed">
+                  <li>In the sheet open Extensions, then Apps Script.</li>
+                  <li>Paste the code below at the very bottom of your script.</li>
+                  <li>
+                    Rename your function <code>handleRegistration</code> to <code>handleRegistrationCore</code>, then paste this above it:
+                    <pre className="mt-1.5 bg-tint border border-border rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-fg">{`function handleRegistration(data) {
+  const response = handleRegistrationCore(data);
+  try {
+    if (JSON.parse(response.getContent()).status === 'success') pingDashboard();
+  } catch (err) {}
+  return response;
+}`}</pre>
+                  </li>
+                  <li>Deploy, then New version on your existing deployment, so the live address keeps working.</li>
+                </ol>
+                <pre className="mt-3 bg-tint border border-border rounded-lg p-3 overflow-x-auto text-[11px] leading-relaxed text-fg">{script}</pre>
+                <button onClick={copyScript} className={`${ghostButton} mt-3`}>
+                  {copied ? "Copied" : "Copy the code"}
+                </button>
+                <p className="text-[11px] text-muted mt-2">This address is private to this event. Keep it out of anything public.</p>
+              </div>
             )}
 
             {isOwner && linked && (

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
 import { requireEvent, forgetEvent } from "@/lib/event";
+import { pingUrl } from "@/lib/sheetPing";
 import { getSheetState, saveSheetInterval, saveSheetUrl, syncContactSheet } from "@/lib/contactSheet";
 
 export const runtime = "nodejs";
@@ -11,7 +12,10 @@ export const maxDuration = 120;
 export async function GET(request: NextRequest) {
   const ctx = await requireEvent(request);
   if (!ctx.ok) return ctx.response;
-  return NextResponse.json(await getSheetState(ctx.event.id));
+  const state = await getSheetState(ctx.event.id);
+  // Only owners get the private address that makes the sheet update instantly (see src/lib/sheetPing.ts).
+  const ping = ctx.session.role === "OWNER" && state.url ? { url: pingUrl(ctx.event.slug, ctx.event.id) } : undefined;
+  return NextResponse.json({ ...state, ping });
 }
 
 /** Saves the event's sheet link. Body: { url: string, interval?: minutes }. An empty url removes the link. */

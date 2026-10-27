@@ -66,7 +66,7 @@ export default function OverviewPage() {
   useEffect(() => {
     load();
   }, [load]);
-  useAutoRefresh(load, 30_000);
+  useAutoRefresh(load, 10_000);
 
   const d = data;
   const funnelMax = d?.total ?? 0;
