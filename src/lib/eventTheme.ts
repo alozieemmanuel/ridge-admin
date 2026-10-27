@@ -97,7 +97,16 @@ export function themeStyle(color: string | null | undefined): Record<string, str
     "--c-accent-text-light": triplet(textOnWhite(hex)),
     "--c-accent-text-dark": triplet(textOnDark(hex)),
     "--c-tint-light": triplet(mix(hex, "#FFFFFF", 0.93)),
-    "--c-tint-dark": triplet(mix(hex, "#0C0F08", 0.9)),
+    "--c-tint-dark": triplet(mix(hex, "#0C0C0C", 0.9)),
+    // Greys with a hint of the event colour, so no trace of the default green is left in the page, the cards, the lines or the text.
+    "--c-lt-border": triplet(mix("#E4E4E4", hex, 0.14)),
+    "--c-lt-muted": triplet(mix("#5E5E5E", hex, 0.1)),
+    "--c-lt-fg": triplet(mix("#171717", hex, 0.07)),
+    "--c-dk-pagebg": triplet(mix("#0C0C0C", hex, 0.04)),
+    "--c-dk-cardbg": triplet(mix("#141414", hex, 0.055)),
+    "--c-dk-border": triplet(mix("#2E2E2E", hex, 0.1)),
+    "--c-dk-muted": triplet(mix("#A3A3A3", hex, 0.12)),
+    "--c-dk-fg": triplet(mix("#F5F5F5", hex, 0.05)),
   };
 }
 
