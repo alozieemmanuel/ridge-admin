@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { isPower, type Role } from "@/lib/roles";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
@@ -11,7 +12,7 @@ import { themeStyle } from "@/lib/eventTheme";
 interface AdminSession {
   name: string;
   email: string;
-  role: "OWNER" | "ADMIN";
+  role: Role;
 }
 
 type IconName = "overview" | "people" | "ticket" | "chat" | "mail" | "settings" | "log" | "team";
@@ -134,11 +135,17 @@ export function ShellFrame({ children }: { active?: string; children: React.Reac
     () => cacheGet<{ admin: AdminSession }>("/api/admin/me")?.admin ?? null
   );
   const [menuOpen, setMenuOpen] = useState(false);
+  // An admin who can open only one event has no "all events" screen to go back to.
+  const [onlyEvent, setOnlyEvent] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     fetchAndCache<{ admin: AdminSession }>("/api/admin/me").then((data) => setSession(data?.admin ?? null));
   }, []);
+  useEffect(() => {
+    if (!slug || isPower(session?.role) || !session) return;
+    fetchAndCache<{ isOwner: boolean; events: unknown[] }>("/api/events").then((d) => setOnlyEvent(Boolean(d && !d.isOwner && d.events.length === 1)));
+  }, [slug, session]);
 
   async function handleLogout() {
     await fetch("/api/admin/logout", { method: "POST" });
@@ -147,7 +154,7 @@ export function ShellFrame({ children }: { active?: string; children: React.Reac
     router.refresh();
   }
 
-  const owner = session?.role === "OWNER" || eventOwner;
+  const owner = isPower(session?.role) || eventOwner;
   const base = `/${slug}`;
   const items: { href: string; label: string; icon: IconName; current: boolean }[] = slug
     ? EVENT_NAV.filter((i) => (!i.ownerOnly || owner) && (!i.module || !event || has(i.module))).map((i) => {
@@ -166,9 +173,11 @@ export function ShellFrame({ children }: { active?: string; children: React.Reac
         {logoNode}
         {slug ? (
           <div className="mt-4">
-            <Link href="/" onClick={() => setMenuOpen(false)} className="text-xs text-muted hover:text-fg">
-              ← All events
-            </Link>
+            {!onlyEvent && (
+              <Link href="/" onClick={() => setMenuOpen(false)} className="text-xs text-muted hover:text-fg">
+                ← All events
+              </Link>
+            )}
             <p className="font-serif text-lg leading-tight mt-1.5 break-words">{event?.name ?? "\u00a0"}</p>
           </div>
         ) : (
@@ -223,16 +232,19 @@ export function ShellFrame({ children }: { active?: string; children: React.Reac
       <aside className="hidden lg:block w-64 shrink-0 border-r border-border bg-tint sticky top-0 h-screen no-print">{sidebar}</aside>
 
       {/* Mobile top bar + drawer */}
-      <div className="lg:hidden sticky top-0 z-40 flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-pagebg/95 backdrop-blur no-print">
-        <div className="[&_img]:h-7 [&_img]:w-auto">{logoNode}</div>
+      <div className="lg:hidden sticky top-0 z-40 grid grid-cols-[2.75rem_1fr_2.75rem] items-center gap-2 px-3 py-2.5 border-b border-border bg-pagebg/95 backdrop-blur no-print">
         <button
           onClick={() => setMenuOpen((o) => !o)}
           aria-label="Open menu"
           aria-expanded={menuOpen}
-          className="px-3 py-2 rounded-lg border border-border text-sm"
+          className="h-11 w-11 grid place-items-center rounded-lg border border-border"
         >
-          Menu
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
         </button>
+        <div className="flex justify-center [&_img]:h-7 [&_img]:w-auto">{logoNode}</div>
+        <span aria-hidden />
       </div>
       {menuOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex no-print">

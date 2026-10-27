@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
@@ -12,7 +13,7 @@ export const maxDuration = 60;
 /** Connects a Google Sheet (owners only) and runs a first sync so problems show up immediately. */
 export async function POST(request: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
+  if (!session || !isPower(session.role)) {
     return NextResponse.json({ error: "Only an owner can connect a sheet." }, { status: 403 });
   }
 

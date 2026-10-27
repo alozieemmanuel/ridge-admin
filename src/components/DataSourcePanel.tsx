@@ -5,6 +5,7 @@ import Link from "next/link";
 import { DATA_SOURCES, type DataSourceId } from "@/lib/dataSources";
 import { SYNC_INTERVALS } from "@/lib/eventTheme";
 import { useEventPath } from "@/lib/useEvent";
+import { useIsTechnical } from "@/lib/useIsOwner";
 import { cacheDeletePrefix } from "@/lib/clientCache";
 import { formatDateTime, ghostButton, inputClass, primaryButton } from "@/components/ui";
 
@@ -59,6 +60,7 @@ function SyncLine({ last }: { last: LastSync | null }) {
 
 /** Owner only: where this event's contacts come from, and the settings for each way. */
 export default function DataSourcePanel() {
+  const tech = useIsTechnical();
   const ep = useEventPath();
   const [state, setState] = useState<State | null>(null);
   const [source, setSource] = useState<DataSourceId>("manual");
@@ -142,7 +144,11 @@ export default function DataSourcePanel() {
         </div>
       )}
 
-      {source === "supabase" && (
+      {(source === "supabase" || source === "form") && !tech && (
+        <p className="text-sm text-muted mb-7">The connection details for this source (keys and private addresses) are looked after by the owner. Contacts from it appear in the dashboard as usual.</p>
+      )}
+
+      {source === "supabase" && tech && (
         <div className="space-y-5 mb-7">
           <div>
             <label htmlFor="sb-url" className={label}>
@@ -185,7 +191,7 @@ export default function DataSourcePanel() {
         </div>
       )}
 
-      {source === "form" && (
+      {source === "form" && tech && (
         <div className="space-y-5 mb-7">
           <div>
             <label className={label}>Address your form posts to</label>

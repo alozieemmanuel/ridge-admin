@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
@@ -31,7 +32,7 @@ export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
-  const isOwner = session.role === "OWNER";
+  const isOwner = isPower(session.role);
   const events = await prisma.event.findMany({
     where: isOwner ? {} : { status: { not: "DRAFT" }, admins: { some: { adminId: session.adminId } } },
     orderBy: [{ createdAt: "asc" }],
@@ -108,7 +109,7 @@ export async function GET() {
  */
 export async function POST(request: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") return NextResponse.json({ error: "Only an owner can create events." }, { status: 403 });
+  if (!session || !isPower(session.role)) return NextResponse.json({ error: "Only an owner can create events." }, { status: 403 });
 
   let b: Record<string, unknown>;
   try {

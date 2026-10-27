@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
+import { useIsTechnical } from "@/lib/useIsOwner";
 import { ghostButton, inputClass, primaryButton } from "@/components/ui";
 import type { SenderRow } from "@/components/SenderStrip";
 
@@ -25,6 +26,7 @@ export default function SendersPage() {
   const [rows, setRows] = useState<SenderRow[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [isOwner, setIsOwner] = useState(false);
+  const tech = useIsTechnical();
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -155,7 +157,7 @@ export default function SendersPage() {
 
                   {!configured && (
                     <p className="text-xs text-amber-400 mt-3">
-                      Not set up on the server yet. Add {d?.needs.join(" and ")} to the environment settings, then redeploy.
+                      {tech ? `Not set up on the server yet. Add ${d?.needs.join(" and ")} to the environment settings, then redeploy.` : "Not set up yet. The owner needs to connect it."}
                     </p>
                   )}
                 </li>
@@ -187,7 +189,7 @@ export default function SendersPage() {
 
           <div className="mt-10 rounded-xl border border-border p-5 text-sm text-muted space-y-2">
             <p className="font-medium text-fg">Good to know</p>
-            <p>Keys never go in this page. They stay in the server environment: GMAIL_USER and GMAIL_APP_PASSWORD, BREVO_API_KEY and EMAIL_FROM, MAILERSEND_API_KEY and MAILERSEND_FROM.</p>
+            {tech && <p>Keys never go in this page. They stay in the server environment: GMAIL_USER and GMAIL_APP_PASSWORD, BREVO_API_KEY and EMAIL_FROM, MAILERSEND_API_KEY and MAILERSEND_FROM.</p>}
             <p>Tickets with the QR image only go through Gmail, because the other services do not carry that image.</p>
             <p>Tickets and confirmations never wait. They ignore the daily limits and use the first sender that works.</p>
             <p>Open and delivery tracking exists for Brevo only. Mail sent through Gmail or MailerSend shows as Sent.</p>

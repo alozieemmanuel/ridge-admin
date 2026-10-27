@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { logAdminAction } from "@/lib/audit";
@@ -16,7 +17,7 @@ export async function GET() {
     senders,
     waiting,
     resetsAt: startOfTomorrow().toISOString(),
-    isOwner: session.role === "OWNER",
+    isOwner: isPower(session.role),
     available: SENDER_KINDS.map((k) => ({ kind: k.kind, name: k.name, needs: k.env, suggestedLimit: k.suggestedLimit, note: k.note })),
   });
 }
@@ -25,7 +26,7 @@ export async function GET() {
 export async function PUT(request: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
-  if (session.role !== "OWNER") return NextResponse.json({ error: "Only an owner can change the senders." }, { status: 403 });
+  if (!isPower(session.role)) return NextResponse.json({ error: "Only an owner can change the senders." }, { status: 403 });
 
   let body: { senders?: unknown };
   try {

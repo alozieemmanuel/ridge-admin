@@ -51,6 +51,7 @@ enum EmailAudience {
 
 enum AdminRole {
   OWNER
+  SUPER_ADMIN
   ADMIN
 }
 

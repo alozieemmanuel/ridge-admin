@@ -52,6 +52,11 @@ export default function EventsPage() {
       })
       .then((json: Response) => {
         cacheSet(URL, json);
+        // An admin who was added to just one event has nothing to choose: they go straight into it.
+        if (!json.isOwner && json.events.length === 1) {
+          router.replace(`/${json.events[0].slug}`);
+          return;
+        }
         setData(json);
         setError(false);
       })

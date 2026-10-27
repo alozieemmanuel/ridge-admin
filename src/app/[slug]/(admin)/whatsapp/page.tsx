@@ -8,6 +8,7 @@ import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import WhatsAppBroadcastPanel from "@/components/WhatsAppBroadcastPanel";
 import { useEvent, useEventPath } from "@/lib/useEvent";
 import { useRouter } from "next/navigation";
+import { useIsTechnical } from "@/lib/useIsOwner";
 
 interface ConversationRow {
   id: string;
@@ -71,6 +72,7 @@ function StatusTick({ status }: { status: Message["status"] }) {
 }
 
 function WhatsAppInbox() {
+  const tech = useIsTechnical();
   const searchParams = useSearchParams();
   const router = useRouter();
   const ep = useEventPath();
@@ -189,11 +191,12 @@ function WhatsAppInbox() {
       {!configured && (
         <div className="border border-amber-400/40 rounded-xl p-4 mb-6 text-sm">
           <p className="text-amber-300 mb-1">WhatsApp isn&apos;t connected on the server yet.</p>
-          <p className="text-muted">
+          {!tech && <p className="text-muted">The owner needs to finish connecting WhatsApp. Messages you send until then are saved as failed.</p>}
+          {tech && <p className="text-muted">
             Add <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>,{" "}
             <code>WHATSAPP_BUSINESS_ACCOUNT_ID</code>, <code>WHATSAPP_APP_SECRET</code> and <code>WHATSAPP_VERIFY_TOKEN</code> to the server settings, then point Meta&apos;s webhook to{" "}
             <code>/event/api/webhooks/whatsapp</code>. The step by step guide is in <code>docs/WHATSAPP_SETUP.md</code>. Messages you send until then are saved as failed.
-          </p>
+          </p>}
         </div>
       )}
       {error && <p className="text-sm text-red-400 mb-4">{error}</p>}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ROLE_LABEL, canManage, type Role } from "@/lib/roles";
 import AdminShell from "@/components/AdminShell";
 import PasswordInput from "@/components/PasswordInput";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
@@ -10,7 +11,7 @@ interface AdminRow {
   name: string;
   email: string;
   lastLoginAt: string | null;
-  role?: "OWNER" | "ADMIN";
+  role?: Role;
   archivedAt?: string | null;
   eventIds?: string[];
 }
@@ -35,6 +36,7 @@ const ghostButton = "text-sm px-4 py-2.5 rounded-full border border-border text-
 export default function ManageAdminsPage() {
   const [admins, setAdmins] = useState<AdminRow[]>([]);
   const [isOwner, setIsOwner] = useState(false);
+  const [viewerRole, setViewerRole] = useState<Role>("ADMIN");
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -58,6 +60,7 @@ export default function ManageAdminsPage() {
         const data = await res.json();
         setAdmins(data.admins);
         setIsOwner(Boolean(data.isOwner));
+        if (data.viewerRole) setViewerRole(data.viewerRole);
       }
     } catch {
       // keep the last data; the next poll retries
@@ -130,7 +133,7 @@ export default function ManageAdminsPage() {
       <div className="mb-6">
         <h2 className="font-serif text-2xl">{isOwner ? "Manage Admins" : "Team"}</h2>
         <p className="text-muted text-sm mt-1">
-          {isOwner ? "Only owners can add, edit, archive or remove admin accounts." : "The people who have access to this dashboard."}
+          {isOwner ? (viewerRole === "OWNER" ? "Only owners and super admins can add, edit, archive or remove admin accounts." : "You can add, edit, archive or remove admins. Owners and super admins are managed by an owner.") : "The people who have access to this dashboard."}
           {message && <span className={`ml-3 ${message.ok ? "text-goldlight" : "text-red-400"}`}>{message.text}</span>}
         </p>
       </div>
@@ -181,12 +184,12 @@ export default function ManageAdminsPage() {
                     <td className="px-6 py-5 text-muted whitespace-nowrap">{a.email}</td>
                     {isOwner && (
                       <td className="px-6 py-5 whitespace-nowrap">
-                        <span className="px-2.5 py-1 rounded-full border border-border text-xs uppercase">{a.role}</span>
+                        <span className="px-2.5 py-1 rounded-full border border-border text-xs">{ROLE_LABEL[a.role ?? "ADMIN"]}</span>
                       </td>
                     )}
                     {isOwner && (
                       <td className="px-6 py-5 text-muted whitespace-nowrap">
-                        {a.role === "OWNER" ? "All events" : (a.eventIds?.length ?? 0) === 0 ? "None yet" : `${a.eventIds!.length} of ${events.length}`}
+                        {a.role !== "ADMIN" ? "All events" : (a.eventIds?.length ?? 0) === 0 ? "None yet" : `${a.eventIds!.length} of ${events.length}`}
                       </td>
                     )}
                     <td className="px-6 py-5 text-muted whitespace-nowrap">
@@ -195,11 +198,13 @@ export default function ManageAdminsPage() {
                     {isOwner && (
                       <td className="px-6 py-5 whitespace-nowrap text-right">
                         <div className="flex items-center justify-end gap-4 text-xs">
-                          {a.role !== "OWNER" && (
+                          {canManage(viewerRole, a.role) && a.role === "ADMIN" && (
                             <button onClick={() => setDialog({ kind: "events", admin: a })} className="text-goldlight hover:underline">
                               Events
                             </button>
                           )}
+                          {canManage(viewerRole, a.role) && (
+                            <>
                           <button onClick={() => setDialog({ kind: "edit", admin: a })} className="text-goldlight hover:underline">
                             Edit
                           </button>
@@ -218,6 +223,8 @@ export default function ManageAdminsPage() {
                           <button onClick={() => handleRemove(a)} className="text-red-400 hover:underline">
                             Remove
                           </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     )}
@@ -228,7 +235,7 @@ export default function ManageAdminsPage() {
         </div>
       </div>
 
-      {isOwner && <AddAdminForm events={events} onAdded={() => { flash("Admin added.", true); load(true); }} onError={(m) => flash(m, false)} />}
+      {isOwner && <AddAdminForm viewerRole={viewerRole} events={events} onAdded={() => { flash("Admin added.", true); load(true); }} onError={(m) => flash(m, false)} />}
 
       {dialog?.kind === "events" && (
         <EventsDialog
@@ -243,6 +250,7 @@ export default function ManageAdminsPage() {
       )}
       {dialog?.kind === "edit" && (
         <EditDialog
+          viewerRole={viewerRole}
           admin={dialog.admin}
           onClose={() => setDialog(null)}
           onSave={async (values) => {
@@ -315,12 +323,12 @@ function EventsDialog({ admin, events, onClose, onSave }: { admin: AdminRow; eve
   );
 }
 
-function AddAdminForm({ events, onAdded, onError }: { events: EventOption[]; onAdded: () => void; onError: (message: string) => void }) {
+function AddAdminForm({ viewerRole, events, onAdded, onError }: { viewerRole: Role; events: EventOption[]; onAdded: () => void; onError: (message: string) => void }) {
   const [eventIds, setEventIds] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"ADMIN" | "OWNER">("ADMIN");
+  const [role, setRole] = useState<Role>("ADMIN");
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit() {
@@ -364,9 +372,10 @@ function AddAdminForm({ events, onAdded, onError }: { events: EventOption[]; onA
         </div>
         <div>
           <label className={labelClass}>Role</label>
-          <select value={role} onChange={(e) => setRole(e.target.value as "ADMIN" | "OWNER")} className={inputClass}>
-            <option value="ADMIN">Admin</option>
-            <option value="OWNER">Owner</option>
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={inputClass}>
+            <option value="ADMIN">Admin (chosen events)</option>
+            {viewerRole === "OWNER" && <option value="SUPER_ADMIN">Super admin (all events, no technical details)</option>}
+            {viewerRole === "OWNER" && <option value="OWNER">Owner (everything)</option>}
           </select>
         </div>
       </div>
@@ -384,17 +393,19 @@ function AddAdminForm({ events, onAdded, onError }: { events: EventOption[]; onA
 }
 
 function EditDialog({
+  viewerRole,
   admin,
   onClose,
   onSave,
 }: {
+  viewerRole: Role;
   admin: AdminRow;
   onClose: () => void;
-  onSave: (values: { name: string; email: string; role: "OWNER" | "ADMIN" }) => Promise<void>;
+  onSave: (values: { name: string; email: string; role: Role }) => Promise<void>;
 }) {
   const [name, setName] = useState(admin.name);
   const [email, setEmail] = useState(admin.email);
-  const [role, setRole] = useState<"OWNER" | "ADMIN">(admin.role ?? "ADMIN");
+  const [role, setRole] = useState<Role>(admin.role ?? "ADMIN");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -419,9 +430,10 @@ function EditDialog({
         <label className={labelClass}>Email</label>
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={`${inputClass} mb-4`} />
         <label className={labelClass}>Role</label>
-        <select value={role} onChange={(e) => setRole(e.target.value as "OWNER" | "ADMIN")} className={inputClass}>
-          <option value="ADMIN">Admin</option>
-          <option value="OWNER">Owner</option>
+        <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={inputClass}>
+          <option value="ADMIN">Admin (chosen events)</option>
+          {viewerRole === "OWNER" && <option value="SUPER_ADMIN">Super admin (all events, no technical details)</option>}
+          {viewerRole === "OWNER" && <option value="OWNER">Owner (everything)</option>}
         </select>
         {error && <p className="text-sm text-red-400 mt-4">{error}</p>}
         <div className="flex items-center justify-end gap-3 mt-6">

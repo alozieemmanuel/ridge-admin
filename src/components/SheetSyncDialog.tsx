@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { cacheDeletePrefix } from "@/lib/clientCache";
-import { useIsOwner } from "@/lib/useIsOwner";
+import { useIsOwner, useIsTechnical } from "@/lib/useIsOwner";
 import { formatDateTime, ghostButton, inputClass, primaryButton } from "@/components/ui";
 
 interface LastSync {
@@ -24,6 +24,7 @@ interface Problem {
 /** Where the live Google Sheet link is kept. Sync reads the sheet and adds or updates contacts by email. Nobody is emailed. */
 export default function SheetSyncDialog({ onClose, onSynced }: { onClose: () => void; onSynced: () => void }) {
   const isOwner = useIsOwner();
+  const tech = useIsTechnical();
   const [url, setUrl] = useState("");
   const [savedUrl, setSavedUrl] = useState("");
   const [last, setLast] = useState<LastSync | null>(null);
@@ -189,7 +190,7 @@ function pingDashboard() {
               </details>
             )}
 
-            {isOwner && linked && pingUrl && (
+            {tech && linked && pingUrl && (
               <div className="border border-border rounded-xl p-4 mt-6">
                 <h4 className="font-medium text-sm">Instant updates</h4>
                 <p className="text-xs text-muted mt-1 leading-relaxed">

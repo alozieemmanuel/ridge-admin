@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
@@ -14,7 +15,7 @@ export const maxDuration = 60;
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
+  if (!session || !isPower(session.role)) {
     return NextResponse.json({ error: "Only an owner can change a connected sheet." }, { status: 403 });
   }
 
@@ -64,7 +65,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
+  if (!session || !isPower(session.role)) {
     return NextResponse.json({ error: "Only an owner can disconnect a sheet." }, { status: 403 });
   }
 

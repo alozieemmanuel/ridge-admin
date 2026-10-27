@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isPower, isTechnical, type Role } from "@/lib/roles";
 import { useParams } from "next/navigation";
 import { cacheGet, fetchAndCache } from "@/lib/clientCache";
 import { lower, termsOf, type Terms } from "@/lib/eventTheme";
@@ -23,7 +24,7 @@ export interface EventInfo {
 }
 interface EventResponse {
   event: EventInfo;
-  role: "OWNER" | "ADMIN";
+  role: Role;
   admin: { name: string; email: string };
 }
 
@@ -73,7 +74,8 @@ export function useEvent() {
     event,
     role: data?.role ?? null,
     admin: data?.admin ?? null,
-    isOwner: data?.role === "OWNER",
+    isOwner: isPower(data?.role),
+    isTechnical: isTechnical(data?.role),
     has: (module: string) => Boolean(event?.modules.includes(module)),
     denied,
   };

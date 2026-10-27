@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { logAdminAction } from "@/lib/audit";
 import { requireEvent, forgetEvent } from "@/lib/event";
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
 
   const replace = body.replace === true;
   if (replace) {
-    if (session.role !== "OWNER") return NextResponse.json({ error: "Only an owner can delete all contacts." }, { status: 403 });
+    if (!isPower(session.role)) return NextResponse.json({ error: "Only an owner can delete all contacts." }, { status: 403 });
     if (body.confirm !== "DELETE") return NextResponse.json({ error: "Type DELETE to confirm." }, { status: 400 });
   }
 

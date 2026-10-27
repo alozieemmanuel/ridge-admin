@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { isRole, type Role } from "@/lib/roles";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
@@ -22,7 +23,7 @@ export interface SessionPayload {
   adminId: string;
   email: string;
   name: string;
-  role: "OWNER" | "ADMIN";
+  role: Role;
 }
 
 export async function hashPassword(plain: string): Promise<string> {
@@ -54,7 +55,7 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
       typeof payload.adminId === "string" &&
       typeof payload.email === "string" &&
       typeof payload.name === "string" &&
-      (payload.role === "OWNER" || payload.role === "ADMIN")
+      isRole(payload.role)
     ) {
       return {
         adminId: payload.adminId,

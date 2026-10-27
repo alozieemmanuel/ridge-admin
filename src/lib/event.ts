@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import type { Event } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession, type SessionPayload } from "@/lib/auth";
@@ -33,7 +34,7 @@ const fail = (error: string, status: number): { ok: false; response: NextRespons
 
 /** True when this admin may open the event: owners open every event, other admins only the events they were added to. */
 export async function canAccessEvent(session: SessionPayload, eventId: string): Promise<boolean> {
-  if (session.role === "OWNER") return true;
+  if (isPower(session.role)) return true;
   // A draft is for owners only.
   return Boolean(await prisma.eventAdmin.findFirst({ where: { eventId, adminId: session.adminId, event: { status: { not: "DRAFT" } } }, select: { adminId: true } }));
 }
@@ -77,7 +78,7 @@ export async function requireEvent(request: Request, opts: { module?: ModuleKey 
   const event = await findEventBySlug(slug);
   if (!event) return fail("That event does not exist.", 404);
   if (!(await canAccessEvent(session, event.id))) return fail("You don't have access to this event.", 403);
-  if (opts.owner && session.role !== "OWNER") return fail("Only an owner can do this.", 403);
+  if (opts.owner && !isPower(session.role)) return fail("Only an owner can do this.", 403);
 
   if (opts.module) {
     const wanted = Array.isArray(opts.module) ? opts.module : [opts.module];

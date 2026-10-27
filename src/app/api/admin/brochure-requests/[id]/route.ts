@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 
@@ -7,7 +8,7 @@ export const runtime = "nodejs";
 /** Permanently deletes one brochure request and its email history (owner only). */
 export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
+  if (!session || !isPower(session.role)) {
     return NextResponse.json({ error: "Only an owner can delete records." }, { status: 403 });
   }
 

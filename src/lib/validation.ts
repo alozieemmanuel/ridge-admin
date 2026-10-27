@@ -29,7 +29,7 @@ export const createAdminSchema = z.object({
   name: z.string().trim().min(2).max(200),
   email: z.string().trim().email(),
   password: z.string().min(10, "Password must be at least 10 characters."),
-  role: z.enum(["OWNER", "ADMIN"]).default("ADMIN"),
+  role: z.enum(["OWNER", "SUPER_ADMIN", "ADMIN"]).default("ADMIN"),
 });
 
 // Reply-To may be a real address, a single {{token}} such as {{contact_email}}

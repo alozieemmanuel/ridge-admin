@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { canManage, isPower } from "@/lib/roles";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getSession, hashPassword } from "@/lib/auth";
@@ -11,7 +12,7 @@ const patchSchema = z.discriminatedUnion("action", [
     action: z.literal("edit"),
     name: z.string().trim().min(1, "Name can't be empty.").max(120),
     email: z.string().trim().toLowerCase().email("Enter a valid email."),
-    role: z.enum(["OWNER", "ADMIN"]),
+    role: z.enum(["OWNER", "SUPER_ADMIN", "ADMIN"]),
   }),
   z.object({
     action: z.literal("password"),
@@ -32,8 +33,8 @@ async function isLastActiveOwner(id: string): Promise<boolean> {
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can manage admins." }, { status: 403 });
+  if (!session || !isPower(session.role)) {
+    return NextResponse.json({ error: "Only an owner or super admin can manage admins." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -55,6 +56,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   const data = parsed.data;
+
+  // A super admin looks after admins only. Owners and other super admins can be changed by an owner. Anyone may change their own password.
+  const ownPassword = data.action === "password" && id === session.adminId;
+  if (!ownPassword && !canManage(session.role, target.role, data.action === "edit" ? data.role : undefined)) {
+    return NextResponse.json({ error: "Only an owner can change owners and super admins." }, { status: 403 });
+  }
 
   if (data.action === "edit") {
     if (data.email !== target.email) {
@@ -135,8 +142,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can remove admins." }, { status: 403 });
+  if (!session || !isPower(session.role)) {
+    return NextResponse.json({ error: "Only an owner or super admin can remove admins." }, { status: 403 });
   }
 
   const { id } = await params;
@@ -148,6 +155,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   const target = await prisma.admin.findUnique({ where: { id } });
   if (!target) {
     return NextResponse.json({ error: "Admin not found." }, { status: 404 });
+  }
+  if (!canManage(session.role, target.role)) {
+    return NextResponse.json({ error: "Only an owner can remove owners and super admins." }, { status: 403 });
   }
   if (target.role === "OWNER" && (await isLastActiveOwner(id))) {
     return NextResponse.json({ error: "You can't remove the last active owner." }, { status: 409 });

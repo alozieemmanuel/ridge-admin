@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { canManage, isPower } from "@/lib/roles";
 import { prisma } from "@/lib/prisma";
 import { createAdminSchema } from "@/lib/validation";
 import { hashPassword, getSession } from "@/lib/auth";
@@ -17,7 +18,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }
 
-  const isOwner = session.role === "OWNER";
+  const isOwner = isPower(session.role);
 
   const admins = await prisma.admin.findMany({
     where: isOwner ? {} : { archivedAt: null },
@@ -36,6 +37,7 @@ export async function GET() {
 
   return NextResponse.json({
     isOwner,
+    viewerRole: session.role,
     admins: admins.map((a) => ({
       id: a.id,
       name: a.name,
@@ -51,8 +53,8 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "OWNER") {
-    return NextResponse.json({ error: "Only an owner can add admins." }, { status: 403 });
+  if (!session || !isPower(session.role)) {
+    return NextResponse.json({ error: "Only an owner or super admin can add admins." }, { status: 403 });
   }
 
   let raw: unknown;
@@ -68,6 +70,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { name, email, password, role } = parsed.data;
+  if (!canManage(session.role, role)) return NextResponse.json({ error: "Only an owner can add owners and super admins." }, { status: 403 });
   const eventIds = Array.isArray((raw as { eventIds?: unknown }).eventIds) ? ((raw as { eventIds: unknown[] }).eventIds.filter((x) => typeof x === "string") as string[]) : [];
 
   const existing = await prisma.admin.findUnique({ where: { email: email.toLowerCase() } });
