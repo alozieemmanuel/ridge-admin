@@ -251,9 +251,9 @@ function RegistrationsInner() {
                     tabIndex={0}
                     onClick={() => router.push(ep(`/contacts/${r.id}`))}
                     onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), router.push(ep(`/contacts/${r.id}`)))}
-                    className="border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-gold/10 focus:bg-gold/10 focus:outline-none"
+                    className="group border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-gold/10 focus:bg-gold/10 focus:outline-none"
                   >
-                    <td className="sticky left-0 z-10 bg-inherit px-5 py-3.5 whitespace-nowrap font-medium">
+                    <td className="sticky left-0 z-10 bg-cardbg group-hover:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] group-focus:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)] px-5 py-3.5 whitespace-nowrap font-medium">
                       {r.fullName}
                     </td>
                     <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email}</td>
