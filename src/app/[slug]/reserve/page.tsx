@@ -12,6 +12,7 @@ interface View {
   event: { name: string; brandName: string | null; color: string | null; logoUrl: string | null; logoDarkUrl: string | null; action: string; caption: string; date: string; time: string; venue: string; contactEmail: string; contactPhone: string; price?: string; payment?: string };
   reserved: boolean;
   full: boolean;
+  quiz: { required: boolean; enabled: boolean; count: number; pass: number; attempts: number; attemptsLeft: number; locked: boolean; state: "todo" | "passed" | "failed"; score: number | null; total: number | null } | null;
   ticket: { code: string; qrSvg: string; checkedIn: boolean } | null;
 }
 
@@ -21,6 +22,118 @@ function Field({ label, value }: { label: string; value?: string | null }) {
       <p className="text-[11px] uppercase tracking-[0.15em] text-muted mb-1">{label}</p>
       <p className="font-medium break-words">{value || "To be announced"}</p>
     </div>
+  );
+}
+
+function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonNullable<View["quiz"]>; contact: string; onPassed: () => void }) {
+  const [paper, setPaper] = useState<{ qid: string; text: string; options: string[] }[] | null>(null);
+  const [answers, setAnswers] = useState<Record<string, number>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState(quiz);
+
+  async function post(body: Record<string, unknown>) {
+    const res = await fetch("/api/public/reserve/quiz", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: token, ...body }) });
+    return { ok: res.ok, json: await res.json().catch(() => ({})) };
+  }
+  async function start() {
+    setBusy(true);
+    setError(null);
+    setAnswers({});
+    const { ok, json } = await post({ action: "start" });
+    setBusy(false);
+    if (json.state) setState(json.state);
+    if (!ok) return setError(json.state?.locked ? null : json.error || "We couldn't start the quiz. Please try again.");
+    if (json.paper) setPaper(json.paper);
+    else onPassed();
+  }
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    const { ok, json } = await post({ action: "submit", answers });
+    setBusy(false);
+    if (!ok) return setError(json.error || "We couldn't send your answers. Please try again.");
+    setPaper(null);
+    if (json.state && !json.state.required) onPassed();
+    else if (json.state) setState(json.state);
+  }
+
+  const done = paper ? paper.every((q) => Number.isInteger(answers[q.qid])) : false;
+  const need = state.pass >= 100 ? `all ${state.count}` : `${state.pass}% of the`;
+  const triedOnce = state.state === "failed" && state.score !== null;
+  return (
+    <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+      <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Before you reserve</h2>
+      {!paper && state.locked && (
+        <div className="text-center">
+          <p className="font-serif text-2xl mb-2">That was your last try</p>
+          <p className="text-sm text-muted leading-relaxed">
+            Seats are limited, and this check keeps them for people who are ready to learn. You scored {state.score}/{state.total}.{contact ? ` If you think this is a mistake, contact us on ${contact}.` : " If you think this is a mistake, please contact the team."}
+          </p>
+        </div>
+      )}
+      {!paper && !state.locked && (
+        <div className="text-center">
+          {triedOnce ? (
+            <>
+              <p className="font-serif text-4xl mb-2">
+                {state.score}/{state.total}
+              </p>
+              <p className="text-sm text-muted mb-5">So close. You need {need} questions right. You have {state.attemptsLeft} {state.attemptsLeft === 1 ? "try" : "tries"} left. The questions change each time.</p>
+            </>
+          ) : (
+            <>
+              <p className="font-serif text-2xl mb-2">Think you know your real estate?</p>
+              <p className="text-sm text-muted leading-relaxed mb-5">
+                Seats are limited, so we are keeping them for people who are serious. Answer {state.count} questions. Get {state.pass >= 100 ? "every one" : `${state.pass}%`} right and the Reserve button is yours. You have {state.attempts} tries.
+              </p>
+            </>
+          )}
+          {error && (
+            <p role="alert" className="text-red-400 text-sm mb-3">
+              {error}
+            </p>
+          )}
+          <button onClick={start} disabled={busy} className={primaryButton}>
+            {busy ? "Loading…" : triedOnce ? "Try again" : "Let's go"}
+          </button>
+        </div>
+      )}
+      {paper && (
+        <div>
+          <p className="text-xs text-muted mb-5 text-center">
+            Try {state.attempts - state.attemptsLeft + 1} of {state.attempts}
+          </p>
+          <ol className="space-y-6">
+            {paper.map((q, n) => (
+              <li key={q.qid}>
+                <p className="font-medium text-sm mb-3">
+                  {n + 1}. {q.text}
+                </p>
+                <div className="space-y-2">
+                  {q.options.map((o, i) => (
+                    <button key={i} type="button" onClick={() => setAnswers((a) => ({ ...a, [q.qid]: i }))} className={`w-full text-left px-4 py-2.5 rounded-xl border text-sm ${answers[q.qid] === i ? "border-gold bg-gold/15" : "border-border hover:border-gold"}`}>
+                      {o}
+                    </button>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ol>
+          {error && (
+            <p role="alert" className="text-red-400 text-sm mt-4 text-center">
+              {error}
+            </p>
+          )}
+          <div className="text-center mt-6">
+            <button onClick={submit} disabled={busy || !done} className={primaryButton}>
+              {busy ? "Checking…" : "Submit answers"}
+            </button>
+            {!done && <p className="text-xs text-muted mt-3">Answer every question to continue.</p>}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -149,7 +262,9 @@ function ReserveInner() {
               </section>
             )}
 
-            {!view.reserved && !view.full && (
+            {!view.reserved && !view.full && view.quiz?.required && <QuizBox token={token} quiz={view.quiz} contact={contact} onPassed={load} />}
+
+            {!view.reserved && !view.full && !view.quiz?.required && (
               <div className="text-center">
                 <button onClick={reserve} disabled={busy} className={`${primaryButton} text-base px-10 py-4`}>
                   {busy ? "Working…" : view.event.action}

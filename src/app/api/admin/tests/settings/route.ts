@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   if (!ctx.ok) return ctx.response;
   const [config, active, checkedIn] = await Promise.all([
     getTestConfig(ctx.event.id),
-    prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true } }),
+    prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true, kind: "TEST" } }),
     prisma.registration.count({ where: { eventId: ctx.event.id, checkedInAt: { not: null } } }),
   ]);
   return NextResponse.json({ config, activeQuestions: active, checkedIn, slug: ctx.event.slug });
@@ -24,7 +24,7 @@ export async function PUT(request: NextRequest) {
   const patch: Partial<TestConfig> = {};
   if (typeof b.open === "boolean") {
     if (b.open) {
-      const [cfg, active] = await Promise.all([getTestConfig(ctx.event.id), prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true } })]);
+      const [cfg, active] = await Promise.all([getTestConfig(ctx.event.id), prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true, kind: "TEST" } })]);
       const need = typeof b.count === "number" ? b.count : cfg.count;
       if (active < need) return NextResponse.json({ error: `Add at least ${need} active questions before opening the test (there are ${active}).` }, { status: 400 });
     }

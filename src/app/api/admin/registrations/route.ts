@@ -76,6 +76,7 @@ export async function GET(request: NextRequest) {
         reservedAt: true,
         checkedInAt: true,
         createdAt: true,
+        testAttempt: { select: { score: true, total: true, submittedAt: true } },
       },
     }),
     // One grouped query gives the counts for the filter pills (everyone, reserved, and per follow-up status).
@@ -89,8 +90,9 @@ export async function GET(request: NextRequest) {
   for (const g of groups) followUpCounts[g.s] = (followUpCounts[g.s] ?? 0) + g.n;
 
   return NextResponse.json({
-    registrations: list.map((r) => ({
+    registrations: list.map(({ testAttempt, ...r }) => ({
       ...r,
+      testScore: testAttempt ? (testAttempt.submittedAt ? { done: true, score: testAttempt.score ?? 0, total: testAttempt.total } : { done: false, score: null, total: testAttempt.total }) : null,
       inviteSentAt: r.inviteSentAt?.toISOString() ?? null,
       reservedAt: r.reservedAt?.toISOString() ?? null,
       checkedInAt: r.checkedInAt?.toISOString() ?? null,

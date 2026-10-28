@@ -7,6 +7,7 @@ import { sendTicket } from "@/lib/notifications";
 import { ticketQrSvg } from "@/lib/ticket";
 import { logAudit } from "@/lib/audit";
 import { termsOf } from "@/lib/eventTheme";
+import { quizState } from "@/lib/entryQuiz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +43,7 @@ async function view(registrationId: string) {
       payment: settings.payment_instructions || "",
     },
     reserved,
+    quiz: reserved ? null : await quizState(r),
     full: !reserved && capacity !== null && taken >= capacity,
     ticket: reserved
       ? { code: r.ticketCode, qrSvg: await ticketQrSvg(r.ticketCode!, settings.event_slug), checkedIn: Boolean(r.checkedInAt) }
@@ -69,6 +71,10 @@ export async function POST(request: NextRequest) {
   const id = verifyReserveToken(String(body.t || ""));
   if (!id) return NextResponse.json({ error: BAD_LINK }, { status: 400 });
 
+  const reg = await prisma.registration.findUnique({ where: { id } });
+  if (reg && !reg.reservedAt && (await quizState(reg)).required) {
+    return NextResponse.json({ error: "Please complete the short quiz first.", code: "QUIZ" }, { status: 403 });
+  }
   const result = await reserveSeat(id);
   if (!result.ok) {
     if (result.reason === "NOT_FOUND") return NextResponse.json({ error: "We couldn't find your invitation. Please contact the team." }, { status: 404 });

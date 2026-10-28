@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
   if (!config.open) return NextResponse.json({ ...head, state: "closed" });
   if (action !== "start") return NextResponse.json({ ...head, state: "ready", minutes: config.minutes, count: config.count, intro: config.intro });
 
-  const questions = await prisma.testQuestion.findMany({ where: { eventId: event.id, active: true } });
+  const questions = await prisma.testQuestion.findMany({ where: { eventId: event.id, active: true, kind: "TEST" } });
   if (questions.length < config.count) return err("The test is not ready yet. Please tell the team.", 409, { code: "NOT_READY" });
   const paper = buildPaper(questions, config.count);
   const deadline = new Date(Date.now() + config.minutes * 60_000);

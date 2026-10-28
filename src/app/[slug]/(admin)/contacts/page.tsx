@@ -23,6 +23,7 @@ interface Row {
   inviteSentAt: string | null;
   reservedAt: string | null;
   checkedInAt: string | null;
+  testScore?: { done: boolean; score: number | null; total: number } | null;
 }
 interface Response {
   registrations: Row[];
@@ -35,6 +36,7 @@ function RegistrationsInner() {
   const { people, lpeople, person } = useTerms();
   const { event } = useEvent();
   const [adding, setAdding] = useState(false);
+  const showTests = Boolean(event?.modules.includes("tests"));
   const showSheet = !event || event.dataSource === "sheet";
   const params = useSearchParams();
   const router = useRouter();
@@ -206,7 +208,7 @@ function RegistrationsInner() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-                {["Name", "Email", "Phone", "Follow-up", "Seat reserved"].map((h, i) => (
+                {["Name", "Email", "Phone", "Follow-up", "Seat reserved", ...(showTests ? ["Test score"] : [])].map((h, i) => (
                   <th key={h} className={`sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap ${i === 0 ? "left-0 z-30" : ""}`}>
                     {h}
                   </th>
@@ -216,14 +218,14 @@ function RegistrationsInner() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-10 text-center text-muted">
+                  <td colSpan={showTests ? 6 : 5} className="px-5 py-10 text-center text-muted">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-10 text-center text-muted">
+                  <td colSpan={showTests ? 6 : 5} className="px-5 py-10 text-center text-muted">
                     {anyFilter ? (
                       "Nobody matches that."
                     ) : (
@@ -271,6 +273,11 @@ function RegistrationsInner() {
                         <span className="text-muted">-</span>
                       )}
                     </td>
+                    {showTests && (
+                      <td className="px-5 py-3.5 whitespace-nowrap">
+                        {!r.testScore ? <span className="text-muted">Not taken</span> : r.testScore.done ? <span className="font-medium">{r.testScore.score}/{r.testScore.total}</span> : <Pill tone="text-amber-300">In progress</Pill>}
+                      </td>
+                    )}
                   </tr>
                 ))}
             </tbody>

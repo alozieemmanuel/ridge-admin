@@ -185,6 +185,12 @@ model Registration {
   emailEvents   EmailEvent[]
   seat          Seat?
   testAttempt   TestAttempt?
+  // Entry quiz (the short quiz before reserving a seat): the drawn paper, and the result once submitted.
+  quizPaper     Json?
+  quizScore     Int?
+  quizTotal     Int?
+  quizAt        DateTime?
+  quizAttempts  Int       @default(0) // how many times the guest submitted the entry quiz
   paymentProofs PaymentProof[]
   prospect      Prospect? // set when this registration was converted from a prospect
   paymentRecords PaymentRecord[]
@@ -613,6 +619,7 @@ model TestQuestion {
   options      Json // string[] (2 to 6 options)
   correctIndex Int // index into options
   active       Boolean  @default(true)
+  kind         String   @default("TEST") // "TEST" (after the teaching) or "ENTRY" (the quiz before reserving a seat)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
