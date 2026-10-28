@@ -8,12 +8,13 @@ import { DISABLED_API_PREFIXES, startsWithAny } from "@/lib/modules";
  *
  *   /login                       open
  *   /<event>/reserve             open (the guest's own link)
+ *   /<event>/test                open (the test portal, guests sign in with their ticket code)
  *   /api/public/*                open (each route checks its own signed token)
  *   everything else              needs the admin session cookie
  *
  * Whether the admin may open a particular event is checked in the API routes (requireEvent) and the event pages.
  */
-const PUBLIC_PAGE = /^\/login\/?$|^\/[^/]+\/reserve\/?$/;
+const PUBLIC_PAGE = /^\/login\/?$|^\/[^/]+\/(reserve|test)\/?$/;
 const PUBLIC_API = new Set(["/api/admin/login"]);
 
 function getSecretKey() {

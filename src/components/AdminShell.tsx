@@ -15,7 +15,7 @@ interface AdminSession {
   role: Role;
 }
 
-type IconName = "overview" | "people" | "ticket" | "chat" | "mail" | "settings" | "log" | "team";
+type IconName = "overview" | "people" | "ticket" | "chat" | "mail" | "settings" | "log" | "team" | "test";
 
 interface NavItem {
   /** Path after the event address ("" is the Overview). */
@@ -31,6 +31,7 @@ const EVENT_NAV: NavItem[] = [
   { path: "", label: "Overview", icon: "overview" },
   { path: "/contacts", label: "Contacts", icon: "people" },
   { path: "/attendance", label: "Attendance", icon: "ticket", module: "attendance" },
+  { path: "/tests", label: "Tests", icon: "test", module: "tests" },
   { path: "/campaigns", label: "Campaigns", icon: "mail", module: "campaigns" },
   { path: "/whatsapp", label: "WhatsApp", icon: "chat", module: "whatsapp" },
   { path: "/settings", label: "Settings", icon: "settings" },
@@ -99,6 +100,14 @@ function Icon({ name }: { name: IconName }) {
         <svg {...common}>
           <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
           <path d="M14 3v5h5M9 13h6M9 17h6" />
+        </svg>
+      );
+    case "test":
+      return (
+        <svg {...common}>
+          <path d="M9 11l2 2 4-4" />
+          <rect x="4" y="3" width="16" height="18" rx="2" />
+          <path d="M8 17h8" />
         </svg>
       );
     case "team":

@@ -60,6 +60,9 @@ export type AuditAction =
   | "prospect.source_delete"
   | "whatsapp.send"
   | "whatsapp.broadcast"
+  | "test.question"
+  | "test.settings"
+  | "test.reset"
   | "data.clear";
 
 export interface AuditEntry {
@@ -79,6 +82,7 @@ export interface AuditEntry {
     | "whatsapp_broadcast"
     | "event"
     | "sender"
+    | "test"
     | "data";
   /** The event this belongs to. Left out, it is taken from the request's event (x-event header); team-wide actions have none. */
   eventId?: string | null;

@@ -1,0 +1,1488 @@
+diff --git a/prisma/migrations/20261028090000_tests/migration.sql b/prisma/migrations/20261028090000_tests/migration.sql
+new file mode 100644
+index 0000000..e77583b
+--- /dev/null
++++ b/prisma/migrations/20261028090000_tests/migration.sql
+@@ -0,0 +1,34 @@
++-- Tests module: question bank and one attempt per participant.
++CREATE TABLE "TestQuestion" (
++    "id" TEXT NOT NULL,
++    "eventId" TEXT NOT NULL,
++    "text" TEXT NOT NULL,
++    "options" JSONB NOT NULL,
++    "correctIndex" INTEGER NOT NULL,
++    "active" BOOLEAN NOT NULL DEFAULT true,
++    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "updatedAt" TIMESTAMP(3) NOT NULL,
++    CONSTRAINT "TestQuestion_pkey" PRIMARY KEY ("id")
++);
++
++CREATE TABLE "TestAttempt" (
++    "id" TEXT NOT NULL,
++    "eventId" TEXT NOT NULL,
++    "registrationId" TEXT NOT NULL,
++    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "deadline" TIMESTAMP(3) NOT NULL,
++    "submittedAt" TIMESTAMP(3),
++    "paper" JSONB NOT NULL,
++    "answers" JSONB NOT NULL DEFAULT '{}',
++    "score" INTEGER,
++    "total" INTEGER NOT NULL DEFAULT 0,
++    CONSTRAINT "TestAttempt_pkey" PRIMARY KEY ("id")
++);
++
++CREATE INDEX "TestQuestion_eventId_idx" ON "TestQuestion"("eventId");
++CREATE UNIQUE INDEX "TestAttempt_registrationId_key" ON "TestAttempt"("registrationId");
++CREATE INDEX "TestAttempt_eventId_idx" ON "TestAttempt"("eventId");
++
++ALTER TABLE "TestQuestion" ADD CONSTRAINT "TestQuestion_eventId_fkey" FOREIGN KEY ("eventId") REFERENCES "Event"("id") ON DELETE CASCADE ON UPDATE CASCADE;
++ALTER TABLE "TestAttempt" ADD CONSTRAINT "TestAttempt_eventId_fkey" FOREIGN KEY ("eventId") REFERENCES "Event"("id") ON DELETE CASCADE ON UPDATE CASCADE;
++ALTER TABLE "TestAttempt" ADD CONSTRAINT "TestAttempt_registrationId_fkey" FOREIGN KEY ("registrationId") REFERENCES "Registration"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 5b3ab09..bafacb2 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -115,6 +115,8 @@ model Event {
+   templates     EmailTemplate[]
+   admins        EventAdmin[]
+   auditLogs     AuditLog[]
++  testQuestions TestQuestion[]
++  testAttempts  TestAttempt[]
+ }
+ 
+ // A logo file uploaded for an event (kept in the database so no file storage has to be set up). id is "<eventId>:<variant>".
+@@ -182,6 +184,7 @@ model Registration {
+   followUpNotes FollowUpNote[]
+   emailEvents   EmailEvent[]
+   seat          Seat?
++  testAttempt   TestAttempt?
+   paymentProofs PaymentProof[]
+   prospect      Prospect? // set when this registration was converted from a prospect
+   paymentRecords PaymentRecord[]
+@@ -600,3 +603,37 @@ model QueuedEmail {
+   @@index([status, createdAt])
+   @@index([campaignId])
+ }
++
++// ---- Tests (the "tests" module): a question bank per event and one attempt per ticket ----
++model TestQuestion {
++  id           String   @id @default(cuid())
++  eventId      String
++  event        Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
++  text         String   @db.Text
++  options      Json // string[] (2 to 6 options)
++  correctIndex Int // index into options
++  active       Boolean  @default(true)
++  createdAt    DateTime @default(now())
++  updatedAt    DateTime @updatedAt
++
++  @@index([eventId])
++}
++
++// One paper per participant. "paper" is a snapshot of the questions drawn for this person, already shuffled:
++// [{ qid, text, options: string[], correct: number }]. Correct answers never leave the server while the test is open.
++model TestAttempt {
++  id             String       @id @default(cuid())
++  eventId        String
++  event          Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
++  registrationId String       @unique
++  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
++  startedAt      DateTime     @default(now())
++  deadline       DateTime
++  submittedAt    DateTime?
++  paper          Json
++  answers        Json         @default("{}") // { [qid]: chosen index }
++  score          Int?
++  total          Int          @default(0)
++
++  @@index([eventId])
++}
+diff --git a/src/app/[slug]/(admin)/tests/page.tsx b/src/app/[slug]/(admin)/tests/page.tsx
+new file mode 100644
+index 0000000..acc5480
+--- /dev/null
++++ b/src/app/[slug]/(admin)/tests/page.tsx
+@@ -0,0 +1,396 @@
++"use client";
++
++import { useCallback, useEffect, useState } from "react";
++import { BASE_PATH } from "@/lib/basePath";
++import { useEventSlug } from "@/lib/useEvent";
++import { PageHeader, StatCard, Pill, ghostButton, inputClass, primaryButton } from "@/components/ui";
++import { useAutoRefresh } from "@/lib/useAutoRefresh";
++import AdminShell from "@/components/AdminShell";
++
++interface Question {
++  id: string;
++  text: string;
++  options: string[];
++  correctIndex: number;
++  active: boolean;
++}
++interface Config {
++  open: boolean;
++  count: number;
++  minutes: number;
++  showAnswers: boolean;
++  intro: string;
++  bands: { min: number; label: string }[];
++}
++interface Result {
++  id: string;
++  rank: number | null;
++  name: string;
++  email: string;
++  code: string | null;
++  done: boolean;
++  score: number | null;
++  total: number;
++  seconds: number | null;
++  reward: string | null;
++}
++
++const mmss = (s: number | null) => (s == null ? "-" : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`);
++const blank = { id: "", text: "", options: ["", "", "", ""], correctIndex: 0, active: true };
++
++async function call(url: string, method: string, body?: unknown) {
++  const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
++  return { ok: res.ok, json: await res.json().catch(() => ({})) };
++}
++
++function TestsInner() {
++  const slug = useEventSlug();
++  const [tab, setTab] = useState<"questions" | "settings" | "results">("questions");
++  const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
++  const say = (text: string, ok = true) => setNote({ text, ok });
++
++  const [questions, setQuestions] = useState<Question[]>([]);
++  const [cfg, setCfg] = useState<Config | null>(null);
++  const [checkedIn, setCheckedIn] = useState(0);
++  const [draft, setDraft] = useState<Question | null>(null);
++  const [bulk, setBulk] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [results, setResults] = useState<{ results: Result[]; started: number; finished: number } | null>(null);
++
++  const loadQuestions = useCallback(async () => {
++    const r = await fetch("/api/admin/tests/questions", { cache: "no-store" });
++    if (r.ok) setQuestions((await r.json()).questions);
++  }, []);
++  const loadSettings = useCallback(async () => {
++    const r = await fetch("/api/admin/tests/settings", { cache: "no-store" });
++    if (r.ok) {
++      const j = await r.json();
++      setCfg((prev) => prev ?? j.config);
++      setCheckedIn(j.checkedIn);
++    }
++  }, []);
++  const loadResults = useCallback(async () => {
++    const r = await fetch("/api/admin/tests/results", { cache: "no-store" });
++    if (r.ok) setResults(await r.json());
++  }, []);
++
++  useEffect(() => {
++    loadQuestions();
++    loadSettings();
++  }, [loadQuestions, loadSettings]);
++  useEffect(() => {
++    if (tab === "results") loadResults();
++  }, [tab, loadResults]);
++  useAutoRefresh(() => {
++    if (tab === "results") return loadResults();
++  }, 10_000);
++
++  const active = questions.filter((q) => q.active).length;
++  const link = typeof window === "undefined" ? "" : `${window.location.origin}${BASE_PATH}/${slug}/test`;
++
++  async function saveQuestion() {
++    if (!draft) return;
++    setBusy(true);
++    const body = { text: draft.text, options: draft.options, correctIndex: draft.correctIndex };
++    const r = draft.id ? await call(`/api/admin/tests/questions/${draft.id}`, "PUT", body) : await call("/api/admin/tests/questions", "POST", body);
++    setBusy(false);
++    if (!r.ok) return say(r.json.error || "Could not save.", false);
++    setDraft(null);
++    say("Question saved.");
++    loadQuestions();
++  }
++  async function importBulk() {
++    if (!bulk) return;
++    setBusy(true);
++    const r = await call("/api/admin/tests/questions", "POST", { bulk });
++    setBusy(false);
++    if (!r.ok) return say(r.json.error || "Could not import.", false);
++    setBulk(null);
++    say(`${r.json.added} questions added.`);
++    loadQuestions();
++  }
++  async function remove(q: Question) {
++    if (!confirm("Delete this question? Papers already drawn keep their copy.")) return;
++    const r = await call(`/api/admin/tests/questions/${q.id}`, "DELETE");
++    if (r.ok) loadQuestions();
++    else say(r.json.error || "Could not delete.", false);
++  }
++  async function toggle(q: Question) {
++    await call(`/api/admin/tests/questions/${q.id}`, "PUT", { active: !q.active });
++    loadQuestions();
++  }
++  async function saveSettings(patch: Partial<Config>, okText = "Saved.") {
++    setBusy(true);
++    const r = await call("/api/admin/tests/settings", "PUT", patch);
++    setBusy(false);
++    if (!r.ok) return say(r.json.error || "Could not save.", false);
++    setCfg((c) => (c ? { ...c, ...patch } : c));
++    say(okText);
++  }
++  async function reset(row: Result) {
++    if (!confirm(`Let ${row.name} take the test again? Their current attempt is deleted.`)) return;
++    const r = await call(`/api/admin/tests/attempts/${row.id}`, "DELETE");
++    if (r.ok) loadResults();
++    else say(r.json.error || "Could not reset.", false);
++  }
++
++  const tabBtn = (k: typeof tab, label: string) => (
++    <button onClick={() => setTab(k)} className={`px-4 py-2 text-sm rounded-full border ${tab === k ? "border-gold text-goldlight" : "border-border text-muted"}`}>
++      {label}
++    </button>
++  );
++
++  return (
++    <AdminShell>
++      <PageHeader title="Tests" subtitle="Guests who are checked in sign in with their ticket code. Each person gets their own random paper." />
++
++      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
++        <StatCard label="Test" value={cfg?.open ? "Open" : "Closed"} tone={cfg?.open ? "text-emerald-400" : "text-muted"} />
++        <StatCard label="Active questions" value={active} hint={cfg ? `${cfg.count} per person` : undefined} />
++        <StatCard label="Checked in" value={checkedIn} hint="can take the test" />
++        <StatCard label="Finished" value={results ? `${results.finished}/${results.started}` : "-"} hint="finished / started" />
++      </div>
++
++      {note && (
++        <p role="status" className={`border rounded-xl p-3 mb-5 text-sm ${note.ok ? "border-gold/40" : "border-red-400/50 text-red-400"}`}>
++          {note.text}
++        </p>
++      )}
++
++      <div className="flex gap-2 mb-6 flex-wrap">
++        {tabBtn("questions", `Questions (${questions.length})`)}
++        {tabBtn("settings", "Settings and rewards")}
++        {tabBtn("results", "Results")}
++      </div>
++
++      {tab === "questions" && (
++        <section>
++          {active < (cfg?.count ?? 20) && (
++            <p className="text-sm border border-border rounded-xl p-3 mb-5 text-muted">
++              You need at least {cfg?.count ?? 20} active questions before the test can open. You have {active}.
++            </p>
++          )}
++          <div className="flex gap-3 flex-wrap mb-5">
++            <button className={primaryButton} onClick={() => setDraft({ ...blank })}>
++              Add a question
++            </button>
++            <button className={ghostButton} onClick={() => setBulk("")}>
++              Paste many questions
++            </button>
++          </div>
++
++          {bulk !== null && (
++            <div className="border border-gold/40 rounded-xl p-4 mb-5 bg-cardbg">
++              <p className="text-sm mb-2">Leave a blank line between questions. First line is the question, then one option per line. Start the correct option with a star.</p>
++              <pre className="text-xs text-muted bg-inputbg rounded-lg p-3 mb-3 whitespace-pre-wrap">{`What is the first step of a sales call?\nPitch the price\n*Build rapport\nClose the deal\nEnd the call\n\nNext question here\n...`}</pre>
++              <textarea className={`${inputClass} h-56 font-mono`} value={bulk} onChange={(e) => setBulk(e.target.value)} />
++              <div className="flex gap-3 mt-3">
++                <button className={primaryButton} disabled={busy || !bulk.trim()} onClick={importBulk}>
++                  {busy ? "Adding…" : "Add questions"}
++                </button>
++                <button className={ghostButton} onClick={() => setBulk(null)}>
++                  Cancel
++                </button>
++              </div>
++            </div>
++          )}
++
++          {draft && (
++            <div className="border border-gold/40 rounded-xl p-4 mb-5 bg-cardbg space-y-3">
++              <textarea className={`${inputClass} h-20`} placeholder="Question" value={draft.text} onChange={(e) => setDraft({ ...draft, text: e.target.value })} />
++              {draft.options.map((o, i) => (
++                <div key={i} className="flex items-center gap-3">
++                  <input type="radio" name="correct" checked={draft.correctIndex === i} onChange={() => setDraft({ ...draft, correctIndex: i })} aria-label={`Option ${i + 1} is correct`} />
++                  <input className={inputClass} placeholder={`Option ${i + 1}`} value={o} onChange={(e) => setDraft({ ...draft, options: draft.options.map((x, j) => (j === i ? e.target.value : x)) })} />
++                  {draft.options.length > 2 && (
++                    <button
++                      className="text-xs text-muted"
++                      onClick={() => {
++                        const options = draft.options.filter((_, j) => j !== i);
++                        setDraft({ ...draft, options, correctIndex: Math.min(draft.correctIndex > i ? draft.correctIndex - 1 : draft.correctIndex, options.length - 1) });
++                      }}
++                    >
++                      Remove
++                    </button>
++                  )}
++                </div>
++              ))}
++              <p className="text-xs text-muted">The filled circle marks the correct option. People never see this order, it is shuffled for each person.</p>
++              <div className="flex gap-3 flex-wrap">
++                {draft.options.length < 6 && (
++                  <button className={ghostButton} onClick={() => setDraft({ ...draft, options: [...draft.options, ""] })}>
++                    Add option
++                  </button>
++                )}
++                <button className={primaryButton} disabled={busy} onClick={saveQuestion}>
++                  {busy ? "Saving…" : "Save question"}
++                </button>
++                <button className={ghostButton} onClick={() => setDraft(null)}>
++                  Cancel
++                </button>
++              </div>
++            </div>
++          )}
++
++          <ol className="space-y-3">
++            {questions.map((q, n) => (
++              <li key={q.id} className={`border border-border rounded-xl p-4 bg-cardbg ${q.active ? "" : "opacity-60"}`}>
++                <p className="font-medium mb-2">
++                  {n + 1}. {q.text}
++                </p>
++                <ul className="text-sm space-y-1 mb-3">
++                  {q.options.map((o, i) => (
++                    <li key={i} className={i === q.correctIndex ? "text-emerald-400" : "text-muted"}>
++                      {i === q.correctIndex ? "✓ " : "· "}
++                      {o}
++                    </li>
++                  ))}
++                </ul>
++                <div className="flex gap-4 text-xs">
++                  <button className="text-goldlight" onClick={() => setDraft({ ...q })}>
++                    Edit
++                  </button>
++                  <button className="text-muted" onClick={() => toggle(q)}>
++                    {q.active ? "Switch off" : "Switch on"}
++                  </button>
++                  <button className="text-red-400" onClick={() => remove(q)}>
++                    Delete
++                  </button>
++                </div>
++              </li>
++            ))}
++            {questions.length === 0 && <p className="text-muted text-sm">No questions yet.</p>}
++          </ol>
++        </section>
++      )}
++
++      {tab === "settings" && cfg && (
++        <section className="space-y-6 max-w-2xl">
++          <div className="border border-border rounded-xl p-5 bg-cardbg">
++            <h3 className="font-serif text-xl mb-1">Open the test</h3>
++            <p className="text-sm text-muted mb-4">Open it after the teaching. While it is closed, nobody can start. People already writing can finish.</p>
++            <div className="flex items-center gap-4 flex-wrap">
++              <Pill tone={cfg.open ? "text-emerald-400" : "text-muted"}>{cfg.open ? "Open" : "Closed"}</Pill>
++              <button className={cfg.open ? ghostButton : primaryButton} disabled={busy} onClick={() => saveSettings({ open: !cfg.open }, cfg.open ? "Test closed." : "Test is open.")}>
++                {cfg.open ? "Close the test" : "Open the test"}
++              </button>
++            </div>
++            <p className="text-xs text-muted mt-4 mb-1">Link for guests</p>
++            <div className="flex gap-2 items-center flex-wrap">
++              <code className="text-sm break-all">{link}</code>
++              <button className="text-xs text-goldlight" onClick={() => navigator.clipboard?.writeText(link).then(() => say("Link copied."))}>
++                Copy
++              </button>
++            </div>
++          </div>
++
++          <div className="border border-border rounded-xl p-5 bg-cardbg">
++            <h3 className="font-serif text-xl mb-4">The test</h3>
++            <div className="grid sm:grid-cols-2 gap-4">
++              <label className="text-sm">
++                Questions per person
++                <input type="number" min={1} className={`${inputClass} mt-1`} value={cfg.count} onChange={(e) => setCfg({ ...cfg, count: Number(e.target.value) })} />
++              </label>
++              <label className="text-sm">
++                Minutes allowed
++                <input type="number" min={1} className={`${inputClass} mt-1`} value={cfg.minutes} onChange={(e) => setCfg({ ...cfg, minutes: Number(e.target.value) })} />
++              </label>
++            </div>
++            <label className="text-sm block mt-4">
++              Message on the start screen (optional)
++              <textarea className={`${inputClass} mt-1 h-20`} value={cfg.intro} onChange={(e) => setCfg({ ...cfg, intro: e.target.value })} />
++            </label>
++            <label className="flex items-center gap-2 text-sm mt-4">
++              <input type="checkbox" checked={cfg.showAnswers} onChange={(e) => setCfg({ ...cfg, showAnswers: e.target.checked })} />
++              Show the score and correct answers when they finish
++            </label>
++          </div>
++
++          <div className="border border-border rounded-xl p-5 bg-cardbg">
++            <h3 className="font-serif text-xl mb-1">Rewards by score</h3>
++            <p className="text-sm text-muted mb-4">Each person gets the highest band their percentage reaches.</p>
++            <div className="space-y-2">
++              {cfg.bands.map((b, i) => (
++                <div key={i} className="flex gap-3 items-center">
++                  <input type="number" min={0} max={100} className={`${inputClass} w-24`} value={b.min} onChange={(e) => setCfg({ ...cfg, bands: cfg.bands.map((x, j) => (j === i ? { ...x, min: Number(e.target.value) } : x)) })} />
++                  <span className="text-sm text-muted">% and above</span>
++                  <input className={inputClass} placeholder="Reward" value={b.label} onChange={(e) => setCfg({ ...cfg, bands: cfg.bands.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })} />
++                  <button className="text-xs text-red-400" onClick={() => setCfg({ ...cfg, bands: cfg.bands.filter((_, j) => j !== i) })}>
++                    Remove
++                  </button>
++                </div>
++              ))}
++            </div>
++            <button className={`${ghostButton} mt-3`} onClick={() => setCfg({ ...cfg, bands: [...cfg.bands, { min: 80, label: "" }] })}>
++              Add a band
++            </button>
++          </div>
++
++          <button
++            className={primaryButton}
++            disabled={busy}
++            onClick={() => saveSettings({ count: cfg.count, minutes: cfg.minutes, intro: cfg.intro, showAnswers: cfg.showAnswers, bands: cfg.bands.filter((b) => b.label.trim()) })}
++          >
++            {busy ? "Saving…" : "Save settings"}
++          </button>
++        </section>
++      )}
++
++      {tab === "results" && (
++        <section>
++          <div className="flex gap-3 mb-4 flex-wrap">
++            <a className={ghostButton} href={`/api/admin/tests/results?format=csv&event=${slug}`}>
++              Download CSV
++            </a>
++          </div>
++          <div className="border border-border rounded-xl overflow-x-auto bg-cardbg">
++            <table className="w-full text-sm">
++              <thead className="text-left text-xs uppercase tracking-wider text-muted">
++                <tr>
++                  <th className="p-3">Rank</th>
++                  <th className="p-3">Name</th>
++                  <th className="p-3">Ticket</th>
++                  <th className="p-3">Score</th>
++                  <th className="p-3">Time</th>
++                  <th className="p-3">Reward</th>
++                  <th className="p-3"></th>
++                </tr>
++              </thead>
++              <tbody>
++                {results?.results.map((r) => (
++                  <tr key={r.id} className="border-t border-border">
++                    <td className="p-3">{r.rank ?? "-"}</td>
++                    <td className="p-3">
++                      {r.name}
++                      <div className="text-xs text-muted">{r.email}</div>
++                    </td>
++                    <td className="p-3 font-mono text-xs">{r.code}</td>
++                    <td className="p-3">{r.done ? `${r.score}/${r.total} (${r.total ? Math.round(((r.score ?? 0) / r.total) * 100) : 0}%)` : <Pill>In progress</Pill>}</td>
++                    <td className="p-3">{mmss(r.seconds)}</td>
++                    <td className="p-3">{r.reward ?? "-"}</td>
++                    <td className="p-3">
++                      <button className="text-xs text-muted hover:text-red-400" onClick={() => reset(r)}>
++                        Let retake
++                      </button>
++                    </td>
++                  </tr>
++                ))}
++                {results && results.results.length === 0 && (
++                  <tr>
++                    <td className="p-4 text-muted" colSpan={7}>
++                      Nobody has started yet.
++                    </td>
++                  </tr>
++                )}
++              </tbody>
++            </table>
++          </div>
++        </section>
++      )}
++    </AdminShell>
++  );
++}
++
++export default function TestsPage() {
++  return <TestsInner />;
++}
+diff --git a/src/app/[slug]/test/page.tsx b/src/app/[slug]/test/page.tsx
+new file mode 100644
+index 0000000..282992a
+--- /dev/null
++++ b/src/app/[slug]/test/page.tsx
+@@ -0,0 +1,368 @@
++"use client";
++
++import { Suspense, useCallback, useEffect, useRef, useState } from "react";
++import { useParams, useSearchParams } from "next/navigation";
++import Logo from "@/components/Logo";
++import { themeStyle } from "@/lib/eventTheme";
++import { useEventSeed } from "@/components/EventSeed";
++import { primaryButton, ghostButton, inputClass } from "@/components/ui";
++
++interface Brand {
++  name: string;
++  color: string | null;
++  logoUrl: string | null;
++  logoDarkUrl: string | null;
++}
++interface PaperQ {
++  qid: string;
++  text: string;
++  options: string[];
++}
++interface Review {
++  text: string;
++  options: string[];
++  correct: number;
++  chosen: number | null;
++}
++interface Reply {
++  state?: "not_checked_in" | "closed" | "ready" | "running" | "done";
++  name?: string;
++  eventName?: string;
++  brand?: Brand;
++  minutes?: number;
++  count?: number;
++  intro?: string;
++  deadline?: string;
++  serverNow?: string;
++  paper?: PaperQ[];
++  answers?: Record<string, number>;
++  result?: { score: number; total: number; reward: string | null; review: Review[] | null };
++  error?: string;
++}
++
++const KEY = (slug: string) => `test-code:${slug}`;
++
++function TestInner() {
++  const { slug } = useParams<{ slug: string }>();
++  const seed = useEventSeed();
++  const prefill = useSearchParams().get("code") || "";
++  const [code, setCode] = useState(prefill);
++  const [signedIn, setSignedIn] = useState<string | null>(null);
++  const [data, setData] = useState<Reply | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [answers, setAnswers] = useState<Record<string, number>>({});
++  const [index, setIndex] = useState(0);
++  const [left, setLeft] = useState<number | null>(null);
++  const offset = useRef(0); // server time minus this phone's time
++  const submitting = useRef(false);
++
++  const call = useCallback(
++    async (action: string, c: string, extra: Record<string, unknown> = {}) => {
++      const res = await fetch("/api/public/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, slug, code: c, ...extra }) });
++      const json: Reply = await res.json().catch(() => ({ error: "Something went wrong." }));
++      return { ok: res.ok, json };
++    },
++    [slug],
++  );
++
++  const apply = useCallback((json: Reply) => {
++    setData(json);
++    if (json.state === "running") {
++      offset.current = json.serverNow ? new Date(json.serverNow).getTime() - Date.now() : 0;
++      setAnswers(json.answers ?? {});
++    }
++  }, []);
++
++  const enter = useCallback(
++    async (c: string) => {
++      setBusy(true);
++      setError(null);
++      try {
++        const { ok, json } = await call("status", c);
++        if (!ok) {
++          setError(json.error || "Could not sign in.");
++          if (json.brand) setData((d) => d ?? ({ brand: json.brand } as Reply));
++          return;
++        }
++        try {
++          sessionStorage.setItem(KEY(slug), c);
++        } catch {}
++        setSignedIn(c);
++        apply(json);
++      } catch {
++        setError("We could not reach the server. Check your connection and try again.");
++      } finally {
++        setBusy(false);
++      }
++    },
++    [call, apply, slug],
++  );
++
++  useEffect(() => {
++    let saved = "";
++    try {
++      saved = sessionStorage.getItem(KEY(slug)) || "";
++    } catch {}
++    if (saved) enter(saved);
++  }, [slug, enter]);
++
++  async function start() {
++    if (!signedIn) return;
++    setBusy(true);
++    setError(null);
++    const { ok, json } = await call("start", signedIn);
++    setBusy(false);
++    if (!ok) return setError(json.error || "Could not start.");
++    setIndex(0);
++    apply(json);
++  }
++
++  const submit = useCallback(async () => {
++    if (!signedIn || submitting.current) return;
++    submitting.current = true;
++    setBusy(true);
++    try {
++      const { ok, json } = await call("submit", signedIn);
++      if (ok) apply(json);
++      else setError(json.error || "Could not submit. Try again.");
++    } catch {
++      setError("We could not reach the server. Try again.");
++    } finally {
++      setBusy(false);
++      submitting.current = false;
++    }
++  }, [call, signedIn, apply]);
++
++  async function choose(q: PaperQ, i: number) {
++    if (!signedIn) return;
++    setAnswers((a) => ({ ...a, [q.qid]: i }));
++    call("answer", signedIn, { qid: q.qid, choice: i }).catch(() => {});
++  }
++
++  // Countdown from the server's deadline.
++  useEffect(() => {
++    if (data?.state !== "running" || !data.deadline) return;
++    const end = new Date(data.deadline).getTime();
++    const tick = () => {
++      const s = Math.max(0, Math.round((end - (Date.now() + offset.current)) / 1000));
++      setLeft(s);
++      if (s <= 0) submit();
++    };
++    tick();
++    const t = setInterval(tick, 1000);
++    return () => clearInterval(t);
++  }, [data, submit]);
++
++  const brand = data?.brand;
++  const theme = themeStyle(brand?.color ?? seed?.color);
++  const logo = brand?.logoUrl ?? seed?.logoUrl;
++  const total = data?.paper?.length ?? 0;
++  const q = data?.paper?.[index];
++  const answered = data?.paper ? data.paper.filter((p) => Number.isInteger(answers[p.qid])).length : 0;
++
++  function leave() {
++    try {
++      sessionStorage.removeItem(KEY(slug));
++    } catch {}
++    setSignedIn(null);
++    setData(null);
++    setCode("");
++  }
++
++  return (
++    <div className={`min-h-screen bg-tint${theme ? " event-themed" : ""}`} style={theme}>
++      <header className="bg-pagebg border-b border-border">
++        <div className="max-w-2xl mx-auto px-5 py-5 flex justify-center items-center min-h-[4.5rem] relative">
++          {logo ? <Logo className="h-10 w-auto" src={logo} darkSrc={brand ? brand.logoDarkUrl : seed?.logoDarkUrl} name={brand?.name || seed?.brandName || seed?.name} /> : <Logo className="h-10 w-auto" />}
++          {data?.state === "running" && left !== null && (
++            <span className={`absolute right-5 font-mono text-sm px-3 py-1 rounded-full border ${left <= 60 ? "border-red-400 text-red-400" : "border-border"}`} aria-label="Time left">
++              {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}
++            </span>
++          )}
++        </div>
++      </header>
++
++      <main className="max-w-2xl mx-auto px-5 py-8">
++        {!signedIn && (
++          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
++            <h1 className="font-serif text-2xl mb-2 text-center">{seed?.name || "Event"} test</h1>
++            <p className="text-muted text-sm text-center mb-6">Enter the ticket code from your ticket.</p>
++            <form
++              onSubmit={(e) => {
++                e.preventDefault();
++                enter(code);
++              }}
++            >
++              <input className={`${inputClass} text-center font-mono text-lg tracking-wider uppercase`} placeholder="Ticket code" value={code} autoCapitalize="characters" autoComplete="off" onChange={(e) => setCode(e.target.value)} />
++              {error && (
++                <p role="alert" className="text-red-400 text-sm mt-3 text-center">
++                  {error}
++                </p>
++              )}
++              <button className={`${primaryButton} w-full mt-4`} disabled={busy || !code.trim()}>
++                {busy ? "Checking…" : "Continue"}
++              </button>
++            </form>
++          </div>
++        )}
++
++        {signedIn && data?.state === "not_checked_in" && (
++          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
++            <h1 className="font-serif text-2xl mb-3">Please check in first</h1>
++            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. Only guests who are checked in at the event can take the test. Please see the team at the entrance, then try again.</p>
++            <div className="flex gap-3 justify-center">
++              <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
++                Try again
++              </button>
++              <button className={ghostButton} onClick={leave}>
++                Use another code
++              </button>
++            </div>
++          </div>
++        )}
++
++        {signedIn && data?.state === "closed" && (
++          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
++            <h1 className="font-serif text-2xl mb-3">The test is not open yet</h1>
++            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. The test opens after the teaching. Wait for the team to announce it, then tap the button below.</p>
++            <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
++              Check again
++            </button>
++          </div>
++        )}
++
++        {signedIn && data?.state === "ready" && (
++          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
++            <h1 className="font-serif text-2xl mb-3 text-center">Hello {data.name}</h1>
++            {data.intro && <p className="text-sm text-muted text-center mb-4 whitespace-pre-line">{data.intro}</p>}
++            <ul className="text-sm text-muted space-y-2 mb-6 list-disc pl-5">
++              <li>{data.count} questions, {data.minutes} minutes.</li>
++              <li>The timer starts when you press Start and cannot be paused.</li>
++              <li>You can take the test once. Your answers save as you go.</li>
++              <li>If time runs out, your test is submitted for you.</li>
++            </ul>
++            {error && (
++              <p role="alert" className="text-red-400 text-sm mb-3 text-center">
++                {error}
++              </p>
++            )}
++            <button className={`${primaryButton} w-full`} onClick={start} disabled={busy}>
++              {busy ? "Starting…" : "Start the test"}
++            </button>
++          </div>
++        )}
++
++        {signedIn && data?.state === "running" && q && (
++          <div>
++            <div className="flex justify-between text-xs text-muted mb-2">
++              <span>
++                Question {index + 1} of {total}
++              </span>
++              <span>{answered} answered</span>
++            </div>
++            <div className="h-1.5 bg-border rounded-full mb-5 overflow-hidden">
++              <div className="h-full bg-gold" style={{ width: `${((index + 1) / total) * 100}%` }} />
++            </div>
++            <section className="bg-pagebg border border-border rounded-2xl p-5 sm:p-6">
++              <h2 className="font-medium text-lg mb-5 leading-snug">{q.text}</h2>
++              <div className="space-y-3">
++                {q.options.map((o, i) => {
++                  const on = answers[q.qid] === i;
++                  return (
++                    <button key={i} onClick={() => choose(q, i)} className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-colors ${on ? "border-gold bg-gold/15" : "border-border hover:border-gold"}`}>
++                      {o}
++                    </button>
++                  );
++                })}
++              </div>
++            </section>
++            {error && (
++              <p role="alert" className="text-red-400 text-sm mt-3 text-center">
++                {error}
++              </p>
++            )}
++            <div className="flex justify-between gap-3 mt-5">
++              <button className={ghostButton} disabled={index === 0} onClick={() => setIndex(index - 1)}>
++                Back
++              </button>
++              {index < total - 1 ? (
++                <button className={primaryButton} onClick={() => setIndex(index + 1)}>
++                  Next
++                </button>
++              ) : (
++                <button
++                  className={primaryButton}
++                  disabled={busy}
++                  onClick={() => {
++                    if (answered < total && !confirm(`You have ${total - answered} unanswered. Submit anyway?`)) return;
++                    submit();
++                  }}
++                >
++                  {busy ? "Submitting…" : "Submit"}
++                </button>
++              )}
++            </div>
++            <div className="flex flex-wrap gap-1.5 mt-6 justify-center" aria-label="Jump to a question">
++              {data.paper!.map((p, i) => (
++                <button key={p.qid} onClick={() => setIndex(i)} className={`w-8 h-8 text-xs rounded-md border ${i === index ? "border-gold text-goldlight" : Number.isInteger(answers[p.qid]) ? "border-gold/40 bg-gold/10" : "border-border text-muted"}`}>
++                  {i + 1}
++                </button>
++              ))}
++            </div>
++          </div>
++        )}
++
++        {signedIn && data?.state === "done" && data.result && (
++          <div>
++            <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center mb-6">
++              <h1 className="font-serif text-2xl mb-2">Test submitted</h1>
++              {data.result.review ? (
++                <>
++                  <p className="font-serif text-5xl my-4">
++                    {data.result.score}/{data.result.total}
++                  </p>
++                  {data.result.reward && <p className="text-goldlight font-medium">Reward: {data.result.reward}</p>}
++                </>
++              ) : (
++                <p className="text-muted text-sm mt-3">Thank you, {data.name}. Results will be announced by the team.</p>
++              )}
++              <button className={`${ghostButton} mt-5`} onClick={leave}>
++                Done
++              </button>
++            </div>
++            {data.result.review && (
++              <ol className="space-y-4">
++                {data.result.review.map((r, n) => (
++                  <li key={n} className="bg-pagebg border border-border rounded-xl p-4">
++                    <p className="font-medium text-sm mb-3">
++                      {n + 1}. {r.text}
++                    </p>
++                    <ul className="space-y-1.5 text-sm">
++                      {r.options.map((o, i) => (
++                        <li key={i} className={i === r.correct ? "text-emerald-400" : i === r.chosen ? "text-red-400" : "text-muted"}>
++                          {i === r.correct ? "✓ " : i === r.chosen ? "✗ " : "· "}
++                          {o}
++                          {i === r.chosen && i !== r.correct ? " (your answer)" : ""}
++                        </li>
++                      ))}
++                    </ul>
++                    {r.chosen === null && <p className="text-xs text-muted mt-2">Not answered</p>}
++                  </li>
++                ))}
++              </ol>
++            )}
++          </div>
++        )}
++      </main>
++    </div>
++  );
++}
++
++export default function TestPage() {
++  return (
++    <Suspense fallback={null}>
++      <TestInner />
++    </Suspense>
++  );
++}
+diff --git a/src/app/api/admin/tests/attempts/[id]/route.ts b/src/app/api/admin/tests/attempts/[id]/route.ts
+new file mode 100644
+index 0000000..276cc72
+--- /dev/null
++++ b/src/app/api/admin/tests/attempts/[id]/route.ts
+@@ -0,0 +1,18 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++
++export const runtime = "nodejs";
++
++/** Deletes one person's attempt so they can take the test again (for example after a phone died). A new random paper is drawn. */
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const { id } = await params;
++  const a = await prisma.testAttempt.findFirst({ where: { id, eventId: ctx.event.id }, include: { registration: { select: { fullName: true } } } });
++  if (!a) return NextResponse.json({ error: "Attempt not found." }, { status: 404 });
++  await prisma.testAttempt.delete({ where: { id } });
++  await logAdminAction(ctx.session, { action: "test.reset", entityType: "test", entityId: id, entityLabel: a.registration.fullName }, request);
++  return NextResponse.json({ ok: true });
++}
+diff --git a/src/app/api/admin/tests/questions/[id]/route.ts b/src/app/api/admin/tests/questions/[id]/route.ts
+new file mode 100644
+index 0000000..d208d5f
+--- /dev/null
++++ b/src/app/api/admin/tests/questions/[id]/route.ts
+@@ -0,0 +1,37 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++import { cleanQuestion } from "@/lib/testQuestions";
++
++export const runtime = "nodejs";
++
++export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const { id } = await params;
++  const body = await request.json().catch(() => ({}));
++  const existing = await prisma.testQuestion.findFirst({ where: { id, eventId: ctx.event.id } });
++  if (!existing) return NextResponse.json({ error: "Question not found." }, { status: 404 });
++  // Switching one question on or off only sends { active }.
++  if (Object.keys(body).length === 1 && typeof body.active === "boolean") {
++    await prisma.testQuestion.update({ where: { id }, data: { active: body.active } });
++    return NextResponse.json({ ok: true });
++  }
++  const c = cleanQuestion(body);
++  if ("error" in c) return NextResponse.json({ error: c.error }, { status: 400 });
++  await prisma.testQuestion.update({ where: { id }, data: c });
++  await logAdminAction(ctx.session, { action: "test.question", entityType: "test", entityId: id, entityLabel: c.text.slice(0, 80), details: { edited: true } }, request);
++  return NextResponse.json({ ok: true });
++}
++
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const { id } = await params;
++  const existing = await prisma.testQuestion.findFirst({ where: { id, eventId: ctx.event.id } });
++  if (!existing) return NextResponse.json({ error: "Question not found." }, { status: 404 });
++  await prisma.testQuestion.delete({ where: { id } });
++  await logAdminAction(ctx.session, { action: "test.question", entityType: "test", entityLabel: existing.text.slice(0, 80), details: { deleted: true } }, request);
++  return NextResponse.json({ ok: true });
++}
+diff --git a/src/app/api/admin/tests/questions/route.ts b/src/app/api/admin/tests/questions/route.ts
+new file mode 100644
+index 0000000..061fcd5
+--- /dev/null
++++ b/src/app/api/admin/tests/questions/route.ts
+@@ -0,0 +1,34 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++import { cleanQuestion, parseBulk } from "@/lib/testQuestions";
++
++export const runtime = "nodejs";
++
++export async function GET(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const rows = await prisma.testQuestion.findMany({ where: { eventId: ctx.event.id }, orderBy: { createdAt: "asc" } });
++  return NextResponse.json({ questions: rows.map((q) => ({ id: q.id, text: q.text, options: q.options as string[], correctIndex: q.correctIndex, active: q.active })) });
++}
++
++/** Body: one question { text, options, correctIndex } or { bulk: "pasted text" }. */
++export async function POST(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const body = await request.json().catch(() => ({}));
++  if (typeof body.bulk === "string") {
++    const { questions, errors } = parseBulk(body.bulk);
++    if (errors.length) return NextResponse.json({ error: errors.slice(0, 5).join(" ") + (errors.length > 5 ? ` (and ${errors.length - 5} more)` : "") }, { status: 400 });
++    if (!questions.length) return NextResponse.json({ error: "No questions found in that text." }, { status: 400 });
++    await prisma.testQuestion.createMany({ data: questions.map((q) => ({ eventId: ctx.event.id, text: q.text, options: q.options, correctIndex: q.correctIndex })) });
++    await logAdminAction(ctx.session, { action: "test.question", entityType: "test", details: { imported: questions.length } }, request);
++    return NextResponse.json({ ok: true, added: questions.length });
++  }
++  const c = cleanQuestion(body);
++  if ("error" in c) return NextResponse.json({ error: c.error }, { status: 400 });
++  const row = await prisma.testQuestion.create({ data: { eventId: ctx.event.id, ...c } });
++  await logAdminAction(ctx.session, { action: "test.question", entityType: "test", entityId: row.id, entityLabel: c.text.slice(0, 80), details: { added: true } }, request);
++  return NextResponse.json({ ok: true, id: row.id });
++}
+diff --git a/src/app/api/admin/tests/results/route.ts b/src/app/api/admin/tests/results/route.ts
+new file mode 100644
+index 0000000..5688dc9
+--- /dev/null
++++ b/src/app/api/admin/tests/results/route.ts
+@@ -0,0 +1,63 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { finishAttempt, getTestConfig, rewardFor } from "@/lib/tests";
++
++export const runtime = "nodejs";
++export const dynamic = "force-dynamic";
++
++const csvCell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
++
++/** Results for the whole event, best first (ties: the faster finisher). ?format=csv downloads them. */
++export async function GET(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const { event } = ctx;
++  const config = await getTestConfig(event.id);
++
++  // Any test that ran out of time and was never marked gets marked now.
++  const stale = await prisma.testAttempt.findMany({ where: { eventId: event.id, submittedAt: null, deadline: { lte: new Date() } }, select: { id: true } });
++  for (const s of stale) await finishAttempt(s.id);
++
++  const [attempts, checkedIn] = await Promise.all([
++    prisma.testAttempt.findMany({ where: { eventId: event.id }, include: { registration: { select: { fullName: true, email: true, phone: true, ticketCode: true } } } }),
++    prisma.registration.count({ where: { eventId: event.id, checkedInAt: { not: null } } }),
++  ]);
++
++  const rows = attempts
++    .map((a) => {
++      const done = Boolean(a.submittedAt);
++      const seconds = a.submittedAt ? Math.max(0, Math.round((a.submittedAt.getTime() - a.startedAt.getTime()) / 1000)) : null;
++      return {
++        id: a.id,
++        name: a.registration.fullName,
++        email: a.registration.email,
++        phone: a.registration.phone,
++        code: a.registration.ticketCode,
++        done,
++        score: a.score,
++        total: a.total,
++        seconds,
++        startedAt: a.startedAt.toISOString(),
++        reward: done ? rewardFor(a.score ?? 0, a.total, config.bands) : null,
++      };
++    })
++    .sort((x, y) => {
++      if (x.done !== y.done) return x.done ? -1 : 1;
++      if ((y.score ?? 0) !== (x.score ?? 0)) return (y.score ?? 0) - (x.score ?? 0);
++      return (x.seconds ?? 0) - (y.seconds ?? 0);
++    });
++  const ranked = rows.map((r, i) => ({ ...r, rank: r.done ? i + 1 : null }));
++
++  if (request.nextUrl.searchParams.get("format") === "csv") {
++    const head = ["Rank", "Name", "Email", "Phone", "Ticket code", "Status", "Score", "Out of", "Percent", "Time (sec)", "Reward"];
++    const lines = ranked.map((r) =>
++      [r.rank ?? "", r.name, r.email, r.phone, r.code, r.done ? "Finished" : "In progress", r.score ?? "", r.total, r.done && r.total ? Math.round(((r.score ?? 0) / r.total) * 100) : "", r.seconds ?? "", r.reward ?? ""].map(csvCell).join(","),
++    );
++    return new NextResponse([head.map(csvCell).join(","), ...lines].join("\n"), {
++      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${event.slug}-test-results.csv"` },
++    });
++  }
++
++  return NextResponse.json({ results: ranked, checkedIn, started: attempts.length, finished: attempts.filter((a) => a.submittedAt).length });
++}
+diff --git a/src/app/api/admin/tests/settings/route.ts b/src/app/api/admin/tests/settings/route.ts
+new file mode 100644
+index 0000000..c2dd429
+--- /dev/null
++++ b/src/app/api/admin/tests/settings/route.ts
+@@ -0,0 +1,49 @@
++import { NextRequest, NextResponse } from "next/server";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++import { cleanBands, getTestConfig, saveTestConfig, type TestConfig } from "@/lib/tests";
++import { prisma } from "@/lib/prisma";
++
++export const runtime = "nodejs";
++
++export async function GET(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const [config, active, checkedIn] = await Promise.all([
++    getTestConfig(ctx.event.id),
++    prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true } }),
++    prisma.registration.count({ where: { eventId: ctx.event.id, checkedInAt: { not: null } } }),
++  ]);
++  return NextResponse.json({ config, activeQuestions: active, checkedIn, slug: ctx.event.slug });
++}
++
++export async function PUT(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const b = await request.json().catch(() => ({}));
++  const patch: Partial<TestConfig> = {};
++  if (typeof b.open === "boolean") {
++    if (b.open) {
++      const [cfg, active] = await Promise.all([getTestConfig(ctx.event.id), prisma.testQuestion.count({ where: { eventId: ctx.event.id, active: true } })]);
++      const need = typeof b.count === "number" ? b.count : cfg.count;
++      if (active < need) return NextResponse.json({ error: `Add at least ${need} active questions before opening the test (there are ${active}).` }, { status: 400 });
++    }
++    patch.open = b.open;
++  }
++  if (b.count !== undefined) {
++    const n = Math.round(Number(b.count));
++    if (!Number.isFinite(n) || n < 1 || n > 200) return NextResponse.json({ error: "Questions per test must be between 1 and 200." }, { status: 400 });
++    patch.count = n;
++  }
++  if (b.minutes !== undefined) {
++    const n = Math.round(Number(b.minutes));
++    if (!Number.isFinite(n) || n < 1 || n > 600) return NextResponse.json({ error: "Time must be between 1 and 600 minutes." }, { status: 400 });
++    patch.minutes = n;
++  }
++  if (typeof b.showAnswers === "boolean") patch.showAnswers = b.showAnswers;
++  if (typeof b.intro === "string") patch.intro = b.intro.trim().slice(0, 600);
++  if (Array.isArray(b.bands)) patch.bands = cleanBands(b.bands);
++  await saveTestConfig(ctx.event.id, patch);
++  await logAdminAction(ctx.session, { action: "test.settings", entityType: "test", details: patch as never }, request);
++  return NextResponse.json({ ok: true });
++}
+diff --git a/src/app/api/public/test/route.ts b/src/app/api/public/test/route.ts
+new file mode 100644
+index 0000000..e0e28b8
+--- /dev/null
++++ b/src/app/api/public/test/route.ts
+@@ -0,0 +1,131 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { buildPaper, finishAttempt, getTestConfig, normaliseCode, rewardFor, type PaperQuestion } from "@/lib/tests";
++import { termsOf } from "@/lib/eventTheme";
++
++export const runtime = "nodejs";
++export const dynamic = "force-dynamic";
++
++/**
++ * The guest's test portal. One endpoint, one "action" in the body:
++ *   status  looks at the ticket code and says what the guest may do
++ *   start   draws this guest's own paper (once) and returns it
++ *   answer  saves one answer
++ *   submit  finishes and grades
++ * The ticket code is the only credential, and every call checks it again together with the check-in.
++ * The correct answers are only ever sent after the test is finished (and only if the event allows it).
++ */
++const err = (error: string, status = 400, extra: Record<string, unknown> = {}) => NextResponse.json({ error, ...extra }, { status });
++
++async function load(slug: string, codeRaw: unknown) {
++  const event = await prisma.event.findUnique({
++    where: { slug: String(slug || "").toLowerCase() },
++    select: { id: true, name: true, status: true, modules: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true },
++  });
++  if (!event || event.status === "DRAFT" || !event.modules.includes("tests")) return { fail: err("This test is not available.", 404) };
++  const code = normaliseCode(codeRaw);
++  const brand = { name: event.brandName || event.name, color: event.color, logoUrl: event.logoUrl, logoDarkUrl: event.logoDarkUrl };
++  if (!code) return { fail: err("Enter your ticket code.", 400, { brand }) };
++  const reg = await prisma.registration.findFirst({
++    where: { eventId: event.id, ticketCode: code },
++    select: { id: true, fullName: true, checkedInAt: true, ticketCode: true },
++  });
++  if (!reg) return { fail: err("We could not find that ticket code. Check it and try again.", 404, { code: "NOT_FOUND" }) };
++  return { event, reg, brand, config: await getTestConfig(event.id) };
++}
++
++function firstName(n: string) {
++  return n.trim().split(/\s+/)[0] || n;
++}
++
++/** The paper as the guest sees it: no correct answers. */
++function publicPaper(paper: PaperQuestion[]) {
++  return paper.map((q) => ({ qid: q.qid, text: q.text, options: q.options }));
++}
++
++function resultView(a: NonNullable<Awaited<ReturnType<typeof finishAttempt>>>, config: Awaited<ReturnType<typeof getTestConfig>>) {
++  const paper = a.paper as unknown as PaperQuestion[];
++  const answers = (a.answers ?? {}) as Record<string, number>;
++  return {
++    score: a.score ?? 0,
++    total: a.total || paper.length,
++    reward: rewardFor(a.score ?? 0, a.total || paper.length, config.bands),
++    review: config.showAnswers ? paper.map((q) => ({ text: q.text, options: q.options, correct: q.correct, chosen: Number.isInteger(answers[q.qid]) ? answers[q.qid] : null })) : null,
++  };
++}
++
++export async function POST(request: NextRequest) {
++  let body: { action?: string; slug?: string; code?: string; qid?: string; choice?: number };
++  try {
++    body = await request.json();
++  } catch {
++    return err("Bad request.");
++  }
++  const ctx = await load(body.slug || "", body.code);
++  if ("fail" in ctx && ctx.fail) return ctx.fail;
++  const { event, reg, brand, config } = ctx as Exclude<typeof ctx, { fail: NextResponse }>;
++  const head = { brand, terms: termsOf(event.terms), eventName: event.name, name: firstName(reg.fullName) };
++
++  let attempt = await prisma.testAttempt.findUnique({ where: { registrationId: reg.id } });
++  // A test that ran out of time is marked at the next call.
++  if (attempt && !attempt.submittedAt && attempt.deadline.getTime() <= Date.now()) attempt = await finishAttempt(attempt.id);
++
++  if (attempt?.submittedAt) {
++    return NextResponse.json({ ...head, state: "done", result: resultView(attempt, config) });
++  }
++
++  // Not finished: everything below needs the guest to be present.
++  if (!reg.checkedInAt) {
++    return NextResponse.json({ ...head, state: "not_checked_in" });
++  }
++
++  const action = body.action || "status";
++
++  if (attempt) {
++    const paper = attempt.paper as unknown as PaperQuestion[];
++    if (action === "answer") {
++      const q = paper.find((p) => p.qid === body.qid);
++      const choice = Number(body.choice);
++      if (!q || !Number.isInteger(choice) || choice < 0 || choice >= q.options.length) return err("That answer is not valid.");
++      const answers = { ...((attempt.answers ?? {}) as Record<string, number>), [q.qid]: choice };
++      await prisma.testAttempt.update({ where: { id: attempt.id }, data: { answers } });
++      return NextResponse.json({ ok: true });
++    }
++    if (action === "submit") {
++      const done = await finishAttempt(attempt.id);
++      return NextResponse.json({ ...head, state: "done", result: resultView(done!, config) });
++    }
++    return NextResponse.json({
++      ...head,
++      state: "running",
++      deadline: attempt.deadline.toISOString(),
++      serverNow: new Date().toISOString(),
++      paper: publicPaper(paper),
++      answers: attempt.answers ?? {},
++    });
++  }
++
++  // No attempt yet.
++  if (!config.open) return NextResponse.json({ ...head, state: "closed" });
++  if (action !== "start") return NextResponse.json({ ...head, state: "ready", minutes: config.minutes, count: config.count, intro: config.intro });
++
++  const questions = await prisma.testQuestion.findMany({ where: { eventId: event.id, active: true } });
++  if (questions.length < config.count) return err("The test is not ready yet. Please tell the team.", 409, { code: "NOT_READY" });
++  const paper = buildPaper(questions, config.count);
++  const deadline = new Date(Date.now() + config.minutes * 60_000);
++  try {
++    await prisma.testAttempt.create({ data: { eventId: event.id, registrationId: reg.id, deadline, paper: paper as unknown as object, total: paper.length } });
++  } catch {
++    // Two taps at once: the other one won. Show that paper.
++  }
++  const made = await prisma.testAttempt.findUnique({ where: { registrationId: reg.id } });
++  if (!made) return err("Could not start the test. Please try again.", 500);
++  return NextResponse.json({
++    ...head,
++    state: "running",
++    deadline: made.deadline.toISOString(),
++    serverNow: new Date().toISOString(),
++    paper: publicPaper(made.paper as unknown as PaperQuestion[]),
++    answers: {},
++  });
++}
+diff --git a/src/components/AdminShell.tsx b/src/components/AdminShell.tsx
+index 1ae3ea1..15f98be 100644
+--- a/src/components/AdminShell.tsx
++++ b/src/components/AdminShell.tsx
+@@ -15,7 +15,7 @@ interface AdminSession {
+   role: Role;
+ }
+ 
+-type IconName = "overview" | "people" | "ticket" | "chat" | "mail" | "settings" | "log" | "team";
++type IconName = "overview" | "people" | "ticket" | "chat" | "mail" | "settings" | "log" | "team" | "test";
+ 
+ interface NavItem {
+   /** Path after the event address ("" is the Overview). */
+@@ -31,6 +31,7 @@ const EVENT_NAV: NavItem[] = [
+   { path: "", label: "Overview", icon: "overview" },
+   { path: "/contacts", label: "Contacts", icon: "people" },
+   { path: "/attendance", label: "Attendance", icon: "ticket", module: "attendance" },
++  { path: "/tests", label: "Tests", icon: "test", module: "tests" },
+   { path: "/campaigns", label: "Campaigns", icon: "mail", module: "campaigns" },
+   { path: "/whatsapp", label: "WhatsApp", icon: "chat", module: "whatsapp" },
+   { path: "/settings", label: "Settings", icon: "settings" },
+@@ -101,6 +102,14 @@ function Icon({ name }: { name: IconName }) {
+           <path d="M14 3v5h5M9 13h6M9 17h6" />
+         </svg>
+       );
++    case "test":
++      return (
++        <svg {...common}>
++          <path d="M9 11l2 2 4-4" />
++          <rect x="4" y="3" width="16" height="18" rx="2" />
++          <path d="M8 17h8" />
++        </svg>
++      );
+     case "team":
+       return (
+         <svg {...common}>
+diff --git a/src/lib/audit.ts b/src/lib/audit.ts
+index cca35c1..67eed73 100644
+--- a/src/lib/audit.ts
++++ b/src/lib/audit.ts
+@@ -60,6 +60,9 @@ export type AuditAction =
+   | "prospect.source_delete"
+   | "whatsapp.send"
+   | "whatsapp.broadcast"
++  | "test.question"
++  | "test.settings"
++  | "test.reset"
+   | "data.clear";
+ 
+ export interface AuditEntry {
+@@ -79,6 +82,7 @@ export interface AuditEntry {
+     | "whatsapp_broadcast"
+     | "event"
+     | "sender"
++    | "test"
+     | "data";
+   /** The event this belongs to. Left out, it is taken from the request's event (x-event header); team-wide actions have none. */
+   eventId?: string | null;
+diff --git a/src/lib/eventModules.ts b/src/lib/eventModules.ts
+index b58a4c9..f1994c4 100644
+--- a/src/lib/eventModules.ts
++++ b/src/lib/eventModules.ts
+@@ -3,6 +3,7 @@ export const EVENT_MODULES = [
+   { key: "invitations", label: "Invitations, seat reservation and tickets", hint: "Unique reserve link per guest, seat limit and emailed ticket." },
+   { key: "attendance", label: "Attendance and check-in", hint: "Check-in screen and QR ticket scanning for the day." },
+   { key: "campaigns", label: "Campaign emails", hint: "Bulk email to the event's contacts." },
++  { key: "tests", label: "Tests", hint: "Online test for checked-in guests, with a question bank, random papers and score-based rewards." },
+   { key: "whatsapp", label: "WhatsApp messages", hint: "Broadcast and one-to-one messages, with the replies in one inbox." },
+ ] as const;
+ export type ModuleKey = (typeof EVENT_MODULES)[number]["key"];
+diff --git a/src/lib/testQuestions.ts b/src/lib/testQuestions.ts
+new file mode 100644
+index 0000000..b8022e0
+--- /dev/null
++++ b/src/lib/testQuestions.ts
+@@ -0,0 +1,30 @@
++export function cleanQuestion(raw: { text?: unknown; options?: unknown; correctIndex?: unknown; active?: unknown }): { error: string } | { text: string; options: string[]; correctIndex: number; active: boolean } {
++  const text = String(raw.text ?? "").trim();
++  const options = Array.isArray(raw.options) ? raw.options.map((o) => String(o ?? "").trim()) : [];
++  const correctIndex = Number(raw.correctIndex);
++  if (!text) return { error: "Write the question." };
++  if (options.length < 2 || options.length > 6 || options.some((o) => !o)) return { error: "Give 2 to 6 options and fill each one in." };
++  if (new Set(options.map((o) => o.toLowerCase())).size !== options.length) return { error: "Two options are the same." };
++  if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) return { error: "Mark the correct option." };
++  return { text: text.slice(0, 1000), options: options.map((o) => o.slice(0, 400)), correctIndex, active: raw.active !== false };
++}
++
++/** Pasted text: blocks separated by a blank line. First line is the question, then one option per line, the correct one starts with *. */
++export function parseBulk(text: string): { questions: { text: string; options: string[]; correctIndex: number }[]; errors: string[] } {
++  const questions: { text: string; options: string[]; correctIndex: number }[] = [];
++  const errors: string[] = [];
++  const blocks = text.replace(/\r/g, "").split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
++  blocks.forEach((block, i) => {
++    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
++    const q = lines[0].replace(/^\d+[.)]\s*/, "");
++    const rest = lines.slice(1);
++    const stars = rest.filter((l) => l.startsWith("*")).length;
++    const options = rest.map((l) => l.replace(/^\*\s*/, "").replace(/^[A-Fa-f][.)]\s+/, ""));
++    const correctIndex = rest.findIndex((l) => l.startsWith("*"));
++    const c = cleanQuestion({ text: q, options, correctIndex });
++    if ("error" in c || stars !== 1) errors.push(`Question ${i + 1}: ${"error" in c ? c.error : "mark exactly one correct option with *"}`);
++    else questions.push({ text: c.text, options: c.options, correctIndex: c.correctIndex });
++  });
++  return { questions, errors };
++}
++
+diff --git a/src/lib/tests.ts b/src/lib/tests.ts
+new file mode 100644
+index 0000000..851af3c
+--- /dev/null
++++ b/src/lib/tests.ts
+@@ -0,0 +1,114 @@
++import { randomInt } from "crypto";
++import { prisma } from "@/lib/prisma";
++import { getSettingsMap, saveSetting } from "@/lib/settings";
++
++/** Settings of one event's test, kept in the Setting table (keys start with "test_"). */
++export interface TestConfig {
++  open: boolean;
++  count: number;
++  minutes: number;
++  showAnswers: boolean;
++  intro: string;
++  bands: { min: number; label: string }[]; // min = percentage; highest match wins
++}
++
++export const TEST_DEFAULTS: TestConfig = { open: false, count: 20, minutes: 20, showAnswers: true, intro: "", bands: [] };
++
++export async function getTestConfig(eventId: string): Promise<TestConfig> {
++  const m = await getSettingsMap(eventId);
++  let bands: TestConfig["bands"] = [];
++  try {
++    const parsed = JSON.parse(m.test_bands || "[]");
++    if (Array.isArray(parsed)) bands = cleanBands(parsed);
++  } catch {
++    bands = [];
++  }
++  const num = (v: string | undefined, d: number, lo: number, hi: number) => {
++    const n = Number(v);
++    return Number.isFinite(n) && v !== undefined && v !== "" ? Math.min(hi, Math.max(lo, Math.round(n))) : d;
++  };
++  return {
++    open: m.test_open === "1",
++    count: num(m.test_count, TEST_DEFAULTS.count, 1, 200),
++    minutes: num(m.test_minutes, TEST_DEFAULTS.minutes, 1, 600),
++    showAnswers: m.test_show_answers !== "0",
++    intro: m.test_intro || "",
++    bands,
++  };
++}
++
++export function cleanBands(input: unknown[]): TestConfig["bands"] {
++  return input
++    .map((b) => b as { min?: unknown; label?: unknown })
++    .map((b) => ({ min: Math.min(100, Math.max(0, Math.round(Number(b.min)))), label: String(b.label ?? "").trim().slice(0, 120) }))
++    .filter((b) => Number.isFinite(b.min) && b.label)
++    .sort((a, b) => b.min - a.min)
++    .slice(0, 12);
++}
++
++export async function saveTestConfig(eventId: string, c: Partial<TestConfig>): Promise<void> {
++  const jobs: Promise<void>[] = [];
++  if (c.open !== undefined) jobs.push(saveSetting(eventId, "test_open", c.open ? "1" : "0"));
++  if (c.count !== undefined) jobs.push(saveSetting(eventId, "test_count", String(c.count)));
++  if (c.minutes !== undefined) jobs.push(saveSetting(eventId, "test_minutes", String(c.minutes)));
++  if (c.showAnswers !== undefined) jobs.push(saveSetting(eventId, "test_show_answers", c.showAnswers ? "1" : "0"));
++  if (c.intro !== undefined) jobs.push(saveSetting(eventId, "test_intro", c.intro));
++  if (c.bands !== undefined) jobs.push(saveSetting(eventId, "test_bands", JSON.stringify(c.bands)));
++  await Promise.all(jobs);
++}
++
++/** Fisher-Yates with a cryptographic random source. Returns a new array. */
++export function shuffle<T>(items: readonly T[]): T[] {
++  const a = [...items];
++  for (let i = a.length - 1; i > 0; i--) {
++    const j = randomInt(i + 1);
++    [a[i], a[j]] = [a[j], a[i]];
++  }
++  return a;
++}
++
++export interface PaperQuestion {
++  qid: string;
++  text: string;
++  options: string[];
++  correct: number;
++}
++
++/** Draws `count` of the active questions at random, shuffles their order, and shuffles each question's options. */
++export function buildPaper(questions: { id: string; text: string; options: unknown; correctIndex: number }[], count: number): PaperQuestion[] {
++  return shuffle(questions)
++    .slice(0, count)
++    .map((q) => {
++      const opts = (q.options as string[]).map((text, i) => ({ text, right: i === q.correctIndex }));
++      const mixed = shuffle(opts);
++      return { qid: q.id, text: q.text, options: mixed.map((o) => o.text), correct: mixed.findIndex((o) => o.right) };
++    });
++}
++
++export function gradeAttempt(paper: PaperQuestion[], answers: Record<string, number>): number {
++  return paper.reduce((n, q) => n + (answers[q.qid] === q.correct ? 1 : 0), 0);
++}
++
++export function rewardFor(score: number, total: number, bands: TestConfig["bands"]): string | null {
++  if (!total) return null;
++  const pct = (score / total) * 100;
++  return bands.find((b) => pct >= b.min)?.label ?? null;
++}
++
++/** Marks an attempt as finished (once). Safe to call again: a submitted attempt is left as it is. */
++export async function finishAttempt(attemptId: string, answers?: Record<string, number>) {
++  const a = await prisma.testAttempt.findUnique({ where: { id: attemptId } });
++  if (!a || a.submittedAt) return a;
++  const paper = a.paper as unknown as PaperQuestion[];
++  const final = answers ?? (a.answers as Record<string, number>);
++  const score = gradeAttempt(paper, final);
++  const now = new Date();
++  const res = await prisma.testAttempt.updateMany({
++    where: { id: attemptId, submittedAt: null },
++    data: { submittedAt: now < a.deadline ? now : a.deadline, answers: final, score, total: paper.length },
++  });
++  void res;
++  return prisma.testAttempt.findUnique({ where: { id: attemptId } });
++}
++
++export const normaliseCode = (v: unknown) => String(v ?? "").trim().toUpperCase().replace(/\s+/g, "");
+diff --git a/src/middleware.ts b/src/middleware.ts
+index b4f7929..c339c3f 100644
+--- a/src/middleware.ts
++++ b/src/middleware.ts
+@@ -8,12 +8,13 @@ import { DISABLED_API_PREFIXES, startsWithAny } from "@/lib/modules";
+  *
+  *   /login                       open
+  *   /<event>/reserve             open (the guest's own link)
++ *   /<event>/test                open (the test portal, guests sign in with their ticket code)
+  *   /api/public/*                open (each route checks its own signed token)
+  *   everything else              needs the admin session cookie
+  *
+  * Whether the admin may open a particular event is checked in the API routes (requireEvent) and the event pages.
+  */
+-const PUBLIC_PAGE = /^\/login\/?$|^\/[^/]+\/reserve\/?$/;
++const PUBLIC_PAGE = /^\/login\/?$|^\/[^/]+\/(reserve|test)\/?$/;
+ const PUBLIC_API = new Set(["/api/admin/login"]);
+ 
+ function getSecretKey() {

@@ -115,6 +115,8 @@ model Event {
   templates     EmailTemplate[]
   admins        EventAdmin[]
   auditLogs     AuditLog[]
+  testQuestions TestQuestion[]
+  testAttempts  TestAttempt[]
 }
 
 // A logo file uploaded for an event (kept in the database so no file storage has to be set up). id is "<eventId>:<variant>".
@@ -182,6 +184,7 @@ model Registration {
   followUpNotes FollowUpNote[]
   emailEvents   EmailEvent[]
   seat          Seat?
+  testAttempt   TestAttempt?
   paymentProofs PaymentProof[]
   prospect      Prospect? // set when this registration was converted from a prospect
   paymentRecords PaymentRecord[]
@@ -599,4 +602,38 @@ model QueuedEmail {
 
   @@index([status, createdAt])
   @@index([campaignId])
+}
+
+// ---- Tests (the "tests" module): a question bank per event and one attempt per ticket ----
+model TestQuestion {
+  id           String   @id @default(cuid())
+  eventId      String
+  event        Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  text         String   @db.Text
+  options      Json // string[] (2 to 6 options)
+  correctIndex Int // index into options
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([eventId])
+}
+
+// One paper per participant. "paper" is a snapshot of the questions drawn for this person, already shuffled:
+// [{ qid, text, options: string[], correct: number }]. Correct answers never leave the server while the test is open.
+model TestAttempt {
+  id             String       @id @default(cuid())
+  eventId        String
+  event          Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  registrationId String       @unique
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  startedAt      DateTime     @default(now())
+  deadline       DateTime
+  submittedAt    DateTime?
+  paper          Json
+  answers        Json         @default("{}") // { [qid]: chosen index }
+  score          Int?
+  total          Int          @default(0)
+
+  @@index([eventId])
 }
