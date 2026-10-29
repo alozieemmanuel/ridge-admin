@@ -73,7 +73,7 @@ function invalidateLists() {
 export default function GuestPage({ params }: { params: Promise<{ id: string }> }) {
   const ep = useEventPath();
   const { person, lpeople } = useTerms();
-  const { has } = useEvent();
+  const { has, event } = useEvent();
   const seats = has("invitations") || has("attendance");
   const { id } = use(params);
   const router = useRouter();
@@ -144,7 +144,12 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
       await load(); // a failed send is written to the activity, so show it
       return;
     }
-    const ticketNote = action === "reserve" && json.ticketSent === false ? ` The ticket email failed (${json.ticketError}); use Send ticket to retry.` : "";
+    const ticketNote =
+      action === "reserve" && json.ticketSkipped === true
+        ? " They have no email address, so no ticket was emailed."
+        : action === "reserve" && json.ticketSent === false
+          ? ` The ticket email failed (${json.ticketError}); use Send ticket to retry.`
+          : "";
     await changed(success + ticketNote, ticketNote === "");
   }
 
@@ -251,9 +256,13 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                   <dl>
                     <Row label="Name">{p.fullName}</Row>
                     <Row label="Email">
-                      <a href={`mailto:${p.email}`} className="text-goldlight underline">
-                        {p.email}
-                      </a>
+                      {p.email ? (
+                        <a href={`mailto:${p.email}`} className="text-goldlight underline">
+                          {p.email}
+                        </a>
+                      ) : (
+                        <span className="text-muted italic">No email</span>
+                      )}
                     </Row>
                     <Row label="Phone">
                       {p.phone ? (
@@ -268,7 +277,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                     {(
                       [
                         ["fullName", "Full name"],
-                        ["email", "Email address"],
+                        ["email", event?.emailOptional ? "Email address (optional)" : "Email address"],
                         ["phone", "Phone number"],
                       ] as const
                     ).map(([key, label]) => (
@@ -404,7 +413,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                 </dl>
                 <div className="flex flex-wrap gap-2">
                   {!reserved && (
-                    <button className={primaryButton} disabled={busy !== null} onClick={() => act(p.inviteSentAt ? "send_reminder" : "send_invitation", p.inviteSentAt ? "Reminder sent." : "Invitation sent.")}>
+                    <button className={primaryButton} disabled={busy !== null || !p.email} title={p.email ? undefined : "No email address on file"} onClick={() => act(p.inviteSentAt ? "send_reminder" : "send_invitation", p.inviteSentAt ? "Reminder sent." : "Invitation sent.")}>
                       {busy === "send_invitation" || busy === "send_reminder" ? "Sending…" : p.inviteSentAt ? "Send reminder" : "Send invitation"}
                     </button>
                   )}
@@ -414,12 +423,12 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }> 
                     </button>
                   )}
                   {!reserved && (
-                    <button className={ghostButton} disabled={busy !== null} onClick={() => act("reserve", "Seat reserved and ticket emailed.", `Reserve a seat for ${p.fullName} and email them their ticket?`)}>
+                    <button className={ghostButton} disabled={busy !== null} onClick={() => act("reserve", p.email ? "Seat reserved and ticket emailed." : "Seat reserved.", p.email ? `Reserve a seat for ${p.fullName} and email them their ticket?` : `Reserve a seat for ${p.fullName}? They have no email address, so no ticket will be emailed.`)}>
                       {busy === "reserve" ? "Reserving…" : "Reserve for them"}
                     </button>
                   )}
                   {reserved && (
-                    <button className={primaryButton} disabled={busy !== null} onClick={() => act("send_ticket", "Ticket sent.")}>
+                    <button className={primaryButton} disabled={busy !== null || !p.email} title={p.email ? undefined : "No email address on file"} onClick={() => act("send_ticket", "Ticket sent.")}>
                       {busy === "send_ticket" ? "Sending…" : p.ticketSentAt ? "Resend ticket" : "Send ticket"}
                     </button>
                   )}

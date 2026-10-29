@@ -7,7 +7,7 @@ import type { EventInfo } from "@/lib/useEvent";
 const load = cache(async (slug: string): Promise<EventInfo | null> => {
   const e = await prisma.event.findUnique({
     where: { slug: slug.toLowerCase() },
-    select: { id: true, slug: true, name: true, status: true, modules: true, type: true, dataSource: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true, timezone: true },
+    select: { id: true, slug: true, name: true, status: true, modules: true, type: true, dataSource: true, emailOptional: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true, timezone: true },
   });
   if (!e) return null;
   return { ...e, terms: termsOf(e.terms) } as EventInfo;

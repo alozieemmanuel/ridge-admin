@@ -1,0 +1,381 @@
+diff --git a/prisma/migrations/20261029090000_optional_contact_email/migration.sql b/prisma/migrations/20261029090000_optional_contact_email/migration.sql
+new file mode 100644
+index 0000000..5e9fb06
+--- /dev/null
++++ b/prisma/migrations/20261029090000_optional_contact_email/migration.sql
+@@ -0,0 +1,10 @@
++-- Investor Hangout: a contact can be added by hand without an email address. Written to be safe to run twice.
++
++-- AlterTable: which events allow it
++ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "emailOptional" BOOLEAN NOT NULL DEFAULT false;
++UPDATE "Event" SET "emailOptional" = true WHERE "slug" = 'investor-hangout';
++
++-- A contact without an email is stored with email = '', so the unique index must only cover real addresses.
++-- The index keeps its name, so Prisma's eventId_email lookups keep working for contacts that have an email.
++DROP INDEX IF EXISTS "Registration_eventId_email_key";
++CREATE UNIQUE INDEX IF NOT EXISTS "Registration_eventId_email_key" ON "Registration"("eventId", "email") WHERE "email" <> '';
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index bc0cc34..b57519d 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -103,6 +103,8 @@ model Event {
+   timezone  String      @default("Africa/Lagos")
+   // Where this event's contacts come from: "sheet" | "supabase" | "form" | "manual".
+   dataSource  String    @default("sheet")
++  // True when a contact may be added by hand without an email address (Investor Hangout). Such contacts keep email = "".
++  emailOptional Boolean   @default(false)
+   // Secret in the address the event's website form posts to. Changing it switches the old form address off.
+   intakeToken String?   @unique
+   createdAt DateTime    @default(now())
+@@ -196,6 +198,7 @@ model Registration {
+   paymentRecords PaymentRecord[]
+   queuedEmails   QueuedEmail[]
+ 
++  // In the database this index only covers rows that have an email (see migration 20261029090000), so many contacts may have email = "".
+   @@unique([eventId, email])
+   @@index([eventId])
+   @@index([createdAt])
+diff --git a/src/app/[slug]/(admin)/contacts/[id]/page.tsx b/src/app/[slug]/(admin)/contacts/[id]/page.tsx
+index 4220833..37693d3 100644
+--- a/src/app/[slug]/(admin)/contacts/[id]/page.tsx
++++ b/src/app/[slug]/(admin)/contacts/[id]/page.tsx
+@@ -73,7 +73,7 @@ function invalidateLists() {
+ export default function GuestPage({ params }: { params: Promise<{ id: string }> }) {
+   const ep = useEventPath();
+   const { person, lpeople } = useTerms();
+-  const { has } = useEvent();
++  const { has, event } = useEvent();
+   const seats = has("invitations") || has("attendance");
+   const { id } = use(params);
+   const router = useRouter();
+@@ -144,7 +144,12 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }>
+       await load(); // a failed send is written to the activity, so show it
+       return;
+     }
+-    const ticketNote = action === "reserve" && json.ticketSent === false ? ` The ticket email failed (${json.ticketError}); use Send ticket to retry.` : "";
++    const ticketNote =
++      action === "reserve" && json.ticketSkipped === true
++        ? " They have no email address, so no ticket was emailed."
++        : action === "reserve" && json.ticketSent === false
++          ? ` The ticket email failed (${json.ticketError}); use Send ticket to retry.`
++          : "";
+     await changed(success + ticketNote, ticketNote === "");
+   }
+ 
+@@ -251,9 +256,13 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }>
+                   <dl>
+                     <Row label="Name">{p.fullName}</Row>
+                     <Row label="Email">
+-                      <a href={`mailto:${p.email}`} className="text-goldlight underline">
+-                        {p.email}
+-                      </a>
++                      {p.email ? (
++                        <a href={`mailto:${p.email}`} className="text-goldlight underline">
++                          {p.email}
++                        </a>
++                      ) : (
++                        <span className="text-muted italic">No email</span>
++                      )}
+                     </Row>
+                     <Row label="Phone">
+                       {p.phone ? (
+@@ -268,7 +277,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }>
+                     {(
+                       [
+                         ["fullName", "Full name"],
+-                        ["email", "Email address"],
++                        ["email", event?.emailOptional ? "Email address (optional)" : "Email address"],
+                         ["phone", "Phone number"],
+                       ] as const
+                     ).map(([key, label]) => (
+@@ -404,7 +413,7 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }>
+                 </dl>
+                 <div className="flex flex-wrap gap-2">
+                   {!reserved && (
+-                    <button className={primaryButton} disabled={busy !== null} onClick={() => act(p.inviteSentAt ? "send_reminder" : "send_invitation", p.inviteSentAt ? "Reminder sent." : "Invitation sent.")}>
++                    <button className={primaryButton} disabled={busy !== null || !p.email} title={p.email ? undefined : "No email address on file"} onClick={() => act(p.inviteSentAt ? "send_reminder" : "send_invitation", p.inviteSentAt ? "Reminder sent." : "Invitation sent.")}>
+                       {busy === "send_invitation" || busy === "send_reminder" ? "Sending…" : p.inviteSentAt ? "Send reminder" : "Send invitation"}
+                     </button>
+                   )}
+@@ -414,12 +423,12 @@ export default function GuestPage({ params }: { params: Promise<{ id: string }>
+                     </button>
+                   )}
+                   {!reserved && (
+-                    <button className={ghostButton} disabled={busy !== null} onClick={() => act("reserve", "Seat reserved and ticket emailed.", `Reserve a seat for ${p.fullName} and email them their ticket?`)}>
++                    <button className={ghostButton} disabled={busy !== null} onClick={() => act("reserve", p.email ? "Seat reserved and ticket emailed." : "Seat reserved.", p.email ? `Reserve a seat for ${p.fullName} and email them their ticket?` : `Reserve a seat for ${p.fullName}? They have no email address, so no ticket will be emailed.`)}>
+                       {busy === "reserve" ? "Reserving…" : "Reserve for them"}
+                     </button>
+                   )}
+                   {reserved && (
+-                    <button className={primaryButton} disabled={busy !== null} onClick={() => act("send_ticket", "Ticket sent.")}>
++                    <button className={primaryButton} disabled={busy !== null || !p.email} title={p.email ? undefined : "No email address on file"} onClick={() => act("send_ticket", "Ticket sent.")}>
+                       {busy === "send_ticket" ? "Sending…" : p.ticketSentAt ? "Resend ticket" : "Send ticket"}
+                     </button>
+                   )}
+diff --git a/src/app/[slug]/(admin)/contacts/page.tsx b/src/app/[slug]/(admin)/contacts/page.tsx
+index 175c5f4..90c2d15 100644
+--- a/src/app/[slug]/(admin)/contacts/page.tsx
++++ b/src/app/[slug]/(admin)/contacts/page.tsx
+@@ -256,7 +256,7 @@ function RegistrationsInner() {
+                     <td className="sticky left-0 z-10 bg-cardbg group-hover:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] group-focus:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)] px-5 py-3.5 whitespace-nowrap font-medium">
+                       {r.fullName}
+                     </td>
+-                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email}</td>
++                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email || <span className="italic opacity-60">No email</span>}</td>
+                     <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.phone || "-"}</td>
+                     <td className="px-5 py-3.5 whitespace-nowrap">
+                       <Pill tone={followUpTone(r.followUpStatus)}>{followUpLabel(r.followUpStatus)}</Pill>
+@@ -296,7 +296,7 @@ function RegistrationsInner() {
+         />
+       </div>
+ 
+-      {adding && <AddContactDialog person={person} onClose={() => setAdding(false)} onAdded={() => load(true)} />}
++      {adding && <AddContactDialog person={person} emailOptional={Boolean(event?.emailOptional)} onClose={() => setAdding(false)} onAdded={() => load(true)} />}
+       {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
+       {sheetOpen && (
+         <SheetSyncDialog
+diff --git a/src/app/[slug]/layout.tsx b/src/app/[slug]/layout.tsx
+index 37e31fe..30c36db 100644
+--- a/src/app/[slug]/layout.tsx
++++ b/src/app/[slug]/layout.tsx
+@@ -7,7 +7,7 @@ import type { EventInfo } from "@/lib/useEvent";
+ const load = cache(async (slug: string): Promise<EventInfo | null> => {
+   const e = await prisma.event.findUnique({
+     where: { slug: slug.toLowerCase() },
+-    select: { id: true, slug: true, name: true, status: true, modules: true, type: true, dataSource: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true, timezone: true },
++    select: { id: true, slug: true, name: true, status: true, modules: true, type: true, dataSource: true, emailOptional: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true, timezone: true },
+   });
+   if (!e) return null;
+   return { ...e, terms: termsOf(e.terms) } as EventInfo;
+diff --git a/src/app/api/admin/attendance/invite/route.ts b/src/app/api/admin/attendance/invite/route.ts
+index cf46b53..f89c3a6 100644
+--- a/src/app/api/admin/attendance/invite/route.ts
++++ b/src/app/api/admin/attendance/invite/route.ts
+@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
+     return NextResponse.json({ error: "Choose who to send to." }, { status: 400 });
+   }
+ 
+-  const where = audience === "NOT_INVITED" ? { eventId: event.id, inviteSentAt: null, reservedAt: null } : { eventId: event.id, inviteSentAt: { not: null }, reservedAt: null };
++  const where =
++    audience === "NOT_INVITED"
++      ? { eventId: event.id, email: { not: "" }, inviteSentAt: null, reservedAt: null }
++      : { eventId: event.id, email: { not: "" }, inviteSentAt: { not: null }, reservedAt: null };
+   const people = await prisma.registration.findMany({ where, orderBy: { createdAt: "asc" } });
+ 
+   if (raw.dryRun === true) return NextResponse.json({ count: people.length });
+diff --git a/src/app/api/admin/campaigns/audience-counts/route.ts b/src/app/api/admin/campaigns/audience-counts/route.ts
+index 2cdc7cf..97c612e 100644
+--- a/src/app/api/admin/campaigns/audience-counts/route.ts
++++ b/src/app/api/admin/campaigns/audience-counts/route.ts
+@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
+   const audience: CampaignAudience = audienceParam && AUDIENCES.includes(audienceParam) ? audienceParam : "ALL";
+ 
+   const rows = await prisma.registration.findMany({
+-    where: { eventId: event.id },
++    where: { eventId: event.id, email: { not: "" } },
+     select: { inviteSentAt: true, reservedAt: true, checkedInAt: true, categories: true },
+   });
+   const people: Person[] = rows.map((r) => ({
+diff --git a/src/app/api/admin/campaigns/route.ts b/src/app/api/admin/campaigns/route.ts
+index bc75e4e..e90f65a 100644
+--- a/src/app/api/admin/campaigns/route.ts
++++ b/src/app/api/admin/campaigns/route.ts
+@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
+   const { audience, subject, body, ctaLabel } = parsed.data;
+   const category = parsed.data.category || null;
+ 
+-  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, audienceWhere(audience, category)] } });
++  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, { email: { not: "" } }, audienceWhere(audience, category)] } });
+   if (recipients.length === 0) {
+     return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
+   }
+diff --git a/src/app/api/admin/event/route.ts b/src/app/api/admin/event/route.ts
+index bb97797..1b2f12a 100644
+--- a/src/app/api/admin/event/route.ts
++++ b/src/app/api/admin/event/route.ts
+@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
+       modules: event.modules,
+       type: event.type,
+       dataSource: event.dataSource,
++      emailOptional: event.emailOptional,
+       brandName: event.brandName,
+       color: event.color,
+       logoUrl: event.logoUrl,
+diff --git a/src/app/api/admin/registrations/[id]/actions/route.ts b/src/app/api/admin/registrations/[id]/actions/route.ts
+index 2f32e1f..f3399bd 100644
+--- a/src/app/api/admin/registrations/[id]/actions/route.ts
++++ b/src/app/api/admin/registrations/[id]/actions/route.ts
+@@ -65,6 +65,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+       case "send_invitation":
+       case "send_reminder": {
+         const kind = action === "send_reminder" ? "reminder" : "invitation";
++        if (!registration.email) return NextResponse.json({ error: `${registration.fullName} has no email address. Add one first, or share their reserve link yourself.` }, { status: 409 });
+         const missing = missingEventDetails(settings ?? (await getSettingsMap(event.id)));
+         if (missing.length) {
+           return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
+@@ -93,6 +94,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+         }
+         if (result.alreadyReserved) return NextResponse.json({ result: "success", unchanged: true });
+         await log("participant.reserve", { by: "admin" });
++        // Without an email there is nowhere to send the ticket. The seat is still reserved and the ticket can be downloaded from their page.
++        if (!registration.email) return NextResponse.json({ result: "success", ticketSent: false, ticketSkipped: true, ticketError: null });
+         // The ticket goes out straight away, like when guests reserve themselves. A failed send never undoes the reservation.
+         let ticketSent = true;
+         let ticketError: string | null = null;
+@@ -123,6 +126,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+         if (!registration.reservedAt) {
+           return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat yet, so there is no ticket to send.` }, { status: 409 });
+         }
++        if (!registration.email) return NextResponse.json({ error: `${registration.fullName} has no email address, so the ticket cannot be emailed.` }, { status: 409 });
+         try {
+           await sendTicket(registration, settings);
+         } catch (err) {
+diff --git a/src/app/api/admin/registrations/[id]/route.ts b/src/app/api/admin/registrations/[id]/route.ts
+index c5ed73c..b98f3a4 100644
+--- a/src/app/api/admin/registrations/[id]/route.ts
++++ b/src/app/api/admin/registrations/[id]/route.ts
+@@ -79,7 +79,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid details." }, { status: 400 });
+   }
+   const data = parsed.data;
+-  if (data.email !== undefined && !EMAIL_RE.test(data.email)) {
++  if (data.email === "" && !event.emailOptional) {
++    return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
++  }
++  if (data.email && !EMAIL_RE.test(data.email)) {
+     return NextResponse.json({ error: "That email address doesn't look right." }, { status: 400 });
+   }
+ 
+diff --git a/src/app/api/admin/registrations/route.ts b/src/app/api/admin/registrations/route.ts
+index 5e58d64..fe90509 100644
+--- a/src/app/api/admin/registrations/route.ts
++++ b/src/app/api/admin/registrations/route.ts
+@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
+   });
+ }
+ 
+-/** Adds one person by hand. Body: { fullName, email, phone? }. Someone with the same email is updated, not duplicated. */
++/** Adds one person by hand. Body: { fullName, email, phone? }. Someone with the same email is updated, not duplicated. Email may be left out only when the event allows it (Event.emailOptional). */
+ export async function POST(request: NextRequest) {
+   const ctx = await requireEvent(request);
+   if (!ctx.ok) return ctx.response;
+@@ -119,12 +119,17 @@ export async function POST(request: NextRequest) {
+   const email = typeof b.email === "string" ? b.email : "";
+   const fullName = typeof b.fullName === "string" ? b.fullName.slice(0, 200) : "";
+   const phone = typeof b.phone === "string" ? b.phone.slice(0, 60) : "";
+-  if (!email.trim()) return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
++  if (!email.trim() && !event.emailOptional) return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
+   if (!fullName.trim()) return NextResponse.json({ error: "Enter the name." }, { status: 400 });
+ 
+-  const saved = await addOrUpdateContact(event.id, { fullName, email, phone }, `Added by ${session.name}`);
++  const saved = await addOrUpdateContact(event.id, { fullName, email, phone }, `Added by ${session.name}`, { emailOptional: event.emailOptional });
+   if ("error" in saved) return NextResponse.json({ error: saved.error }, { status: 400 });
+-  const person = await prisma.registration.findFirst({ where: { eventId: event.id, email: email.trim().toLowerCase() }, select: { id: true, fullName: true } });
++  const cleanEmail = email.trim().toLowerCase();
++  const person = await prisma.registration.findFirst({
++    where: { eventId: event.id, email: cleanEmail },
++    orderBy: { createdAt: "desc" },
++    select: { id: true, fullName: true },
++  });
+   await logAdminAction(session, { action: "participant.create", entityType: "registration", entityId: person?.id, entityLabel: person?.fullName ?? fullName, eventId: event.id, details: { result: saved.result } }, request);
+   return NextResponse.json({ result: saved.result, id: person?.id ?? null });
+ }
+diff --git a/src/components/AddContactDialog.tsx b/src/components/AddContactDialog.tsx
+index 3fb4330..ec03f38 100644
+--- a/src/components/AddContactDialog.tsx
++++ b/src/components/AddContactDialog.tsx
+@@ -4,8 +4,8 @@ import { useState } from "react";
+ import { cacheDeletePrefix } from "@/lib/clientCache";
+ import { ghostButton, inputClass, primaryButton } from "@/components/ui";
+ 
+-/** Adds one person by hand. Someone with the same email is updated instead of duplicated. */
+-export default function AddContactDialog({ onClose, onAdded, person }: { onClose: () => void; onAdded: () => void; person: string }) {
++/** Adds one person by hand. Someone with the same email is updated instead of duplicated. With emailOptional (Investor Hangout) the email can be left empty. */
++export default function AddContactDialog({ onClose, onAdded, person, emailOptional = false }: { onClose: () => void; onAdded: () => void; person: string; emailOptional?: boolean }) {
+   const [fullName, setFullName] = useState("");
+   const [email, setEmail] = useState("");
+   const [phone, setPhone] = useState("");
+@@ -48,9 +48,9 @@ export default function AddContactDialog({ onClose, onAdded, person }: { onClose
+           </div>
+           <div>
+             <label htmlFor="ac-email" className="block text-sm font-medium mb-1.5">
+-              Email
++              {emailOptional ? "Email (optional)" : "Email"}
+             </label>
+-            <input id="ac-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
++            <input id="ac-email" type="email" required={!emailOptional} value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+           </div>
+           <div>
+             <label htmlFor="ac-phone" className="block text-sm font-medium mb-1.5">
+@@ -69,7 +69,7 @@ export default function AddContactDialog({ onClose, onAdded, person }: { onClose
+           <button type="button" onClick={onClose} className={ghostButton} disabled={busy}>
+             Close
+           </button>
+-          <button type="button" onClick={(e) => submit(e, true)} className={ghostButton} disabled={busy || !fullName.trim() || !email.trim()}>
++          <button type="button" onClick={(e) => submit(e, true)} className={ghostButton} disabled={busy || !fullName.trim() || (!emailOptional && !email.trim())}>
+             Save and add another
+           </button>
+           <button type="submit" className={primaryButton} disabled={busy}>
+diff --git a/src/lib/contactSources.ts b/src/lib/contactSources.ts
+index e172fa8..8174f53 100644
+--- a/src/lib/contactSources.ts
++++ b/src/lib/contactSources.ts
+@@ -200,8 +200,20 @@ export interface NewContact {
+ }
+ 
+ /** Adds one person, or fills in the details of someone already on the list (same email). Never blanks a field. */
+-export async function addOrUpdateContact(eventId: string, c: NewContact, author: string): Promise<{ result: "added" | "updated" | "unchanged" } | { error: string }> {
++export async function addOrUpdateContact(
++  eventId: string,
++  c: NewContact,
++  author: string,
++  opts: { emailOptional?: boolean } = {}
++): Promise<{ result: "added" | "updated" | "unchanged" } | { error: string }> {
+   const email = c.email.trim().toLowerCase();
++  if (!email && opts.emailOptional) {
++    // No email to match on, so this is always a new person. They are stored with email = "" and are skipped by every email send.
++    const name = c.fullName.replace(/\s+/g, " ").trim();
++    if (!name) return { error: "Enter the name." };
++    await prisma.registration.create({ data: { eventId, fullName: name, email: "", phone: (c.phone ?? "").trim(), extra: c.extra && Object.keys(c.extra).length ? c.extra : undefined } });
++    return { result: "added" };
++  }
+   if (!EMAIL_RE.test(email)) return { error: "That email address does not look right." };
+   const fullName = c.fullName.replace(/\s+/g, " ").trim() || email.split("@")[0];
+   const saved = await saveImportedPeople(
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index d6ba06c..8d9966f 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -114,6 +114,8 @@ async function deliverAttendeeEmail(opts: {
+   campaignId?: string;
+   build: () => Promise<BuiltEmail>;
+ }): Promise<SendEmailResult> {
++  // A contact added without an email (allowed for some events) can never be emailed. Nothing is recorded, because nothing was attempted.
++  if (!opts.to?.trim()) return { success: false, error: "This contact has no email address." };
+   let result: SendEmailResult;
+   let subject: string | undefined;
+   try {
+diff --git a/src/lib/reserveFlow.ts b/src/lib/reserveFlow.ts
+index cada4f2..df926b7 100644
+--- a/src/lib/reserveFlow.ts
++++ b/src/lib/reserveFlow.ts
+@@ -18,6 +18,7 @@ export async function completeReservation(registrationId: string, request: Reque
+     const actor = { adminId: null, name: `${r.fullName} (guest)`, email: r.email };
+     const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName, eventId: r.eventId };
+     await logAudit(actor, { ...entry, action: "participant.reserve", details: { by } }, request);
++    if (!r.email) return { ok: true, alreadyReserved: false, emailSent: false };
+     try {
+       await sendTicket(r);
+       await logAudit({ adminId: null, name: "System" }, { ...entry, action: "participant.send_ticket", details: { outcome: "sent", to: r.email } }, request);
+diff --git a/src/lib/useEvent.ts b/src/lib/useEvent.ts
+index 2b4e9ca..8903f19 100644
+--- a/src/lib/useEvent.ts
++++ b/src/lib/useEvent.ts
+@@ -15,6 +15,7 @@ export interface EventInfo {
+   modules: string[];
+   type: string;
+   dataSource: string;
++  emailOptional?: boolean;
+   brandName: string | null;
+   color: string | null;
+   logoUrl: string | null;

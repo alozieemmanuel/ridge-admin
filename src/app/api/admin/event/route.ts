@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
       modules: event.modules,
       type: event.type,
       dataSource: event.dataSource,
+      emailOptional: event.emailOptional,
       brandName: event.brandName,
       color: event.color,
       logoUrl: event.logoUrl,

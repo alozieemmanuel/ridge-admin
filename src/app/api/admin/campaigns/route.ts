@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
   const { audience, subject, body, ctaLabel } = parsed.data;
   const category = parsed.data.category || null;
 
-  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, audienceWhere(audience, category)] } });
+  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, { email: { not: "" } }, audienceWhere(audience, category)] } });
   if (recipients.length === 0) {
     return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
   }

@@ -15,6 +15,7 @@ export interface EventInfo {
   modules: string[];
   type: string;
   dataSource: string;
+  emailOptional?: boolean;
   brandName: string | null;
   color: string | null;
   logoUrl: string | null;

@@ -18,6 +18,7 @@ export async function completeReservation(registrationId: string, request: Reque
     const actor = { adminId: null, name: `${r.fullName} (guest)`, email: r.email };
     const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName, eventId: r.eventId };
     await logAudit(actor, { ...entry, action: "participant.reserve", details: { by } }, request);
+    if (!r.email) return { ok: true, alreadyReserved: false, emailSent: false };
     try {
       await sendTicket(r);
       await logAudit({ adminId: null, name: "System" }, { ...entry, action: "participant.send_ticket", details: { outcome: "sent", to: r.email } }, request);

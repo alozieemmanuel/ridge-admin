@@ -4,8 +4,8 @@ import { useState } from "react";
 import { cacheDeletePrefix } from "@/lib/clientCache";
 import { ghostButton, inputClass, primaryButton } from "@/components/ui";
 
-/** Adds one person by hand. Someone with the same email is updated instead of duplicated. */
-export default function AddContactDialog({ onClose, onAdded, person }: { onClose: () => void; onAdded: () => void; person: string }) {
+/** Adds one person by hand. Someone with the same email is updated instead of duplicated. With emailOptional (Investor Hangout) the email can be left empty. */
+export default function AddContactDialog({ onClose, onAdded, person, emailOptional = false }: { onClose: () => void; onAdded: () => void; person: string; emailOptional?: boolean }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -48,9 +48,9 @@ export default function AddContactDialog({ onClose, onAdded, person }: { onClose
           </div>
           <div>
             <label htmlFor="ac-email" className="block text-sm font-medium mb-1.5">
-              Email
+              {emailOptional ? "Email (optional)" : "Email"}
             </label>
-            <input id="ac-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+            <input id="ac-email" type="email" required={!emailOptional} value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
           </div>
           <div>
             <label htmlFor="ac-phone" className="block text-sm font-medium mb-1.5">
@@ -69,7 +69,7 @@ export default function AddContactDialog({ onClose, onAdded, person }: { onClose
           <button type="button" onClick={onClose} className={ghostButton} disabled={busy}>
             Close
           </button>
-          <button type="button" onClick={(e) => submit(e, true)} className={ghostButton} disabled={busy || !fullName.trim() || !email.trim()}>
+          <button type="button" onClick={(e) => submit(e, true)} className={ghostButton} disabled={busy || !fullName.trim() || (!emailOptional && !email.trim())}>
             Save and add another
           </button>
           <button type="submit" className={primaryButton} disabled={busy}>

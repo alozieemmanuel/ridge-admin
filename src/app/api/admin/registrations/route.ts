@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
   });
 }
 
-/** Adds one person by hand. Body: { fullName, email, phone? }. Someone with the same email is updated, not duplicated. */
+/** Adds one person by hand. Body: { fullName, email, phone? }. Someone with the same email is updated, not duplicated. Email may be left out only when the event allows it (Event.emailOptional). */
 export async function POST(request: NextRequest) {
   const ctx = await requireEvent(request);
   if (!ctx.ok) return ctx.response;
@@ -119,12 +119,17 @@ export async function POST(request: NextRequest) {
   const email = typeof b.email === "string" ? b.email : "";
   const fullName = typeof b.fullName === "string" ? b.fullName.slice(0, 200) : "";
   const phone = typeof b.phone === "string" ? b.phone.slice(0, 60) : "";
-  if (!email.trim()) return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
+  if (!email.trim() && !event.emailOptional) return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
   if (!fullName.trim()) return NextResponse.json({ error: "Enter the name." }, { status: 400 });
 
-  const saved = await addOrUpdateContact(event.id, { fullName, email, phone }, `Added by ${session.name}`);
+  const saved = await addOrUpdateContact(event.id, { fullName, email, phone }, `Added by ${session.name}`, { emailOptional: event.emailOptional });
   if ("error" in saved) return NextResponse.json({ error: saved.error }, { status: 400 });
-  const person = await prisma.registration.findFirst({ where: { eventId: event.id, email: email.trim().toLowerCase() }, select: { id: true, fullName: true } });
+  const cleanEmail = email.trim().toLowerCase();
+  const person = await prisma.registration.findFirst({
+    where: { eventId: event.id, email: cleanEmail },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, fullName: true },
+  });
   await logAdminAction(session, { action: "participant.create", entityType: "registration", entityId: person?.id, entityLabel: person?.fullName ?? fullName, eventId: event.id, details: { result: saved.result } }, request);
   return NextResponse.json({ result: saved.result, id: person?.id ?? null });
 }

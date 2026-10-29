@@ -79,7 +79,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid details." }, { status: 400 });
   }
   const data = parsed.data;
-  if (data.email !== undefined && !EMAIL_RE.test(data.email)) {
+  if (data.email === "" && !event.emailOptional) {
+    return NextResponse.json({ error: "Enter the email address." }, { status: 400 });
+  }
+  if (data.email && !EMAIL_RE.test(data.email)) {
     return NextResponse.json({ error: "That email address doesn't look right." }, { status: 400 });
   }
 

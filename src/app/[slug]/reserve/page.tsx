@@ -88,7 +88,7 @@ function QuizBox({ token, quiz, contact, onPassed, onActive }: { token: string; 
             </>
           ) : (
             <>
-              <p className="font-serif text-2xl mb-2">Think you know real estate? Prove it.</p>
+              <p className="font-serif text-2xl mb-2">Do you think you know real estate? Prove it.</p>
               <p className="text-sm text-muted leading-relaxed mb-5">
                 Seats are limited, so you earn yours by passing a quick challenge. Answer {state.count} questions and get {state.pass >= 100 ? "every one" : `${state.pass}%`} right. Your seat is only reserved once you pass, and your ticket appears right away. You have {state.attempts} tries.
               </p>

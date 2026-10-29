@@ -200,8 +200,20 @@ export interface NewContact {
 }
 
 /** Adds one person, or fills in the details of someone already on the list (same email). Never blanks a field. */
-export async function addOrUpdateContact(eventId: string, c: NewContact, author: string): Promise<{ result: "added" | "updated" | "unchanged" } | { error: string }> {
+export async function addOrUpdateContact(
+  eventId: string,
+  c: NewContact,
+  author: string,
+  opts: { emailOptional?: boolean } = {}
+): Promise<{ result: "added" | "updated" | "unchanged" } | { error: string }> {
   const email = c.email.trim().toLowerCase();
+  if (!email && opts.emailOptional) {
+    // No email to match on, so this is always a new person. They are stored with email = "" and are skipped by every email send.
+    const name = c.fullName.replace(/\s+/g, " ").trim();
+    if (!name) return { error: "Enter the name." };
+    await prisma.registration.create({ data: { eventId, fullName: name, email: "", phone: (c.phone ?? "").trim(), extra: c.extra && Object.keys(c.extra).length ? c.extra : undefined } });
+    return { result: "added" };
+  }
   if (!EMAIL_RE.test(email)) return { error: "That email address does not look right." };
   const fullName = c.fullName.replace(/\s+/g, " ").trim() || email.split("@")[0];
   const saved = await saveImportedPeople(

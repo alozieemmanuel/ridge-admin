@@ -256,7 +256,7 @@ function RegistrationsInner() {
                     <td className="sticky left-0 z-10 bg-cardbg group-hover:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] group-focus:[background-image:linear-gradient(rgb(var(--c-gold)/0.1),rgb(var(--c-gold)/0.1))] shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)] px-5 py-3.5 whitespace-nowrap font-medium">
                       {r.fullName}
                     </td>
-                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email}</td>
+                    <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.email || <span className="italic opacity-60">No email</span>}</td>
                     <td className="px-5 py-3.5 text-muted whitespace-nowrap">{r.phone || "-"}</td>
                     <td className="px-5 py-3.5 whitespace-nowrap">
                       <Pill tone={followUpTone(r.followUpStatus)}>{followUpLabel(r.followUpStatus)}</Pill>
@@ -296,7 +296,7 @@ function RegistrationsInner() {
         />
       </div>
 
-      {adding && <AddContactDialog person={person} onClose={() => setAdding(false)} onAdded={() => load(true)} />}
+      {adding && <AddContactDialog person={person} emailOptional={Boolean(event?.emailOptional)} onClose={() => setAdding(false)} onAdded={() => load(true)} />}
       {importing && <ImportDialog onClose={() => setImporting(false)} onImported={() => load(true)} />}
       {sheetOpen && (
         <SheetSyncDialog

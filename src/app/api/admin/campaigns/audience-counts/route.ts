@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
   const audience: CampaignAudience = audienceParam && AUDIENCES.includes(audienceParam) ? audienceParam : "ALL";
 
   const rows = await prisma.registration.findMany({
-    where: { eventId: event.id },
+    where: { eventId: event.id, email: { not: "" } },
     select: { inviteSentAt: true, reservedAt: true, checkedInAt: true, categories: true },
   });
   const people: Person[] = rows.map((r) => ({

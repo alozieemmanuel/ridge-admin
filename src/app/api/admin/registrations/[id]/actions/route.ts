@@ -65,6 +65,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       case "send_invitation":
       case "send_reminder": {
         const kind = action === "send_reminder" ? "reminder" : "invitation";
+        if (!registration.email) return NextResponse.json({ error: `${registration.fullName} has no email address. Add one first, or share their reserve link yourself.` }, { status: 409 });
         const missing = missingEventDetails(settings ?? (await getSettingsMap(event.id)));
         if (missing.length) {
           return NextResponse.json({ error: `Fill in the ${missing.join(" and ")} in Settings before sending invitations.` }, { status: 409 });
@@ -93,6 +94,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
         if (result.alreadyReserved) return NextResponse.json({ result: "success", unchanged: true });
         await log("participant.reserve", { by: "admin" });
+        // Without an email there is nowhere to send the ticket. The seat is still reserved and the ticket can be downloaded from their page.
+        if (!registration.email) return NextResponse.json({ result: "success", ticketSent: false, ticketSkipped: true, ticketError: null });
         // The ticket goes out straight away, like when guests reserve themselves. A failed send never undoes the reservation.
         let ticketSent = true;
         let ticketError: string | null = null;
@@ -123,6 +126,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         if (!registration.reservedAt) {
           return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat yet, so there is no ticket to send.` }, { status: 409 });
         }
+        if (!registration.email) return NextResponse.json({ error: `${registration.fullName} has no email address, so the ticket cannot be emailed.` }, { status: 409 });
         try {
           await sendTicket(registration, settings);
         } catch (err) {

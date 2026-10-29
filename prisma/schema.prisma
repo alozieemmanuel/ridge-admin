@@ -103,6 +103,8 @@ model Event {
   timezone  String      @default("Africa/Lagos")
   // Where this event's contacts come from: "sheet" | "supabase" | "form" | "manual".
   dataSource  String    @default("sheet")
+  // True when a contact may be added by hand without an email address (Investor Hangout). Such contacts keep email = "".
+  emailOptional Boolean   @default(false)
   // Secret in the address the event's website form posts to. Changing it switches the old form address off.
   intakeToken String?   @unique
   createdAt DateTime    @default(now())
@@ -196,6 +198,7 @@ model Registration {
   paymentRecords PaymentRecord[]
   queuedEmails   QueuedEmail[]
 
+  // In the database this index only covers rows that have an email (see migration 20261029090000), so many contacts may have email = "".
   @@unique([eventId, email])
   @@index([eventId])
   @@index([createdAt])

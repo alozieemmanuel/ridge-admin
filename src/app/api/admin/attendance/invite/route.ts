@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Choose who to send to." }, { status: 400 });
   }
 
-  const where = audience === "NOT_INVITED" ? { eventId: event.id, inviteSentAt: null, reservedAt: null } : { eventId: event.id, inviteSentAt: { not: null }, reservedAt: null };
+  const where =
+    audience === "NOT_INVITED"
+      ? { eventId: event.id, email: { not: "" }, inviteSentAt: null, reservedAt: null }
+      : { eventId: event.id, email: { not: "" }, inviteSentAt: { not: null }, reservedAt: null };
   const people = await prisma.registration.findMany({ where, orderBy: { createdAt: "asc" } });
 
   if (raw.dryRun === true) return NextResponse.json({ count: people.length });

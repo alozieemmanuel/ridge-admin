@@ -114,6 +114,8 @@ async function deliverAttendeeEmail(opts: {
   campaignId?: string;
   build: () => Promise<BuiltEmail>;
 }): Promise<SendEmailResult> {
+  // A contact added without an email (allowed for some events) can never be emailed. Nothing is recorded, because nothing was attempted.
+  if (!opts.to?.trim()) return { success: false, error: "This contact has no email address." };
   let result: SendEmailResult;
   let subject: string | undefined;
   try {
