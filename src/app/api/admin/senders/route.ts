@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
-  const [senders, waiting] = await Promise.all([poolStatus(), prisma.queuedEmail.count({ where: { status: "PENDING" } })]);
+  const [senders, waiting] = await Promise.all([poolStatus(), prisma.queuedEmail.count({ where: { status: { in: ["PENDING", "SENDING"] } } })]);
   return NextResponse.json({
     senders,
     waiting,
@@ -47,6 +47,6 @@ export async function PUT(request: NextRequest) {
 
   await savePool(items);
   await logAdminAction(session, { action: "senders.update", entityType: "sender", entityLabel: items.map((i) => i.kind).join(", ") || "none", eventId: null, details: { count: items.length } }, request);
-  const [senders, waiting] = await Promise.all([poolStatus(), prisma.queuedEmail.count({ where: { status: "PENDING" } })]);
+  const [senders, waiting] = await Promise.all([poolStatus(), prisma.queuedEmail.count({ where: { status: { in: ["PENDING", "SENDING"] } } })]);
   return NextResponse.json({ result: "success", senders, waiting });
 }

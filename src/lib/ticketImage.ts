@@ -13,8 +13,8 @@ export interface TicketData {
   color?: string | null;
 }
 
-const W = 1080;
-const H = 1800;
+const W = 1500;
+const H = 1200;
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
 
 function parseHex(hex: string | null | undefined): [number, number, number] {
@@ -61,6 +61,17 @@ function loadQr(svg: string): Promise<HTMLImageElement> {
   });
 }
 
+function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** The same layout as the ticket on the page: colour band on top, details, a tear line, then the QR code beside the ticket code. */
 export async function drawTicket(t: TicketData): Promise<HTMLCanvasElement> {
   try {
     await document.fonts?.ready;
@@ -72,80 +83,89 @@ export async function drawTicket(t: TicketData): Promise<HTMLCanvasElement> {
   const ctx = canvas.getContext("2d")!;
   const [r, g, b] = parseHex(t.color);
   const brand = `rgb(${r},${g},${b})`;
+  const tint = `rgb(${Math.round(r * 0.1 + 255 * 0.9)},${Math.round(g * 0.1 + 255 * 0.9)},${Math.round(b * 0.1 + 255 * 0.9)})`;
   const dark = 0.299 * r + 0.587 * g + 0.114 * b > 150;
   const onBrand = dark ? "#141C08" : "#FFFFFF";
   const ink = "#141414";
   const grey = "#6B6B6B";
+  const R = 44;
 
+  // White page behind the rounded ticket, so the PNG has no see-through corners.
   ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = brand;
-  ctx.lineWidth = 10;
-  ctx.strokeRect(5, 5, W - 10, H - 10);
-
+  ctx.save();
+  roundedRect(ctx, 6, 6, W - 12, H - 12, R);
+  ctx.clip();
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, W, H);
   // Header band
   ctx.fillStyle = brand;
-  ctx.fillRect(5, 5, W - 10, 290);
-  ctx.fillStyle = onBrand;
+  ctx.fillRect(0, 0, W, 200);
+  // Bottom area
+  ctx.fillStyle = tint;
+  ctx.fillRect(0, 720, W, H - 720);
+  ctx.restore();
+  ctx.strokeStyle = brand;
+  ctx.lineWidth = 6;
+  roundedRect(ctx, 6, 6, W - 12, H - 12, R);
+  ctx.stroke();
+
   ctx.textBaseline = "alphabetic";
-  ctx.font = `bold 28px ${FONT}`;
-  ctx.fillText("ADMIT ONE  ·  BY INVITATION", 70, 90);
-  ctx.font = `bold 62px ${FONT}`;
-  wrap(ctx, t.eventName, W - 140, 2).forEach((line, i) => ctx.fillText(line, 70, 175 + i * 76));
+  ctx.fillStyle = onBrand;
+  ctx.font = `bold 26px ${FONT}`;
+  ctx.fillText("ADMIT ONE  ·  BY INVITATION".split("").join(String.fromCharCode(8202)), 70, 80);
+  ctx.font = `bold 68px ${FONT}`;
+  wrap(ctx, t.eventName, W - 140, 1).forEach((line) => ctx.fillText(line, 70, 160));
 
   const label = (text: string, x: number, y: number) => {
     ctx.fillStyle = grey;
-    ctx.font = `600 24px ${FONT}`;
+    ctx.font = `600 22px ${FONT}`;
     ctx.fillText(text.toUpperCase().split("").join(String.fromCharCode(8202)), x, y);
   };
-  const value = (text: string, x: number, y: number, size = 42, maxLines = 1, width = W - 140) => {
+  const value = (text: string, x: number, y: number, size: number, width: number) => {
     ctx.fillStyle = ink;
     ctx.font = `600 ${size}px ${FONT}`;
-    const lines = wrap(ctx, text || "To be announced", width, maxLines);
-    lines.forEach((line, i) => ctx.fillText(line, x, y + i * (size + 10)));
-    return lines.length;
+    wrap(ctx, text || "To be announced", width, 1).forEach((line) => ctx.fillText(line, x, y));
   };
 
-  label("Guest", 70, 380);
-  value(t.guest, 70, 440, 54, 2);
-  label("Date", 70, 570);
-  value(t.date, 70, 625, 36, 2, 550);
-  label("Time", 670, 570);
-  value(t.time, 670, 625, 36, 2, 340);
-  label("Venue", 70, 760);
-  value(t.venue, 70, 815, 40, 2);
+  label("Guest", 70, 275);
+  value(t.guest, 70, 335, 54, W - 140);
+  label("Date", 70, 425);
+  value(t.date, 70, 480, 42, 700);
+  label("Time", 860, 425);
+  value(t.time, 860, 480, 42, 570);
+  label("Venue", 70, 570);
+  value(t.venue, 70, 625, 42, W - 140);
 
   // Tear line
-  ctx.strokeStyle = "#C9C9C9";
+  ctx.strokeStyle = brand;
+  ctx.globalAlpha = 0.45;
   ctx.lineWidth = 4;
-  ctx.setLineDash([18, 14]);
+  ctx.setLineDash([16, 12]);
   ctx.beginPath();
-  ctx.moveTo(70, 930);
-  ctx.lineTo(W - 70, 930);
+  ctx.moveTo(30, 720);
+  ctx.lineTo(W - 30, 720);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 
-  // QR
-  const qrSize = 520;
-  const qx = (W - qrSize) / 2;
+  // QR in a white rounded box on the left
+  const box = 380;
+  const bx = 70;
+  const by = 760;
   ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(qx - 20, 980, qrSize + 40, qrSize + 40);
-  ctx.strokeStyle = "#E4E4E4";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(qx - 20, 980, qrSize + 40, qrSize + 40);
-  ctx.drawImage(qr, qx, 1000, qrSize, qrSize);
+  roundedRect(ctx, bx, by, box, box, 28);
+  ctx.fill();
+  ctx.drawImage(qr, bx + 24, by + 24, box - 48, box - 48);
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = grey;
-  ctx.font = `600 24px ${FONT}`;
-  ctx.fillText("TICKET CODE", W / 2, 1600);
+  const tx = bx + box + 70;
+  label("Ticket code", tx, 880);
   ctx.fillStyle = ink;
-  ctx.font = `bold 64px "Courier New", ui-monospace, monospace`;
-  ctx.fillText(t.code, W / 2, 1685);
+  ctx.font = `bold 84px "Courier New", ui-monospace, monospace`;
+  ctx.fillText(t.code, tx, 975);
   ctx.fillStyle = grey;
-  ctx.font = `28px ${FONT}`;
-  ctx.fillText("Show this at the entrance.", W / 2, 1750);
-  ctx.textAlign = "left";
+  ctx.font = `30px ${FONT}`;
+  wrap(ctx, "Show this at the entrance. Take a screenshot so you have it even without a signal.", W - tx - 70, 3).forEach((line, i) => ctx.fillText(line, tx, 1045 + i * 42));
   return canvas;
 }
 
@@ -180,8 +200,8 @@ export async function downloadTicketPdf(t: TicketData): Promise<void> {
   const img = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) img[i] = bin.charCodeAt(i);
 
-  const pw = 420;
-  const ph = Math.round((420 * H) / W);
+  const pw = 560;
+  const ph = Math.round((560 * H) / W);
   const enc = new TextEncoder();
   const chunks: Uint8Array[] = [];
   const offsets: number[] = [];

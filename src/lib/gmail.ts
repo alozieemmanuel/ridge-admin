@@ -52,12 +52,12 @@ function getTransporter(portOverride?: number): Transporter | null {
       requireTLS: port === 587,
       auth: { user, pass },
       pool: true,
-      maxConnections: 3,
+      maxConnections: 5,
       maxMessages: 100,
-      // Fail in seconds, not half a minute, when Gmail can't be reached.
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 30_000,
+      // Gmail slows down a lot as the daily limit gets close, so give it room before calling a send failed.
+      connectionTimeout: 20_000,
+      greetingTimeout: 20_000,
+      socketTimeout: 60_000,
     });
     transporters.set(port, transporter);
   }

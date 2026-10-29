@@ -76,6 +76,9 @@ export interface SenderStatus {
   /** null = no limit */
   remaining: number | null;
   state: "ready" | "full" | "off" | "not_configured";
+  /** The latest problem this service reported today (for example a Brevo sender that is not verified). */
+  lastError: string | null;
+  lastErrorAt: string | null;
 }
 
 export async function poolStatus(): Promise<SenderStatus[]> {
@@ -99,15 +102,34 @@ export async function poolStatus(): Promise<SenderStatus[]> {
       used: u,
       remaining,
       state,
+      lastError: row.lastErrorAt && row.lastErrorAt >= startOfToday() ? row.lastError : null,
+      lastErrorAt: row.lastErrorAt && row.lastErrorAt >= startOfToday() ? row.lastErrorAt.toISOString() : null,
     };
   });
 }
 
 // ---- In-process memory, so a big send does not ask the database for the count on every email ----
 let counts: { at: number; byKind: Record<string, number> } | null = null;
-const cooling = new Map<string, number>();
+const cooling = new Map<string, { until: number; why: string }>();
 const COUNT_TTL_MS = 20_000;
 const COOLDOWN_MS = 60_000;
+/** A daily quota, a limit or "too many" from the service itself: leave it alone until the count resets. */
+const QUOTA = /quota|exceed|daily|limit|too many/i;
+const lastRecorded = new Map<string, number>();
+
+/** Keeps the service's latest problem, so the sender card can say why a "Ready" sender is not sending. Never blocks sending. */
+function rememberProblem(kind: SenderKind, error: string): void {
+  const last = lastRecorded.get(kind) ?? 0;
+  if (Date.now() - last < 10_000) return;
+  lastRecorded.set(kind, Date.now());
+  const text = error.slice(0, 300);
+  prisma.emailSender.updateMany({ where: { kind }, data: { lastError: text, lastErrorAt: new Date() } }).then(() => { poolMemo = null; }).catch(() => {});
+}
+function clearProblem(kind: SenderKind, row: { lastError?: string | null }): void {
+  if (!row.lastError) return;
+  row.lastError = null;
+  prisma.emailSender.updateMany({ where: { kind }, data: { lastError: null, lastErrorAt: null } }).catch(() => {});
+}
 
 async function currentCounts(): Promise<Record<string, number>> {
   if (!counts || Date.now() - counts.at > COUNT_TTL_MS) counts = { at: Date.now(), byKind: await sentToday() };
@@ -115,7 +137,7 @@ async function currentCounts(): Promise<Record<string, number>> {
 }
 
 /** Problems that mean "this sender is not working right now", as opposed to "this one address is bad". */
-const SENDER_LEVEL = /auth|login|credential|quota|limit|exceed|rate|network|reach|timeout|timed out|econn|enotfound|not set|not configured|unauthor|forbidden|\b(401|403|429|5\d\d)\b/i;
+const SENDER_LEVEL = /auth|login|credential|quota|limit|exceed|rate|network|reach|timeout|timed out|econn|enotfound|not set|not configured|unauthor|forbidden|sender|activat|suspend|verif|disabled|blocked|api key|\b(401|403|429|5\d\d)\b/i;
 
 async function sendVia(kind: SenderKind, input: SendEmailInput): Promise<SendEmailResult> {
   if (kind === "BREVO") return sendViaBrevo(input);
@@ -138,32 +160,52 @@ export async function sendThroughPool(input: SendEmailInput): Promise<SendEmailR
 
   // Daily limits only apply to campaigns, so a single invitation or ticket does not wait for the count.
   const used = isCampaign ? await currentCounts() : {};
+  const problems: string[] = [];
   let lastError = "";
-  let skippedFull = false;
+  let waitable = false; // something that clears by itself: a daily limit, a pause after an error, a service that is down
   let tried = false;
 
   for (const row of candidates) {
     const kind = row.kind as SenderKind;
+    const name = SENDER_KINDS.find((k) => k.kind === kind)?.name ?? kind;
     if (!isConfigured(kind)) {
-      lastError ||= `${kind} is not set up on the server.`;
+      lastError ||= `${name} is not set up on the server.`;
+      problems.push(`${name}: not set up`);
       continue;
     }
-    if ((cooling.get(kind) ?? 0) > Date.now()) continue;
+    // A pause only applies to campaign emails. A ticket or confirmation a guest is waiting for always tries every sender.
+    const pause = isCampaign ? cooling.get(kind) : undefined;
+    if (pause && pause.until > Date.now()) {
+      waitable = true;
+      problems.push(`${name}: paused (${pause.why})`);
+      continue;
+    }
     if (isCampaign && row.dailyLimit > 0 && (used[kind] ?? 0) >= row.dailyLimit) {
-      skippedFull = true;
+      waitable = true;
+      problems.push(`${name}: daily limit reached`);
       continue;
     }
     tried = true;
+    // Count the email before it is sent, so five sends at once cannot all slip under the limit.
+    used[kind] = (used[kind] ?? 0) + 1;
     const res = await sendVia(kind, input);
     if (res.success) {
-      used[kind] = (used[kind] ?? 0) + 1;
+      clearProblem(kind, row);
       return res;
     }
-    lastError = res.error || `${kind} could not send.`;
-    if (SENDER_LEVEL.test(lastError)) cooling.set(kind, Date.now() + COOLDOWN_MS);
+    used[kind] = Math.max(0, (used[kind] ?? 1) - 1);
+    lastError = res.error || `${name} could not send.`;
+    problems.push(`${name}: ${lastError}`);
+    if (SENDER_LEVEL.test(lastError)) {
+      waitable = true;
+      // A quota from the service itself lasts until the day's count resets. Anything else is paused for a minute.
+      cooling.set(kind, { until: QUOTA.test(lastError) ? startOfTomorrow().getTime() : Date.now() + COOLDOWN_MS, why: lastError.slice(0, 120) });
+    }
+    rememberProblem(kind, lastError);
   }
 
-  if (isCampaign && skippedFull) return { success: false, deferred: true, error: "Every sender has used its daily limit. This email will go out after the count resets." };
+  // A campaign email that no sender can take right now is kept for later with the reason, not counted as a failure.
+  if (isCampaign && waitable) return { success: false, deferred: true, error: problems.join(" | ") || "No sender could send this email right now." };
   if (!tried && !lastError) return { success: false, error: "No sender is available right now. Check the sender list." };
   return { success: false, error: lastError || "No sender could send this email." };
 }

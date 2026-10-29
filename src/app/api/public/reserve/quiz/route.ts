@@ -26,15 +26,16 @@ export async function POST(request: NextRequest) {
     if (reg.quizAt) return NextResponse.json({ error: "This quiz was already submitted. Start again to retry." }, { status: 409 });
     const res = await submitQuiz(reg, typeof body.answers === "object" && body.answers ? body.answers : {});
     if (!res) return NextResponse.json({ error: "Start the quiz first." }, { status: 409 });
-    const fresh = await prisma.registration.findUnique({ where: { id } });
-    const after = await quizState(fresh!);
-    // Passing reserves the seat straight away and emails the ticket.
-    if (!after.required) {
-      const flow = await completeReservation(id, request, "quiz");
-      if (!flow.ok) return NextResponse.json({ state: after, passed: true, full: flow.reason === "FULL" });
-      return NextResponse.json({ state: after, passed: true, reserved: true, emailSent: flow.emailSent });
+    const passed = res.total > 0 && (res.score / res.total) * 100 >= st.pass;
+    // Passing reserves the seat straight away. The ticket email goes out after the answer is sent, so the guest is not kept waiting.
+    if (passed) {
+      const done = { ...st, required: false, state: "passed" as const, score: res.score, total: res.total, locked: false };
+      const flow = await completeReservation(id, request, "quiz", { deferEmail: true });
+      if (!flow.ok) return NextResponse.json({ state: done, passed: true, full: flow.reason === "FULL" });
+      return NextResponse.json({ state: done, passed: true, reserved: true, emailSent: flow.emailSent });
     }
-    return NextResponse.json({ state: after });
+    const left = Math.max(0, st.attemptsLeft - 1);
+    return NextResponse.json({ state: { ...st, required: true, state: "failed" as const, score: res.score, total: res.total, attemptsLeft: left, locked: left <= 0 } });
   }
   const paper = await startQuiz(reg, st.count);
   return NextResponse.json({ paper, state: st });

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getSettingsMap, saveSetting } from "@/lib/settings";
+import { saveSetting } from "@/lib/settings";
 import { buildPaper, gradeAttempt, type PaperQuestion } from "@/lib/tests";
 
 /** The short quiz a guest takes before they can reserve a seat (the "tests" module, kind ENTRY). */
@@ -11,7 +11,9 @@ export interface EntryConfig {
 }
 
 export async function getEntryConfig(eventId: string): Promise<EntryConfig> {
-  const m = await getSettingsMap(eventId);
+  // Three small settings: ask for just those (the full settings map also loads the event and every other setting).
+  const rows = await prisma.setting.findMany({ where: { eventId, key: { in: ["entry_quiz_on", "entry_quiz_count", "entry_quiz_pass", "entry_quiz_attempts"] } } });
+  const m: Record<string, string> = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const n = (v: string | undefined, d: number, lo: number, hi: number) => {
     const x = Number(v);
     return v !== undefined && v !== "" && Number.isFinite(x) ? Math.min(hi, Math.max(lo, Math.round(x))) : d;
@@ -44,11 +46,13 @@ export interface QuizState {
 /** Is the quiz switched on for this guest's event, and where is the guest with it. A quiz with too few questions never blocks anyone. */
 export async function quizState(reg: { id: string; eventId: string; quizScore: number | null; quizTotal: number | null; quizAt: Date | null; quizAttempts: number }): Promise<QuizState> {
   const off: QuizState = { required: false, enabled: false, count: 0, pass: 0, attempts: 0, attemptsLeft: 0, locked: false, state: "todo", score: null, total: null };
-  const event = await prisma.event.findUnique({ where: { id: reg.eventId }, select: { modules: true } });
+  const [event, cfg, available] = await Promise.all([
+    prisma.event.findUnique({ where: { id: reg.eventId }, select: { modules: true } }),
+    getEntryConfig(reg.eventId),
+    prisma.testQuestion.count({ where: { eventId: reg.eventId, kind: "ENTRY", active: true } }),
+  ]);
   if (!event?.modules.includes("tests")) return off;
-  const cfg = await getEntryConfig(reg.eventId);
   if (!cfg.on) return off;
-  const available = await prisma.testQuestion.count({ where: { eventId: reg.eventId, kind: "ENTRY", active: true } });
   if (available < cfg.count) return off;
   const finished = reg.quizAt !== null && reg.quizScore !== null && reg.quizTotal;
   const passed = Boolean(finished) && (reg.quizTotal ? (reg.quizScore! / reg.quizTotal) * 100 >= cfg.pass : false);

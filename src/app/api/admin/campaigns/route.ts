@@ -2,14 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { sendCampaignSchema } from "@/lib/validation";
 import { audienceWhere } from "@/lib/campaigns";
-import { getSettingsMap } from "@/lib/settings";
-import { sendCampaignEmail } from "@/lib/notifications";
 import { requireEvent } from "@/lib/event";
-import { queueCampaignEmails } from "@/lib/emailQueue";
+import { queueCampaignEmails, drainEmailQueue } from "@/lib/emailQueue";
 import type { Campaign, Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 type StatKey = "delivered" | "opened" | "bounced" | "complained";
 type StatCounts = Record<StatKey, number>;
@@ -31,7 +29,7 @@ export async function GET(request: NextRequest) {
 
   const perCampaign: Record<string, StatCounts> = {};
   const totals = emptyCounts();
-  const waitingRows = campaignIds.length ? await prisma.queuedEmail.groupBy({ by: ["campaignId"], where: { campaignId: { in: campaignIds }, status: "PENDING" }, _count: { _all: true } }) : [];
+  const waitingRows = campaignIds.length ? await prisma.queuedEmail.groupBy({ by: ["campaignId"], where: { campaignId: { in: campaignIds }, status: { in: ["PENDING", "SENDING"] } }, _count: { _all: true } }) : [];
   const waiting: Record<string, number> = Object.fromEntries(waitingRows.map((w) => [w.campaignId, w._count._all]));
 
   if (campaignIds.length > 0) {
@@ -118,7 +116,35 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
   }
 
-  const settings = await getSettingsMap(event.id);
+  // The same email (event, subject, message, button) is never sent to the same person twice. People who already got it, or who are
+  // already waiting for it in the queue, are left out, so sending again after a cut-off only does the part that is left.
+  const ctaValue = ctaLabel ?? null;
+  const siblings = await prisma.campaign.findMany({ where: { eventId: event.id, subject, body, ctaLabel: ctaValue }, select: { id: true } });
+  const siblingIds = siblings.map((c) => c.id);
+  let alreadyGot = 0;
+  let alreadyWaiting = 0;
+  let toSend = recipients;
+  if (siblingIds.length) {
+    const ids = recipients.map((r: Registration) => r.id);
+    const [got, waiting] = await Promise.all([
+      prisma.emailEvent.findMany({ where: { type: "SENT", campaignId: { in: siblingIds }, registrationId: { in: ids } }, select: { registrationId: true }, distinct: ["registrationId"] }),
+      prisma.queuedEmail.findMany({ where: { status: { in: ["PENDING", "SENDING"] }, campaignId: { in: siblingIds }, registrationId: { in: ids } }, select: { registrationId: true }, distinct: ["registrationId"] }),
+    ]);
+    const gotSet = new Set(got.map((g) => g.registrationId));
+    const waitSet = new Set(waiting.map((w) => w.registrationId));
+    alreadyGot = gotSet.size;
+    alreadyWaiting = [...waitSet].filter((id) => !gotSet.has(id as string)).length;
+    toSend = recipients.filter((r: Registration) => !gotSet.has(r.id) && !waitSet.has(r.id));
+  }
+  if (toSend.length === 0) {
+    return NextResponse.json(
+      {
+        error: `Everyone in that audience already has this email (${alreadyGot}) or is already waiting for it (${alreadyWaiting}). Nothing was sent. Use "Send waiting emails now" to finish the ones that are waiting, or change the subject to send a new email.`,
+        code: "ALREADY_SENT",
+      },
+      { status: 409 }
+    );
+  }
 
   const campaign = await prisma.campaign.create({
     data: {
@@ -127,48 +153,24 @@ export async function POST(request: NextRequest) {
       body,
       audience,
       category,
-      recipientCount: recipients.length,
+      recipientCount: toSend.length,
       sentCount: 0,
       failedCount: 0,
       sentByName: session.name,
-      ctaLabel: ctaLabel ?? null,
+      ctaLabel: ctaValue,
     },
   });
 
-  let sentCount = 0;
-  let failedCount = 0;
-  const deferredIds: string[] = [];
-
-  try {
-    const CONCURRENCY = 5;
-    for (let i = 0; i < recipients.length; i += CONCURRENCY) {
-      const batch = recipients.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(
-        batch.map((r: Registration) => sendCampaignEmail(r, subject, body, settings, campaign.id, ctaLabel))
-      );
-      results.forEach((r, index) => {
-        if (r.deferred) deferredIds.push(batch[index].id);
-        else if (r.success) sentCount++;
-        else failedCount++;
-      });
-      // Every sender has used its daily limit: the rest waits for tomorrow instead of failing.
-      if (deferredIds.length) {
-        deferredIds.push(...recipients.slice(i + CONCURRENCY).map((x: Registration) => x.id));
-        break;
-      }
-    }
-  } finally {
-    // Always record what happened, even if something threw partway through
-    // (for example, the function hit its time limit on a very large audience).
-    await prisma.campaign.update({
-      where: { id: campaign.id },
-      data: { sentCount, failedCount },
-    });
-    await queueCampaignEmails(campaign.id, deferredIds);
-  }
+  // Every recipient is written to the queue first, then sent in short runs that the page keeps asking for. A run that is cut off
+  // loses nothing: the rest is still in the queue.
+  await queueCampaignEmails(campaign.id, toSend.map((r: Registration) => r.id));
+  const run = await drainEmailQueue({ campaignId: campaign.id, budgetMs: 40_000 });
+  const fresh = await prisma.campaign.findUnique({ where: { id: campaign.id }, select: { sentCount: true, failedCount: true } });
 
   return NextResponse.json({
     result: "success",
-    campaign: { id: campaign.id, recipientCount: recipients.length, sentCount, failedCount, waitingCount: deferredIds.length },
+    campaign: { id: campaign.id, recipientCount: toSend.length, sentCount: fresh?.sentCount ?? run.sent, failedCount: fresh?.failedCount ?? run.failed, waitingCount: run.waiting },
+    skipped: { alreadyGot, alreadyWaiting },
+    blocked: run.blocked,
   });
 }

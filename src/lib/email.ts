@@ -1,6 +1,7 @@
 import { sendViaGmail, type GmailAttachment } from "./gmail";
 import { BRAND_NAME, LOGO_URL } from "./brand";
 import { DEFAULT_COLOR, mix, normalizeHex, onColor, textOnWhite } from "./eventTheme";
+import { BASE_PATH } from "./basePath";
 
 // Brand palette: white and lemon green (the platform default). An event with its own colour overrides the accent
 // parts (button, badges, borders, tints) while an email is being rendered; see withBrand() below.
@@ -12,9 +13,11 @@ export interface EmailBrand {
   logoUrl: string;
   /** The name guests see as the sender ("From"). */
   fromName?: string;
+  /** The event address, so the logo can be served on its own white plate (see src/app/api/public/email-logo). */
+  slug?: string;
 }
 
-let active: { name: string; color: string; logoUrl: string; fromName?: string } | null = null;
+let active: { name: string; color: string; logoUrl: string; fromName?: string; slug?: string } | null = null;
 /** The event's colour, or null while it is the default one (the original palette is then used as it is). */
 function custom(): string | null {
   return active && active.color !== DEFAULT_COLOR ? active.color : null;
@@ -70,6 +73,7 @@ export function emailBrand(settings: Record<string, string | undefined>): EmailB
     color: normalizeHex(settings.event_color) ?? DEFAULT_COLOR,
     logoUrl: settings.event_logo_url || LOGO_URL,
     fromName,
+    slug: settings.event_slug || undefined,
   };
 }
 
@@ -108,9 +112,14 @@ export function fixSiteLinks(html: string): string {
   return html.replace(VERCEL_LINK, (found) => (found.toLowerCase() === base.toLowerCase() ? found : base));
 }
 
-/** The logo at the top of every email (see src/lib/brand.ts). It is the dark logo, which suits the white card. */
+/** The logo at the top of every email (see src/lib/brand.ts): the dark logo on its own white plate, so it also shows in dark mode. */
 export function emailLogoUrl(): string {
-  return active?.logoUrl ?? LOGO_URL;
+  const plain = active?.logoUrl ?? LOGO_URL;
+  if (!active?.slug) return plain;
+  // A short fingerprint of the logo address, so a changed logo is fetched again instead of served from a mail app's cache.
+  let h = 0;
+  for (const ch of plain) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `${appBaseUrl()}${BASE_PATH}/api/public/email-logo/${encodeURIComponent(active.slug)}?v=${h.toString(36)}`;
 }
 
 export function escapeHtml(value: string | null | undefined): string {
@@ -172,7 +181,7 @@ function emailShell(inner: string, opts: { maxWidth: number; ctaHtml?: string })
   return `<!--from:${encodeURIComponent(active?.fromName || active?.name || BRAND_NAME)}--><div style="${WHITE}color-scheme:light only;supported-color-schemes:light;padding:40px 16px;font-family:Georgia,'Times New Roman',serif;color:#000000;">
     <div style="${WHITE}max-width:${opts.maxWidth}px;margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid ${BRAND.cardBorder};">
       <div style="padding:36px 40px 0;text-align:center;">
-        <img src="${emailLogoUrl()}" alt="${escapeHtml(active?.name ?? BRAND_NAME)}" width="170" style="display:inline-block;width:170px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;" />
+        <img src="${emailLogoUrl()}" alt="${escapeHtml(active?.name ?? BRAND_NAME)}" width="196" style="display:inline-block;width:196px;max-width:70%;height:auto;border:0;outline:none;text-decoration:none;" />
       </div>
       ${inner}
       <div style="padding:28px 40px 40px;text-align:center;">

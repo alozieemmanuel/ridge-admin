@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { ghostButton } from "@/components/ui";
+import { flushUntilDone } from "@/lib/flushQueue";
 
 export interface SenderRow {
   kind: string;
@@ -16,6 +17,8 @@ export interface SenderRow {
   used: number;
   remaining: number | null;
   state: "ready" | "full" | "off" | "not_configured";
+  lastError?: string | null;
+  lastErrorAt?: string | null;
 }
 
 const STATE_TEXT: Record<SenderRow["state"], string> = {
@@ -43,10 +46,12 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
   async function flush() {
     setBusy(true);
     setNote(null);
-    const res = await fetch("/api/admin/senders/flush", { method: "POST" }).catch(() => null);
-    const json = res ? await res.json().catch(() => ({})) : {};
+    const r = await flushUntilDone({ onProgress: (p) => setNote(`Sending… ${p.sent} sent so far, ${p.waiting} still waiting. Keep this page open.`) });
     setBusy(false);
-    setNote(res?.ok ? `Sent ${json.sent}${json.failed ? `, ${json.failed} failed` : ""}. ${json.waiting} still waiting.` : json.error || "Could not send.");
+    setNote(
+      r.error ||
+        `Sent ${r.sent}${r.failed ? `, ${r.failed} failed` : ""}${r.skipped ? `, ${r.skipped} skipped (already had it)` : ""}. ${r.waiting} still waiting.${r.blocked ? ` Stopped: ${r.blocked}` : ""}`
+    );
     load();
     onChange?.();
   }
@@ -82,6 +87,7 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
                 <p className="text-xs text-muted mt-1.5">
                   {s.used} sent today{s.dailyLimit > 0 ? ` of ${s.dailyLimit}` : ", no limit"}
                 </p>
+                {s.lastError && <p className="text-xs text-red-400 mt-2 break-words">Last problem: {s.lastError}</p>}
                 {s.dailyLimit > 0 && (
                   <div className="h-1.5 rounded-full bg-border mt-2 overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
                     <div className={`h-full ${pct >= 100 ? "bg-amber-400" : "bg-gold"}`} style={{ width: `${pct}%` }} />
@@ -96,7 +102,7 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
       {data.waiting > 0 && (
         <div className="mt-4 flex items-center gap-3 flex-wrap text-sm">
           <span className="text-amber-400">
-            {data.waiting} email{data.waiting === 1 ? "" : "s"} waiting for the next day&apos;s allowance.
+            {data.waiting} email{data.waiting === 1 ? "" : "s"} waiting to be sent.
           </span>
           <button onClick={flush} disabled={busy} className={ghostButton}>
             {busy ? "Sending…" : "Send waiting emails now"}

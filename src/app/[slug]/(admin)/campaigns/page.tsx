@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
 import AdminShell from "@/components/AdminShell";
+import { flushUntilDone } from "@/lib/flushQueue";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
 import Pagination from "@/components/Pagination";
@@ -394,15 +395,29 @@ export default function CampaignsPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage({
-          text: `Sent to ${data.campaign.sentCount} of ${data.campaign.recipientCount}${
-            data.campaign.failedCount ? ` (${data.campaign.failedCount} failed)` : ""
-          }.${data.campaign.waitingCount ? ` ${data.campaign.waitingCount} are waiting: every sender used its daily limit, so they go out next.` : ""}`,
-          ok: true,
-        });
         setSubject("");
         setBody("");
         setStep("compose");
+        let { sentCount, failedCount, waitingCount } = data.campaign as { sentCount: number; failedCount: number; waitingCount: number };
+        let blocked: string | null = data.blocked ?? null;
+        let lost: string | null = null;
+        // The server sends in short runs. Keep asking until the campaign is finished, or no sender can send.
+        if (waitingCount > 0 && !blocked) {
+          const r = await flushUntilDone({
+            campaignId: data.campaign.id,
+            onProgress: (p) => setMessage({ text: `Sending… ${sentCount + p.sent} of ${data.campaign.recipientCount} sent. Keep this page open.`, ok: true }),
+          });
+          sentCount += r.sent;
+          failedCount += r.failed;
+          waitingCount = r.waiting;
+          blocked = r.blocked;
+          lost = r.error ?? null;
+        }
+        const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
+        setMessage({
+          text: `Sent to ${sentCount} of ${data.campaign.recipientCount}${failedCount ? ` (${failedCount} failed)` : ""}.${waitingCount ? ` ${waitingCount} are still waiting${blocked ? `: ${blocked}` : lost ? `: ${lost}` : ""}. Nothing is lost. They go out when you press Send waiting emails now, or at the next daily run.` : ""}${skipped}`,
+          ok: !blocked && !lost,
+        });
         load();
       } else {
         setMessage({ text: data.error || "Failed to send.", ok: false });

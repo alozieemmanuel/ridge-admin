@@ -592,6 +592,8 @@ model EmailSender {
   position   Int
   dailyLimit Int      @default(0)
   enabled    Boolean  @default(true)
+  lastError   String? // the most recent problem this service reported, shown on the sender card
+  lastErrorAt DateTime?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
@@ -603,14 +605,16 @@ model QueuedEmail {
   campaign       Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   registrationId String
   registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
-  status         String       @default("PENDING") // PENDING | SENT | FAILED
+  status         String       @default("PENDING") // PENDING | SENDING | SENT | FAILED
   attempts       Int          @default(0)
   lastError      String?
   createdAt      DateTime     @default(now())
+  claimedAt      DateTime? // when a run picked it up (a SENDING row older than a few minutes is given back)
   doneAt         DateTime?
 
   @@index([status, createdAt])
   @@index([campaignId])
+  @@index([campaignId, status])
 }
 
 // ---- Tests (the "tests" module): a question bank per event and one attempt per ticket ----

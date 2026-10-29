@@ -47,6 +47,25 @@ function AttendanceInner() {
   const [previewing, setPreviewing] = useState<"invitation" | "reminder" | null>(null);
   const [bulk, setBulk] = useState<{ audience: "NOT_INVITED" | "INVITED_NOT_RESERVED"; count: number } | null>(null);
   const [sending, setSending] = useState(false);
+  const [extras, setExtras] = useState<{ details: boolean; button: boolean } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/admin/settings", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((j) => setExtras({ details: j.settings?.invite_show_details !== "0", button: j.settings?.invite_show_button !== "0" }))
+      .catch(() => {});
+  }, []);
+
+  async function setExtra(key: "details" | "button", on: boolean) {
+    if (!extras) return;
+    const prev = extras;
+    setExtras({ ...extras, [key]: on });
+    const res = await fetch("/api/admin/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [key === "details" ? "invite_show_details" : "invite_show_button"]: on ? "1" : "0" }) }).catch(() => null);
+    if (!res?.ok) {
+      setExtras(prev);
+      setMessage({ text: "Could not save that choice. Try again.", ok: false });
+    }
+  }
 
   const load = useCallback(async () => {
     const q = lookup ? `?code=${encodeURIComponent(lookup)}` : "";
@@ -181,6 +200,18 @@ function AttendanceInner() {
           Every guest has their own link. When they open it they see their details and press <em>Reserve My Seat</em>, and their ticket is emailed to them. You can also send to a single guest from their
           page in <Link href={ep("/contacts")} className="text-goldlight underline">{people}</Link>.
         </p>
+        {extras && (
+          <div className="mb-4 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={extras.details} onChange={(e) => setExtra("details", e.target.checked)} />
+              Show the event details box in invitation and reminder emails
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={extras.button} onChange={(e) => setExtra("button", e.target.checked)} />
+              Show the Reserve My Seat button
+            </label>
+          </div>
+        )}
         {bulk ? (
           <div className="border border-gold/40 rounded-xl p-4">
             <p className="text-sm mb-3">

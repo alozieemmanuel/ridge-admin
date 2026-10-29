@@ -8,7 +8,7 @@ import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
 import { defaultTemplate } from "@/lib/emailDefaults";
 import { ticketQrPng } from "@/lib/ticket";
 import type { GmailAttachment } from "@/lib/gmail";
-import type { SendEmailResult, EmailKind, ReceiptLine } from "@/lib/email";
+import type { SendEmailResult, EmailKind, ReceiptLine, SummaryBlock } from "@/lib/email";
 import { buildReceiptLines, buildLedgerLines, paidText, usdText } from "@/lib/receipt";
 import type { Registration, BrochureRequest } from "@prisma/client";
 
@@ -708,24 +708,30 @@ async function buildInvitation(
   const subject = mergeTemplate(template.subject, vars);
   const bodyText = mergeTemplate(template.body, vars);
 
+  // Both extras can be switched off for an event (Attendance page): then the email is just the message.
+  const showDetails = settings.invite_show_details !== "0";
+  const showButton = settings.invite_show_button !== "0";
   const html = renderBrandedEmail({
-        brand: emailBrand(settings),
+    brand: emailBrand(settings),
     eyebrow: settings.event_caption || "By invitation only",
     heading: subject,
     bodyText,
-    summaryBlocks: [
-      {
-        heading: "The Event",
-        rows: [
-          ["Event", settings.programme_name],
-          ["Date", settings.event_date],
-          ["Time", settings.event_time || "To be announced"],
-          ["Venue", settings.event_venue],
-        ],
-      },
-    ],
-    ctaLabel: "Reserve My Seat",
-    ctaUrl: link,
+    ...(showDetails
+      ? {
+          summaryBlocks: [
+            {
+              heading: "The Event",
+              rows: [
+                ["Event", settings.programme_name],
+                ["Date", settings.event_date],
+                ["Time", settings.event_time || "To be announced"],
+                ["Venue", settings.event_venue],
+              ],
+            } as SummaryBlock,
+          ],
+        }
+      : {}),
+    ...(showButton ? { ctaLabel: "Reserve My Seat", ctaUrl: link } : {}),
   });
 
   return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };

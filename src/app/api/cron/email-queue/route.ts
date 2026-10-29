@@ -3,7 +3,7 @@ import { drainEmailQueue } from "@/lib/emailQueue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 /**
  * Sends the campaign emails that were waiting because every sender had used its daily limit. Safe to call often:
@@ -15,7 +15,7 @@ async function run(request: NextRequest) {
   if (!secret) return NextResponse.json({ error: "CRON_SECRET is not set." }, { status: 503 });
   const given = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || request.nextUrl.searchParams.get("key") || "";
   if (given !== secret) return NextResponse.json({ error: "Not allowed." }, { status: 401 });
-  const result = await drainEmailQueue({ max: 400 });
+  const result = await drainEmailQueue({ max: 1000, budgetMs: 50_000 });
   return NextResponse.json({ ok: true, ...result });
 }
 

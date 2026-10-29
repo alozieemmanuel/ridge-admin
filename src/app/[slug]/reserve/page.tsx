@@ -251,7 +251,7 @@ function ReserveInner() {
             {justReserved && (
               <div role="status" className="border border-gold bg-gold/15 rounded-xl p-4 mb-6 text-sm text-center">
                 <strong>{justReserved.viaQuiz ? "You passed. Your seat is reserved." : "Your seat is reserved."}</strong>{" "}
-                {justReserved.emailSent ? `Your ticket has been emailed to ${view.guest.email}.` : "We couldn't email your ticket just now, but it is below, and the team can resend it."}
+                {justReserved.emailSent ? (justReserved.viaQuiz ? `We are emailing your ticket to ${view.guest.email}. It is also below.` : `Your ticket has been emailed to ${view.guest.email}.`) : "We couldn't email your ticket just now, but it is below, and the team can resend it."}
               </div>
             )}
             {error && (
