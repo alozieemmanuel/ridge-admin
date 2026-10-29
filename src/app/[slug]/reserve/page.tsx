@@ -25,7 +25,7 @@ function Field({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonNullable<View["quiz"]>; contact: string; onPassed: () => void }) {
+function QuizBox({ token, quiz, contact, onPassed, onActive }: { token: string; quiz: NonNullable<View["quiz"]>; contact: string; onPassed: (info: { reserved: boolean; emailSent: boolean }) => void; onActive: (on: boolean) => void }) {
   const [paper, setPaper] = useState<{ qid: string; text: string; options: string[] }[] | null>(null);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
@@ -44,8 +44,11 @@ function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonN
     setBusy(false);
     if (json.state) setState(json.state);
     if (!ok) return setError(json.state?.locked ? null : json.error || "We couldn't start the quiz. Please try again.");
-    if (json.paper) setPaper(json.paper);
-    else onPassed();
+    if (json.paper) {
+      setPaper(json.paper);
+      onActive(true);
+      window.scrollTo({ top: 0 });
+    } else onActive(false);
   }
   async function submit() {
     setBusy(true);
@@ -54,7 +57,9 @@ function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonN
     setBusy(false);
     if (!ok) return setError(json.error || "We couldn't send your answers. Please try again.");
     setPaper(null);
-    if (json.state && !json.state.required) onPassed();
+    onActive(false);
+    window.scrollTo({ top: 0 });
+    if (json.passed) onPassed({ reserved: Boolean(json.reserved), emailSent: json.emailSent !== false });
     else if (json.state) setState(json.state);
   }
 
@@ -63,7 +68,7 @@ function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonN
   const triedOnce = state.state === "failed" && state.score !== null;
   return (
     <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
-      <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Before you reserve</h2>
+      <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Step 1 of 2: pass the quiz</h2>
       {!paper && state.locked && (
         <div className="text-center">
           <p className="font-serif text-2xl mb-2">That was your last try</p>
@@ -83,9 +88,9 @@ function QuizBox({ token, quiz, contact, onPassed }: { token: string; quiz: NonN
             </>
           ) : (
             <>
-              <p className="font-serif text-2xl mb-2">Think you know your real estate?</p>
+              <p className="font-serif text-2xl mb-2">Think you know real estate? Prove it.</p>
               <p className="text-sm text-muted leading-relaxed mb-5">
-                Seats are limited, so we are keeping them for people who are serious. Answer {state.count} questions. Get {state.pass >= 100 ? "every one" : `${state.pass}%`} right and the Reserve button is yours. You have {state.attempts} tries.
+                Seats are limited, so you earn yours by passing a quick challenge. Answer {state.count} questions and get {state.pass >= 100 ? "every one" : `${state.pass}%`} right. Your seat is only reserved once you pass, and your ticket appears right away. You have {state.attempts} tries.
               </p>
             </>
           )}
@@ -144,7 +149,10 @@ function ReserveInner() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [justReserved, setJustReserved] = useState<{ emailSent: boolean } | null>(null);
+  const [justReserved, setJustReserved] = useState<{ emailSent: boolean; viaQuiz?: boolean } | null>(null);
+  const [quizActive, setQuizActive] = useState(false);
+  const [download, setDownload] = useState<"png" | "pdf" | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!token) {
@@ -188,6 +196,22 @@ function ReserveInner() {
     }
   }
 
+  async function saveTicket(kind: "png" | "pdf") {
+    if (!view?.ticket) return;
+    setDownload(kind);
+    setDownloadError(null);
+    try {
+      const lib = await import("@/lib/ticketImage");
+      const data = { eventName: view.event.name, guest: view.guest.fullName, date: view.event.date, time: view.event.time, venue: view.event.venue, code: view.ticket.code, qrSvg: view.ticket.qrSvg, color: view.event.color ?? seed?.color };
+      if (kind === "png") await lib.downloadTicketPng(data);
+      else await lib.downloadTicketPdf(data);
+    } catch {
+      setDownloadError("We couldn't make the file. Take a screenshot of your ticket instead.");
+    } finally {
+      setDownload(null);
+    }
+  }
+
   const theme = themeStyle(view?.event.color ?? seed?.color);
   const contact = view ? [view.event.contactEmail, view.event.contactPhone].filter(Boolean).join(" or ") : "";
 
@@ -226,7 +250,7 @@ function ReserveInner() {
 
             {justReserved && (
               <div role="status" className="border border-gold bg-gold/15 rounded-xl p-4 mb-6 text-sm text-center">
-                <strong>Your seat is reserved.</strong>{" "}
+                <strong>{justReserved.viaQuiz ? "You passed. Your seat is reserved." : "Your seat is reserved."}</strong>{" "}
                 {justReserved.emailSent ? `Your ticket has been emailed to ${view.guest.email}.` : "We couldn't email your ticket just now, but it is below, and the team can resend it."}
               </div>
             )}
@@ -236,25 +260,82 @@ function ReserveInner() {
               </p>
             )}
 
-            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
-              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
-              <div className="grid sm:grid-cols-2 gap-5">
-                <Field label="Name" value={view.guest.fullName} />
-                <Field label="Email" value={view.guest.email} />
-                {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
-              </div>
-            </section>
+            {view.reserved && view.ticket && (
+              <div className="mb-6">
+                <section className="bg-pagebg border-2 border-gold rounded-2xl overflow-hidden" aria-label="Your ticket">
+                  <div className="bg-gold px-6 py-4 text-[#141C08]">
+                    <p className="text-[11px] uppercase tracking-[0.2em] font-bold">Admit one · By invitation</p>
+                    <p className="font-serif text-xl font-bold mt-1">{view.event.name}</p>
+                  </div>
+                  <div className="px-6 pt-5 pb-4">
+                    <Field label="Guest" value={view.guest.fullName} />
+                    <div className="grid grid-cols-2 gap-5 mt-4">
+                      <Field label="Date" value={view.event.date} />
+                      <Field label="Time" value={view.event.time} />
+                    </div>
+                    <div className="mt-4">
+                      <Field label="Venue" value={view.event.venue} />
+                    </div>
+                  </div>
+                  <div className="border-t-2 border-dashed border-border mx-4" />
+                  <div className="px-6 py-5 bg-tint flex items-center gap-5 flex-wrap">
+                    <div className="w-40 h-40 bg-white rounded-lg p-1.5 shrink-0 [&_svg]:w-full [&_svg]:h-full" dangerouslySetInnerHTML={{ __html: view.ticket.qrSvg }} aria-label={`QR code for ticket ${view.ticket.code}`} role="img" />
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.15em] text-muted mb-1">Ticket code</p>
+                      <p className="font-mono text-2xl tracking-wider font-bold">{view.ticket.code}</p>
+                      <p className="text-sm text-muted mt-2 max-w-xs">Show this at the entrance. Take a screenshot so you have it even without a signal.</p>
+                      {view.ticket.checkedIn && <p className="text-sm text-emerald-400 mt-2 font-medium">You have been checked in.</p>}
+                    </div>
+                  </div>
+                </section>
 
-            <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
-              <h2 className="text-xs uppercase tracking-wider text-muted mb-4">The event</h2>
-              <div className="grid sm:grid-cols-3 gap-5">
-                <Field label="Date" value={view.event.date} />
-                <Field label="Time" value={view.event.time} />
-                <Field label="Venue" value={view.event.venue} />
+                <div className="mt-5">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => saveTicket("png")} disabled={download !== null} className={primaryButton}>
+                      {download === "png" ? "Preparing…" : "Download PNG"}
+                    </button>
+                    <button onClick={() => saveTicket("pdf")} disabled={download !== null} className={primaryButton}>
+                      {download === "pdf" ? "Preparing…" : "Download PDF"}
+                    </button>
+                  </div>
+                  {downloadError && (
+                    <p role="alert" className="text-red-400 text-sm mt-3 text-center">
+                      {downloadError}
+                    </p>
+                  )}
+                </div>
               </div>
-            </section>
+            )}
 
-            {view.event.price && (
+            {!view.reserved && !view.full && !quizActive && view.quiz?.required && (
+              <div role="note" className="border border-gold bg-gold/15 rounded-xl p-4 mb-6 text-sm text-center">
+                <strong>Your seat is not reserved yet.</strong> Pass the short quiz below to reserve it. Once you pass, your ticket appears here.
+              </div>
+            )}
+
+            {!view.reserved && !quizActive && (
+              <>
+              <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+                <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Your details</h2>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <Field label="Name" value={view.guest.fullName} />
+                  <Field label="Email" value={view.guest.email} />
+                  {view.guest.phone && <Field label="Phone" value={view.guest.phone} />}
+                </div>
+              </section>
+
+              <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
+                <h2 className="text-xs uppercase tracking-wider text-muted mb-4">The event</h2>
+                <div className="grid sm:grid-cols-3 gap-5">
+                  <Field label="Date" value={view.event.date} />
+                  <Field label="Time" value={view.event.time} />
+                  <Field label="Venue" value={view.event.venue} />
+                </div>
+              </section>
+              </>
+            )}
+
+            {view.event.price && !quizActive && (
               <section className="bg-pagebg border border-border rounded-2xl p-6 mb-6">
                 <h2 className="text-xs uppercase tracking-wider text-muted mb-4">Ticket</h2>
                 <p className="font-serif text-2xl">{view.event.price}</p>
@@ -262,7 +343,16 @@ function ReserveInner() {
               </section>
             )}
 
-            {!view.reserved && !view.full && view.quiz?.required && <QuizBox token={token} quiz={view.quiz} contact={contact} onPassed={load} />}
+            {!view.reserved && !view.full && view.quiz?.required && <QuizBox
+                token={token}
+                quiz={view.quiz}
+                contact={contact}
+                onActive={setQuizActive}
+                onPassed={(info) => {
+                  if (info.reserved) setJustReserved({ emailSent: info.emailSent, viaQuiz: true });
+                  load();
+                }}
+              />}
 
             {!view.reserved && !view.full && !view.quiz?.required && (
               <div className="text-center">
@@ -278,35 +368,6 @@ function ReserveInner() {
                 <h2 className="font-serif text-xl mb-2">All seats have been taken</h2>
                 <p className="text-sm text-muted">We&apos;re sorry, the room is now full.{contact ? ` Please contact us on ${contact} if you have any questions.` : ""}</p>
               </div>
-            )}
-
-            {view.reserved && view.ticket && (
-              <section className="bg-pagebg border-2 border-gold rounded-2xl overflow-hidden" aria-label="Your ticket">
-                <div className="bg-gold px-6 py-4 text-[#141C08]">
-                  <p className="text-[11px] uppercase tracking-[0.2em] font-bold">Admit one · By invitation</p>
-                  <p className="font-serif text-xl font-bold mt-1">{view.event.name}</p>
-                </div>
-                <div className="px-6 pt-5 pb-4">
-                  <Field label="Guest" value={view.guest.fullName} />
-                  <div className="grid grid-cols-2 gap-5 mt-4">
-                    <Field label="Date" value={view.event.date} />
-                    <Field label="Time" value={view.event.time} />
-                  </div>
-                  <div className="mt-4">
-                    <Field label="Venue" value={view.event.venue} />
-                  </div>
-                </div>
-                <div className="border-t-2 border-dashed border-border mx-4" />
-                <div className="px-6 py-5 bg-tint flex items-center gap-5 flex-wrap">
-                  <div className="w-40 h-40 bg-white rounded-lg p-1.5 shrink-0 [&_svg]:w-full [&_svg]:h-full" dangerouslySetInnerHTML={{ __html: view.ticket.qrSvg }} aria-label={`QR code for ticket ${view.ticket.code}`} role="img" />
-                  <div>
-                    <p className="text-[11px] uppercase tracking-[0.15em] text-muted mb-1">Ticket code</p>
-                    <p className="font-mono text-2xl tracking-wider font-bold">{view.ticket.code}</p>
-                    <p className="text-sm text-muted mt-2 max-w-xs">Show this at the entrance. Take a screenshot so you have it even without a signal.</p>
-                    {view.ticket.checkedIn && <p className="text-sm text-emerald-400 mt-2 font-medium">You have been checked in.</p>}
-                  </div>
-                </div>
-              </section>
             )}
 
             {contact && <p className="text-xs text-muted text-center mt-8">Questions? Contact us on {contact}.</p>}

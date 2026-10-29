@@ -2,12 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSettingsMap } from "@/lib/settings";
 import { verifyReserveToken } from "@/lib/proof-token";
-import { getCapacity, reserveSeat } from "@/lib/reservations";
-import { sendTicket } from "@/lib/notifications";
+import { getCapacity } from "@/lib/reservations";
 import { ticketQrSvg } from "@/lib/ticket";
-import { logAudit } from "@/lib/audit";
 import { termsOf } from "@/lib/eventTheme";
 import { quizState } from "@/lib/entryQuiz";
+import { completeReservation } from "@/lib/reserveFlow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,34 +74,13 @@ export async function POST(request: NextRequest) {
   if (reg && !reg.reservedAt && (await quizState(reg)).required) {
     return NextResponse.json({ error: "Please complete the short quiz first.", code: "QUIZ" }, { status: 403 });
   }
-  const result = await reserveSeat(id);
-  if (!result.ok) {
-    if (result.reason === "NOT_FOUND") return NextResponse.json({ error: "We couldn't find your invitation. Please contact the team." }, { status: 404 });
+  const flow = await completeReservation(id, request);
+  if (!flow.ok) {
+    if (flow.reason === "NOT_FOUND") return NextResponse.json({ error: "We couldn't find your invitation. Please contact the team." }, { status: 404 });
     return NextResponse.json({ error: "Sorry, all the seats have now been taken.", code: "FULL" }, { status: 409 });
   }
-
-  let emailSent = true;
-  if (!result.alreadyReserved) {
-    const r = result.registration;
-    const actor = { adminId: null, name: `${r.fullName} (guest)`, email: r.email };
-    const entry = { entityType: "registration" as const, entityId: r.id, entityLabel: r.fullName, eventId: r.eventId };
-    await logAudit(actor, { ...entry, action: "participant.reserve", details: { by: "guest" } }, request);
-    try {
-      await sendTicket(r);
-      await logAudit({ adminId: null, name: "System" }, { ...entry, action: "participant.send_ticket", details: { outcome: "sent", to: r.email } }, request);
-    } catch (err) {
-      emailSent = false;
-      console.error("[reserve] Ticket email failed:", err);
-      await logAudit(
-        { adminId: null, name: "System" },
-        { ...entry, action: "participant.send_ticket", details: { outcome: "failed", error: (err instanceof Error ? err.message : "The ticket email failed.").slice(0, 300) } },
-        request
-      );
-    }
-  } else {
-    emailSent = Boolean(result.registration.ticketSentAt);
-  }
+  const { emailSent } = flow;
 
   const data = await view(id);
-  return NextResponse.json({ result: "success", alreadyReserved: result.alreadyReserved, emailSent, ...data });
+  return NextResponse.json({ result: "success", alreadyReserved: flow.alreadyReserved, emailSent, ...data });
 }

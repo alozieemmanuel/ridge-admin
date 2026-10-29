@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyReserveToken } from "@/lib/proof-token";
 import { quizState, startQuiz, submitQuiz } from "@/lib/entryQuiz";
+import { completeReservation } from "@/lib/reserveFlow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +27,14 @@ export async function POST(request: NextRequest) {
     const res = await submitQuiz(reg, typeof body.answers === "object" && body.answers ? body.answers : {});
     if (!res) return NextResponse.json({ error: "Start the quiz first." }, { status: 409 });
     const fresh = await prisma.registration.findUnique({ where: { id } });
-    return NextResponse.json({ state: await quizState(fresh!) });
+    const after = await quizState(fresh!);
+    // Passing reserves the seat straight away and emails the ticket.
+    if (!after.required) {
+      const flow = await completeReservation(id, request, "quiz");
+      if (!flow.ok) return NextResponse.json({ state: after, passed: true, full: flow.reason === "FULL" });
+      return NextResponse.json({ state: after, passed: true, reserved: true, emailSent: flow.emailSent });
+    }
+    return NextResponse.json({ state: after });
   }
   const paper = await startQuiz(reg, st.count);
   return NextResponse.json({ paper, state: st });
