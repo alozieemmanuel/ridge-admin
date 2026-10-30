@@ -503,7 +503,7 @@ export interface SendEmailInput {
   attachments?: GmailAttachment[];
 }
 
-export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND";
+export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
 
 export interface SendEmailResult {
   success: boolean;
@@ -528,13 +528,15 @@ function withName(addr: { name?: string; email: string }, fromName?: string): { 
 }
 
 function parseAddress(value: string): { name?: string; email: string } {
-  const v = value.trim();
+  // Env values are often pasted with quotes around the whole thing, so strip those first.
+  const v = value.trim().replace(/^["']+|["']+$/g, "").trim();
   const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
   if (match) {
     const name = match[1].trim();
     return name ? { name, email: match[2].trim() } : { email: match[2].trim() };
   }
-  return { email: v };
+  const bare = v.match(/[^\s<>"',;]+@[^\s<>"',;]+\.[^\s<>"',;]+/);
+  return { email: bare ? bare[0] : v };
 }
 
 /** Brevo errors arrive as JSON like {"code":"invalid_parameter","message":"..."} — pull out the readable part. */
@@ -576,6 +578,15 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
     return { success: true, provider: "BREVO", providerMessageId: undefined };
   }
 
+  const brevoFrom = withName(parseAddress(from), input.fromName);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(brevoFrom.email)) {
+    return {
+      success: false,
+      provider: "BREVO",
+      error: `EMAIL_FROM on the server is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.`,
+    };
+  }
+
   try {
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
@@ -585,7 +596,7 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
         Accept: "application/json",
       },
       body: JSON.stringify({
-        sender: withName(parseAddress(from), input.fromName),
+        sender: brevoFrom,
         to: [{ email: input.to }],
         subject: input.subject,
         htmlContent: input.html,

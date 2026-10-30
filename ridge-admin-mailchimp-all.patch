@@ -1,0 +1,470 @@
+
+diff --git a/prisma/migrations/20261030070000_email_provider_mailchimp/migration.sql b/prisma/migrations/20261030070000_email_provider_mailchimp/migration.sql
+new file mode 100644
+index 0000000..c9b7ea9
+--- /dev/null
++++ b/prisma/migrations/20261030070000_email_provider_mailchimp/migration.sql
+@@ -0,0 +1 @@
++ALTER TYPE "EmailProvider" ADD VALUE IF NOT EXISTS 'MAILCHIMP';
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 1f9aecf..f1076bf 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -36,6 +36,7 @@ enum EmailProvider {
+   RESEND // legacy: campaigns sent before the move to Brevo. Kept so old rows still read; never written now.
+   BREVO // campaigns (broadcast email)
+   MAILERSEND // a sender in the pool (see EmailSender)
++  MAILCHIMP // Mailchimp Transactional, a sender in the pool
+ }
+ 
+ enum ProofStatus {
+@@ -587,7 +588,7 @@ model PaymentRecord {
+ // own keys stay in the environment (GMAIL_*, BREVO_API_KEY, MAILERSEND_API_KEY). dailyLimit 0 means no limit.
+ model EmailSender {
+   id         String   @id @default(cuid())
+-  kind       String   @unique // "GMAIL" | "BREVO" | "MAILERSEND"
++  kind       String   @unique // "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP"
+   label      String
+   position   Int
+   dailyLimit Int      @default(0)
+diff --git a/src/app/[slug]/(admin)/campaigns/page.tsx b/src/app/[slug]/(admin)/campaigns/page.tsx
+index 2da530d..3ac47d8 100644
+--- a/src/app/[slug]/(admin)/campaigns/page.tsx
++++ b/src/app/[slug]/(admin)/campaigns/page.tsx
+@@ -307,6 +307,8 @@ export default function CampaignsPage() {
+   const [withButton, setWithButton] = useState(false);
+   const [buttonLabel, setButtonLabel] = useState("");
+   const ctaLabel = withButton ? (buttonLabel.trim() || terms.action) : undefined;
++  const [hasMailchimp, setHasMailchimp] = useState(false);
++  const [via, setVia] = useState<"POOL" | "MAILCHIMP">("POOL");
+   const [testTo, setTestTo] = useState("");
+   const [testing, setTesting] = useState(false);
+   const [testMessage, setTestMessage] = useState<{ text: string; ok: boolean } | null>(null);
+@@ -345,6 +347,7 @@ export default function CampaignsPage() {
+         const data = await campaignsRes.json();
+         setCampaigns(data.campaigns);
+         if (data.stats) setStats(data.stats);
++        setHasMailchimp(Boolean(data.mailchimp));
+       }
+     } catch {
+       // Network hiccup — keep showing the last data; the next poll will retry.
+@@ -388,7 +391,7 @@ export default function CampaignsPage() {
+     setSending(true);
+     setMessage(null);
+     try {
+-      const res = await fetch("/api/admin/campaigns", {
++      const res = await fetch(via === "MAILCHIMP" && hasMailchimp ? "/api/admin/campaigns/mailchimp" : "/api/admin/campaigns", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ audience, subject, body, ctaLabel }),
+@@ -506,6 +509,27 @@ export default function CampaignsPage() {
+           )}
+         </div>
+ 
++        {hasMailchimp && (
++          <div className="border border-border rounded-xl p-4 mb-5">
++            <p className="text-xs uppercase tracking-wider text-muted mb-2">Send with</p>
++            <div className="flex flex-wrap gap-4 text-sm">
++              <label className="flex items-center gap-2 cursor-pointer">
++                <input type="radio" name="via" checked={via === "POOL"} onChange={() => setVia("POOL")} className="accent-[rgb(var(--c-gold))]" />
++                Our email senders
++              </label>
++              <label className="flex items-center gap-2 cursor-pointer">
++                <input type="radio" name="via" checked={via === "MAILCHIMP"} onChange={() => setVia("MAILCHIMP")} className="accent-[rgb(var(--c-gold))]" />
++                Mailchimp
++              </label>
++            </div>
++            {via === "MAILCHIMP" && (
++              <p className="text-xs text-muted mt-2 leading-relaxed">
++                Guests are added to your Mailchimp audience and Mailchimp sends the email. Anyone who unsubscribed there is skipped. The email carries Mailchimp&apos;s unsubscribe link. Opens and delivery show in Mailchimp, here they show as Sent. The test below goes through our senders.
++              </p>
++            )}
++          </div>
++        )}
++
+         <div className="border border-border rounded-xl p-4 mb-5">
+           <p className="text-xs uppercase tracking-wider text-muted mb-2">Send a test first</p>
+           <div className="flex items-center gap-3 flex-wrap">
+diff --git a/src/app/api/admin/campaigns/mailchimp/route.ts b/src/app/api/admin/campaigns/mailchimp/route.ts
+new file mode 100644
+index 0000000..d0675f6
+--- /dev/null
++++ b/src/app/api/admin/campaigns/mailchimp/route.ts
+@@ -0,0 +1,98 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { sendCampaignSchema } from "@/lib/validation";
++import { audienceWhere } from "@/lib/campaigns";
++import { requireEvent } from "@/lib/event";
++import { getSettingsMap } from "@/lib/settings";
++import { buildMailchimpCampaignEmail, reserveLink } from "@/lib/notifications";
++import { mailchimpConfigured, sendMailchimpCampaign, withMailchimpFooter, type MailchimpGuest } from "@/lib/mailchimp";
++import type { Registration } from "@prisma/client";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/**
++ * Sends a broadcast through Mailchimp's own campaigns. The guests are added to the Mailchimp audience and Mailchimp sends
++ * one campaign to them. Mailchimp leaves out anyone who has unsubscribed there. People who already got the same email from
++ * this dashboard are left out, like on the normal send.
++ */
++export async function POST(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "campaigns" });
++  if (!ctx.ok) return ctx.response;
++  const { event, session } = ctx;
++
++  if (!mailchimpConfigured()) {
++    return NextResponse.json({ error: "Mailchimp is not set up on the server. Add MAILCHIMP_API_KEY, MAILCHIMP_AUDIENCE_ID and MAILCHIMP_FROM." }, { status: 400 });
++  }
++
++  let raw: unknown;
++  try {
++    raw = await request.json();
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }
++  const parsed = sendCampaignSchema.safeParse(raw);
++  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
++  const { audience, subject, body, ctaLabel } = parsed.data;
++  const category = parsed.data.category || null;
++  const ctaValue = ctaLabel ?? null;
++
++  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, { email: { not: "" } }, audienceWhere(audience, category)] } });
++  if (recipients.length === 0) return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
++
++  const siblings = await prisma.campaign.findMany({ where: { eventId: event.id, subject, body, ctaLabel: ctaValue }, select: { id: true } });
++  let toSend: Registration[] = recipients;
++  let alreadyGot = 0;
++  if (siblings.length) {
++    const got = await prisma.emailEvent.findMany({
++      where: { type: "SENT", campaignId: { in: siblings.map((s) => s.id) }, registrationId: { in: recipients.map((r: Registration) => r.id) } },
++      select: { registrationId: true },
++      distinct: ["registrationId"],
++    });
++    const gotSet = new Set(got.map((g) => g.registrationId));
++    alreadyGot = gotSet.size;
++    toSend = recipients.filter((r: Registration) => !gotSet.has(r.id));
++  }
++  if (toSend.length === 0) {
++    return NextResponse.json({ error: `Everyone in that audience already has this email (${alreadyGot}). Nothing was sent. Change the subject to send a new email.`, code: "ALREADY_SENT" }, { status: 409 });
++  }
++
++  const settings = await getSettingsMap(event.id);
++  const built = buildMailchimpCampaignEmail(settings, subject, body, ctaLabel);
++  const html = withMailchimpFooter(built.html, settings.event_name || event.name);
++
++  // One row per address (Mailchimp has one member per email).
++  const seen = new Set<string>();
++  const guests: (MailchimpGuest & { reg: Registration })[] = [];
++  for (const r of toSend) {
++    const email = r.email.trim().toLowerCase();
++    if (!email || seen.has(email)) continue;
++    seen.add(email);
++    const parts = r.fullName.trim().split(/\s+/);
++    guests.push({ id: r.id, email, firstName: parts[0] || "there", lastName: parts.slice(1).join(" "), link: reserveLink(r, settings.event_slug), reg: r });
++  }
++
++  const campaign = await prisma.campaign.create({
++    data: { eventId: event.id, subject, body, audience, category, recipientCount: guests.length, sentCount: 0, failedCount: 0, sentByName: session.name, ctaLabel: ctaValue },
++  });
++
++  try {
++    const res = await sendMailchimpCampaign({ name: settings.event_name || event.name, subject: built.subject, html, guests });
++    const rows = [
++      ...res.sent.map((g) => ({ source: "CAMPAIGN" as const, type: "SENT" as const, registrationId: g.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), providerMessageId: res.mailchimpCampaignId })),
++      ...res.left.map((l) => ({ source: "CAMPAIGN" as const, type: "FAILED" as const, registrationId: l.guest.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), errorMessage: l.reason })),
++    ];
++    for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
++    await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
++    return NextResponse.json({
++      result: "success",
++      campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
++      skipped: { alreadyGot, alreadyWaiting: 0 },
++      blocked: null,
++    });
++  } catch (err) {
++    // Nothing was sent, so the campaign row is removed and the same send can be tried again.
++    await prisma.campaign.delete({ where: { id: campaign.id } }).catch(() => {});
++    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
++  }
++}
+diff --git a/src/app/api/admin/campaigns/route.ts b/src/app/api/admin/campaigns/route.ts
+index 55e0e40..bfcaa4f 100644
+--- a/src/app/api/admin/campaigns/route.ts
++++ b/src/app/api/admin/campaigns/route.ts
+@@ -4,6 +4,7 @@ import { sendCampaignSchema } from "@/lib/validation";
+ import { audienceWhere } from "@/lib/campaigns";
+ import { requireEvent } from "@/lib/event";
+ import { queueCampaignEmails, drainEmailQueue } from "@/lib/emailQueue";
++import { mailchimpConfigured } from "@/lib/mailchimp";
+ import type { Campaign, Registration } from "@prisma/client";
+ 
+ export const runtime = "nodejs";
+@@ -73,6 +74,7 @@ export async function GET(request: NextRequest) {
+       };
+     }),
+     stats: totals,
++    mailchimp: mailchimpConfigured(),
+   });
+ }
+ 
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index 12fb4ed..1b2b46f 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -503,7 +503,7 @@ export interface SendEmailInput {
+   attachments?: GmailAttachment[];
+ }
+ 
+-export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND";
++export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
+ 
+ export interface SendEmailResult {
+   success: boolean;
+@@ -528,13 +528,15 @@ function withName(addr: { name?: string; email: string }, fromName?: string): {
+ }
+ 
+ function parseAddress(value: string): { name?: string; email: string } {
+-  const v = value.trim();
++  // Env values are often pasted with quotes around the whole thing, so strip those first.
++  const v = value.trim().replace(/^["']+|["']+$/g, "").trim();
+   const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+   if (match) {
+     const name = match[1].trim();
+     return name ? { name, email: match[2].trim() } : { email: match[2].trim() };
+   }
+-  return { email: v };
++  const bare = v.match(/[^\s<>"',;]+@[^\s<>"',;]+\.[^\s<>"',;]+/);
++  return { email: bare ? bare[0] : v };
+ }
+ 
+ /** Brevo errors arrive as JSON like {"code":"invalid_parameter","message":"..."} — pull out the readable part. */
+@@ -576,6 +578,15 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
+     return { success: true, provider: "BREVO", providerMessageId: undefined };
+   }
+ 
++  const brevoFrom = withName(parseAddress(from), input.fromName);
++  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(brevoFrom.email)) {
++    return {
++      success: false,
++      provider: "BREVO",
++      error: `EMAIL_FROM on the server is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.`,
++    };
++  }
++
+   try {
+     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+       method: "POST",
+@@ -585,7 +596,7 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
+         Accept: "application/json",
+       },
+       body: JSON.stringify({
+-        sender: withName(parseAddress(from), input.fromName),
++        sender: brevoFrom,
+         to: [{ email: input.to }],
+         subject: input.subject,
+         htmlContent: input.html,
+diff --git a/src/lib/mailchimp.ts b/src/lib/mailchimp.ts
+new file mode 100644
+index 0000000..b976863
+--- /dev/null
++++ b/src/lib/mailchimp.ts
+@@ -0,0 +1,149 @@
++import { createHash } from "crypto";
++
++/**
++ * Sends a campaign through Mailchimp's own campaigns (Marketing API), not through the sender list.
++ * The guests are put in your Mailchimp audience, a campaign is created for just them, and Mailchimp sends it.
++ * Mailchimp skips anyone who has unsubscribed there. Keys stay in the server environment:
++ *   MAILCHIMP_API_KEY      the Marketing API key (ends with the data centre, for example -us9)
++ *   MAILCHIMP_AUDIENCE_ID  the audience (list) the guests are added to
++ *   MAILCHIMP_FROM         "Name <address>" shown as the sender (the address must be confirmed in Mailchimp)
++ */
++
++export function mailchimpConfigured(): boolean {
++  return Boolean(process.env.MAILCHIMP_API_KEY && process.env.MAILCHIMP_AUDIENCE_ID && process.env.MAILCHIMP_FROM);
++}
++
++function clean(v: string | undefined): string {
++  return (v || "").trim().replace(/^["']+|["']+$/g, "").trim();
++}
++
++function config() {
++  const key = clean(process.env.MAILCHIMP_API_KEY);
++  const audience = clean(process.env.MAILCHIMP_AUDIENCE_ID);
++  const from = clean(process.env.MAILCHIMP_FROM);
++  const dc = key.split("-")[1];
++  if (!key || !dc) throw new Error("MAILCHIMP_API_KEY is missing or wrong. It should end with the data centre, for example -us9.");
++  if (!audience) throw new Error("MAILCHIMP_AUDIENCE_ID is not set on the server.");
++  if (!from) throw new Error("MAILCHIMP_FROM is not set on the server.");
++  const m = from.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
++  const email = (m ? m[2] : from).trim();
++  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error(`MAILCHIMP_FROM is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.`);
++  return { key, audience, dc, fromName: m ? m[1].trim() : "", fromEmail: email };
++}
++
++async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ ok: boolean; status: number; data: T }> {
++  const c = config();
++  const res = await fetch(`https://${c.dc}.api.mailchimp.com/3.0${path}`, {
++    method: init.method || "GET",
++    headers: { Authorization: `Basic ${Buffer.from(`any:${c.key}`).toString("base64")}`, "Content-Type": "application/json" },
++    body: init.body === undefined ? undefined : JSON.stringify(init.body),
++  });
++  const text = await res.text();
++  let data: unknown = null;
++  try {
++    data = text ? JSON.parse(text) : null;
++  } catch {
++    data = { detail: text.slice(0, 300) };
++  }
++  return { ok: res.ok, status: res.status, data: data as T };
++}
++
++function problem(r: { status: number; data: unknown }): string {
++  const d = r.data as { title?: string; detail?: string; errors?: { field?: string; message?: string }[] } | null;
++  const extra = d?.errors?.length ? ` (${d.errors.map((e) => `${e.field ? e.field + ": " : ""}${e.message}`).join("; ").slice(0, 300)})` : "";
++  return `Mailchimp ${r.status}${d?.title ? ` ${d.title}` : ""}: ${d?.detail || "request failed"}${extra}`;
++}
++
++const md5 = (email: string) => createHash("md5").update(email.trim().toLowerCase()).digest("hex");
++
++export interface MailchimpGuest {
++  id: string;
++  email: string;
++  firstName: string;
++  lastName: string;
++  link: string;
++}
++
++/** The merge field that holds each guest's own reserve link. Created once, if it is not there yet. */
++async function ensureLinkField(): Promise<void> {
++  const c = config();
++  const list = await api<{ merge_fields?: { tag: string }[] }>(`/lists/${c.audience}/merge-fields?count=100&fields=merge_fields.tag`);
++  if (!list.ok) throw new Error(problem(list));
++  if (list.data.merge_fields?.some((f) => f.tag === "RSVLINK")) return;
++  const made = await api(`/lists/${c.audience}/merge-fields`, { method: "POST", body: { tag: "RSVLINK", name: "Reserve link", type: "text", required: false, public: false } });
++  if (!made.ok) throw new Error(problem(made));
++}
++
++export interface MailchimpResult {
++  sent: MailchimpGuest[];
++  /** Guests Mailchimp will not email (unsubscribed there, or removed), with the reason. */
++  left: { guest: MailchimpGuest; reason: string }[];
++  mailchimpCampaignId: string;
++}
++
++/**
++ * Adds the guests to the audience (an existing member keeps their status, so nobody who unsubscribed is re-subscribed),
++ * makes a campaign for just them, checks it and sends it. Throws with a readable reason when something is wrong.
++ */
++export async function sendMailchimpCampaign(opts: { name: string; subject: string; html: string; guests: MailchimpGuest[]; budgetMs?: number }): Promise<MailchimpResult> {
++  const c = config();
++  const started = Date.now();
++  const budget = opts.budgetMs ?? 45_000;
++  await ensureLinkField();
++
++  const sent: MailchimpGuest[] = [];
++  const left: { guest: MailchimpGuest; reason: string }[] = [];
++  const queue = [...opts.guests];
++  const worker = async () => {
++    for (let g = queue.shift(); g; g = queue.shift()) {
++      if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, it carries on quickly for guests already added.");
++      const r = await api<{ status?: string }>(`/lists/${c.audience}/members/${md5(g.email)}`, {
++        method: "PUT",
++        body: { email_address: g.email, status_if_new: "subscribed", merge_fields: { FNAME: g.firstName, LNAME: g.lastName, RSVLINK: g.link } },
++      });
++      if (!r.ok) {
++        const d = r.data as { title?: string; detail?: string } | null;
++        // A refused address (for example one Mailchimp considers fake) only drops that person.
++        if (r.status === 400 || r.status === 403) left.push({ guest: g, reason: `Mailchimp refused this address${d?.title ? `: ${d.title}` : ""}` });
++        else throw new Error(problem(r));
++      } else if (r.data.status === "subscribed") sent.push(g);
++      else left.push({ guest: g, reason: `Not emailed: ${r.data.status || "not subscribed"} in Mailchimp` });
++    }
++  };
++  await Promise.all(Array.from({ length: 8 }, worker));
++  if (sent.length === 0) throw new Error("Mailchimp would not email any of these guests (they are unsubscribed or refused there). Nothing was sent.");
++
++  const seg = await api<{ id: number }>(`/lists/${c.audience}/segments`, { method: "POST", body: { name: `${opts.name} ${new Date().toISOString().slice(0, 16)}`.slice(0, 100), static_segment: sent.map((g) => g.email) } });
++  if (!seg.ok) throw new Error(problem(seg));
++
++  const camp = await api<{ id: string }>("/campaigns", {
++    method: "POST",
++    body: {
++      type: "regular",
++      recipients: { list_id: c.audience, segment_opts: { saved_segment_id: seg.data.id } },
++      settings: { subject_line: opts.subject.slice(0, 150), title: `${opts.name}: ${opts.subject.replace(/\*\|[^|]*\|\*/g, "").trim()}`.slice(0, 100), from_name: c.fromName || opts.name, reply_to: c.fromEmail, auto_footer: false },
++    },
++  });
++  if (!camp.ok) throw new Error(problem(camp));
++
++  const content = await api(`/campaigns/${camp.data.id}/content`, { method: "PUT", body: { html: opts.html } });
++  if (!content.ok) throw new Error(problem(content));
++
++  const check = await api<{ is_ready?: boolean; items?: { type: string; heading: string; details: string }[] }>(`/campaigns/${camp.data.id}/send-checklist`);
++  if (check.ok && check.data.is_ready === false) {
++    const why = (check.data.items || []).filter((i) => i.type === "error").map((i) => `${i.heading} ${i.details}`.replace(/<[^>]+>/g, "")).join(" | ");
++    await api(`/campaigns/${camp.data.id}`, { method: "DELETE" });
++    throw new Error(`Mailchimp is not ready to send: ${why || "unknown reason"}`);
++  }
++
++  const go = await api(`/campaigns/${camp.data.id}/actions/send`, { method: "POST" });
++  if (!go.ok) throw new Error(problem(go));
++  return { sent, left, mailchimpCampaignId: camp.data.id };
++}
++
++/** Adds the unsubscribe link and address that Mailchimp requires, if the email does not already have them. */
++export function withMailchimpFooter(html: string, eventName: string): string {
++  if (html.includes("*|UNSUB|*")) return html;
++  const footer = `<div style="max-width:560px;margin:16px auto 24px;padding:0 20px;text-align:center;font-family:Arial,sans-serif;font-size:12px;line-height:1.6;color:#8a8a8a;">You are getting this because you are on the guest list for ${eventName.replace(/[<>&]/g, "")}.<br><a href="*|UNSUB|*" style="color:#8a8a8a;">Unsubscribe</a><br>*|LIST:ADDRESS|*</div>`;
++  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${footer}</body>`) : html + footer;
++}
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index 69eae18..1e257fc 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -61,7 +61,7 @@ async function recordEvent(params: {
+   id: string;
+   type: "SENT" | "FAILED";
+   kind?: EmailKind;
+-  provider?: "GMAIL" | "BREVO" | "MAILERSEND";
++  provider?: "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
+   subject?: string;
+   providerMessageId?: string;
+   errorMessage?: string;
+@@ -471,6 +471,34 @@ export async function sendCampaignEmail(
+   });
+ }
+ 
++/**
++ * The email for a Mailchimp campaign. Mailchimp sends one email to everyone, so the parts that differ by person become
++ * Mailchimp merge tags (*|FNAME|* and so on) that Mailchimp fills in for each guest.
++ */
++export function buildMailchimpCampaignEmail(settings: Settings, subject: string, bodyText: string, ctaLabel?: string | null): { subject: string; html: string } {
++  const vars: Settings = {
++    ...settings,
++    first_name: "*|FNAME|*",
++    full_name: "*|FNAME|* *|LNAME|*",
++    email: "*|EMAIL|*",
++    phone: "*|PHONE|*",
++    reserve_link: "*|RSVLINK|*",
++  };
++  const mergedSubject = mergeTemplate(subject, vars);
++  const mergedBody = mergeTemplate(bodyText, vars);
++  return {
++    subject: mergedSubject,
++    // The sender-name comment at the front is only for our own senders, so it is dropped here.
++    html: renderBrandedEmail({
++      brand: emailBrand(settings),
++      eyebrow: settings.event_caption,
++      heading: mergedSubject,
++      bodyText: mergedBody,
++      ...(ctaLabel ? { ctaLabel, ctaUrl: "*|RSVLINK|*" } : {}),
++    }).replace(/^<!--from:[^>]*?-->/, ""),
++  };
++}
++
+ /**
+  * Sends a test of a campaign to one address the admin typed, so they can see the real email before it goes to everyone.
+  * It uses the same sender, layout and merge values as the real send (the name is the admin's own), is marked [TEST] in the

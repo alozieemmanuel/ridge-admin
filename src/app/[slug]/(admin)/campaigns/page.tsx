@@ -307,6 +307,8 @@ export default function CampaignsPage() {
   const [withButton, setWithButton] = useState(false);
   const [buttonLabel, setButtonLabel] = useState("");
   const ctaLabel = withButton ? (buttonLabel.trim() || terms.action) : undefined;
+  const [hasMailchimp, setHasMailchimp] = useState(false);
+  const [via, setVia] = useState<"POOL" | "MAILCHIMP">("POOL");
   const [testTo, setTestTo] = useState("");
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -345,6 +347,7 @@ export default function CampaignsPage() {
         const data = await campaignsRes.json();
         setCampaigns(data.campaigns);
         if (data.stats) setStats(data.stats);
+        setHasMailchimp(Boolean(data.mailchimp));
       }
     } catch {
       // Network hiccup — keep showing the last data; the next poll will retry.
@@ -388,7 +391,7 @@ export default function CampaignsPage() {
     setSending(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/admin/campaigns", {
+      const res = await fetch(via === "MAILCHIMP" && hasMailchimp ? "/api/admin/campaigns/mailchimp" : "/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audience, subject, body, ctaLabel }),
@@ -505,6 +508,27 @@ export default function CampaignsPage() {
             </div>
           )}
         </div>
+
+        {hasMailchimp && (
+          <div className="border border-border rounded-xl p-4 mb-5">
+            <p className="text-xs uppercase tracking-wider text-muted mb-2">Send with</p>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="via" checked={via === "POOL"} onChange={() => setVia("POOL")} className="accent-[rgb(var(--c-gold))]" />
+                Our email senders
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="via" checked={via === "MAILCHIMP"} onChange={() => setVia("MAILCHIMP")} className="accent-[rgb(var(--c-gold))]" />
+                Mailchimp
+              </label>
+            </div>
+            {via === "MAILCHIMP" && (
+              <p className="text-xs text-muted mt-2 leading-relaxed">
+                Guests are added to your Mailchimp audience and Mailchimp sends the email. Anyone who unsubscribed there is skipped. The email carries Mailchimp&apos;s unsubscribe link. Opens and delivery show in Mailchimp, here they show as Sent. The test below goes through our senders.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="border border-border rounded-xl p-4 mb-5">
           <p className="text-xs uppercase tracking-wider text-muted mb-2">Send a test first</p>

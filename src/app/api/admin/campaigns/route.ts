@@ -4,6 +4,7 @@ import { sendCampaignSchema } from "@/lib/validation";
 import { audienceWhere } from "@/lib/campaigns";
 import { requireEvent } from "@/lib/event";
 import { queueCampaignEmails, drainEmailQueue } from "@/lib/emailQueue";
+import { mailchimpConfigured } from "@/lib/mailchimp";
 import type { Campaign, Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -73,6 +74,7 @@ export async function GET(request: NextRequest) {
       };
     }),
     stats: totals,
+    mailchimp: mailchimpConfigured(),
   });
 }
 
