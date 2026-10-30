@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { sendViaBrevo, sendViaGmailChannel, sendViaMailerSend, type SendEmailInput, type SendEmailResult } from "@/lib/email";
+import { sendViaBrevo, sendViaGmailChannel, sendViaMailerSend, sendViaMailchimp, type SendEmailInput, type SendEmailResult } from "@/lib/email";
 
 /**
  * The email sender pool. The owner lists the services mail can go out through, in order of preference, each with a daily limit
@@ -14,6 +14,7 @@ import { sendViaBrevo, sendViaGmailChannel, sendViaMailerSend, type SendEmailInp
 export const SENDER_KINDS = [
   { kind: "GMAIL", name: "Gmail / Google Workspace", env: ["GMAIL_USER", "GMAIL_APP_PASSWORD"], suggestedLimit: 1500, note: "Workspace accounts can send about 1,500 a day." },
   { kind: "BREVO", name: "Brevo", env: ["BREVO_API_KEY", "EMAIL_FROM"], suggestedLimit: 300, note: "The free plan sends 300 a day." },
+  { kind: "MAILCHIMP", name: "Mailchimp", env: ["MAILCHIMP_API_KEY", "MAILCHIMP_FROM"], suggestedLimit: 0, note: "Mailchimp Transactional. Enter the daily limit of your plan." },
   { kind: "MAILERSEND", name: "MailerSend", env: ["MAILERSEND_API_KEY", "MAILERSEND_FROM"], suggestedLimit: 0, note: "Enter the daily limit of your MailerSend plan." },
 ] as const;
 
@@ -34,6 +35,7 @@ export function startOfTomorrow(now = Date.now()): Date {
 export function isConfigured(kind: SenderKind): boolean {
   const def = SENDER_KINDS.find((k) => k.kind === kind)!;
   if (kind === "BREVO") return Boolean(process.env.BREVO_API_KEY) && Boolean(process.env.EMAIL_FROM || process.env.GMAIL_USER);
+  if (kind === "MAILCHIMP") return Boolean(process.env.MAILCHIMP_API_KEY) && Boolean(process.env.MAILCHIMP_FROM);
   if (kind === "MAILERSEND") return Boolean(process.env.MAILERSEND_API_KEY) && Boolean(process.env.MAILERSEND_FROM || process.env.EMAIL_FROM);
   return def.env.every((name) => Boolean(process.env[name]));
 }
@@ -141,6 +143,7 @@ const SENDER_LEVEL = /auth|login|credential|quota|limit|exceed|rate|network|reac
 
 async function sendVia(kind: SenderKind, input: SendEmailInput): Promise<SendEmailResult> {
   if (kind === "BREVO") return sendViaBrevo(input);
+  if (kind === "MAILCHIMP") return sendViaMailchimp(input);
   if (kind === "MAILERSEND") return sendViaMailerSend(input);
   return sendViaGmailChannel(input);
 }

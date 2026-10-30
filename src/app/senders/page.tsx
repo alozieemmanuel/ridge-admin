@@ -189,10 +189,10 @@ export default function SendersPage() {
 
           <div className="mt-10 rounded-xl border border-border p-5 text-sm text-muted space-y-2">
             <p className="font-medium text-fg">Good to know</p>
-            {tech && <p>Keys never go in this page. They stay in the server environment: GMAIL_USER and GMAIL_APP_PASSWORD, BREVO_API_KEY and EMAIL_FROM, MAILERSEND_API_KEY and MAILERSEND_FROM.</p>}
+            {tech && <p>Keys never go in this page. They stay in the server environment: GMAIL_USER and GMAIL_APP_PASSWORD, BREVO_API_KEY and EMAIL_FROM, MAILCHIMP_API_KEY and MAILCHIMP_FROM, MAILERSEND_API_KEY and MAILERSEND_FROM.</p>}
             <p>Tickets with the QR image only go through Gmail, because the other services do not carry that image.</p>
             <p>Tickets and confirmations never wait. They ignore the daily limits and use the first sender that works.</p>
-            <p>Open and delivery tracking exists for Brevo only. Mail sent through Gmail or MailerSend shows as Sent.</p>
+            <p>Open and delivery tracking exists for Brevo only. Mail sent through Gmail, Mailchimp or MailerSend shows as Sent.</p>
           </div>
         </div>
       )}

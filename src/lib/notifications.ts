@@ -61,7 +61,7 @@ async function recordEvent(params: {
   id: string;
   type: "SENT" | "FAILED";
   kind?: EmailKind;
-  provider?: "GMAIL" | "BREVO" | "MAILERSEND";
+  provider?: "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
   subject?: string;
   providerMessageId?: string;
   errorMessage?: string;

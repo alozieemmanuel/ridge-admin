@@ -503,7 +503,7 @@ export interface SendEmailInput {
   attachments?: GmailAttachment[];
 }
 
-export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND";
+export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
 
 export interface SendEmailResult {
   success: boolean;
@@ -528,13 +528,15 @@ function withName(addr: { name?: string; email: string }, fromName?: string): { 
 }
 
 function parseAddress(value: string): { name?: string; email: string } {
-  const v = value.trim();
+  // Env values are often pasted with quotes around the whole thing, so strip those first.
+  const v = value.trim().replace(/^["']+|["']+$/g, "").trim();
   const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
   if (match) {
     const name = match[1].trim();
     return name ? { name, email: match[2].trim() } : { email: match[2].trim() };
   }
-  return { email: v };
+  const bare = v.match(/[^\s<>"',;]+@[^\s<>"',;]+\.[^\s<>"',;]+/);
+  return { email: bare ? bare[0] : v };
 }
 
 /** Brevo errors arrive as JSON like {"code":"invalid_parameter","message":"..."} — pull out the readable part. */
@@ -576,6 +578,15 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
     return { success: true, provider: "BREVO", providerMessageId: undefined };
   }
 
+  const brevoFrom = withName(parseAddress(from), input.fromName);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(brevoFrom.email)) {
+    return {
+      success: false,
+      provider: "BREVO",
+      error: `EMAIL_FROM on the server is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.`,
+    };
+  }
+
   try {
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
@@ -585,7 +596,7 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
         Accept: "application/json",
       },
       body: JSON.stringify({
-        sender: withName(parseAddress(from), input.fromName),
+        sender: brevoFrom,
         to: [{ email: input.to }],
         subject: input.subject,
         htmlContent: input.html,
@@ -659,6 +670,72 @@ export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmai
     return { success: false, provider: "MAILERSEND", error: `MailerSend ${response.status}: ${message}` };
   } catch (err) {
     return { success: false, provider: "MAILERSEND", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Sends via Mailchimp Transactional (Mandrill). Needs MAILCHIMP_API_KEY (a Transactional key, not the normal Mailchimp key)
+ * and MAILCHIMP_FROM (an address on a domain verified in Mailchimp Transactional). Opens and delivery are not wired up
+ * for this sender yet, so those emails show as Sent only.
+ */
+export async function sendViaMailchimp(input: SendEmailInput): Promise<SendEmailResult> {
+  const apiKey = process.env.MAILCHIMP_API_KEY;
+  const from = process.env.MAILCHIMP_FROM || "";
+  if (!apiKey) return { success: false, provider: "MAILCHIMP", error: "MAILCHIMP_API_KEY is not set on the server." };
+  if (!from) return { success: false, provider: "MAILCHIMP", error: "MAILCHIMP_FROM is not set on the server (an address on a domain verified in Mailchimp Transactional)." };
+  const sender = withName(parseAddress(from), input.fromName);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender.email)) {
+    return { success: false, provider: "MAILCHIMP", error: `MAILCHIMP_FROM is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.` };
+  }
+  const reply = input.replyTo ? parseAddress(input.replyTo) : null;
+  try {
+    const response = await fetch("https://mandrillapp.com/api/1.0/messages/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: apiKey,
+        message: {
+          html: input.html,
+          subject: input.subject,
+          from_email: sender.email,
+          ...(sender.name ? { from_name: sender.name } : {}),
+          to: [{ email: input.to, type: "to" }],
+          ...(reply ? { headers: { "Reply-To": reply.email } } : {}),
+          track_opens: false,
+          track_clicks: false,
+        },
+      }),
+    });
+    const text = await response.text();
+    let data: unknown = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // not JSON
+    }
+    if (Array.isArray(data) && data[0]) {
+      const r = data[0] as { status?: string; reject_reason?: string | null; _id?: string };
+      if (r.status === "sent" || r.status === "queued" || r.status === "scheduled") return { success: true, provider: "MAILCHIMP", providerMessageId: r._id };
+      const reasons: Record<string, string> = {
+        unsigned: "the from domain is not verified in Mailchimp Transactional",
+        "unauthorised-sender": "the from domain is not verified in Mailchimp Transactional",
+        "hard-bounce": "this address bounced before",
+        "soft-bounce": "this address bounced before",
+        spam: "this address marked mail as spam before",
+        unsub: "this address unsubscribed",
+        "custom": "blocked by a custom rule",
+        "invalid-sender": "the from address is not valid",
+        "recipient-domain-mismatch": "the recipient domain does not match",
+        "rule": "blocked by a sending rule",
+        "test-mode-limit": "the account is still in test mode",
+      };
+      const why = r.reject_reason ? reasons[r.reject_reason] || r.reject_reason : r.status;
+      return { success: false, provider: "MAILCHIMP", error: `Mailchimp ${r.status}: ${why}` };
+    }
+    const err = data as { message?: string; name?: string } | null;
+    return { success: false, provider: "MAILCHIMP", error: `Mailchimp ${response.status}${err?.name ? ` (${err.name})` : ""}: ${err?.message || text.slice(0, 300)}` };
+  } catch (err) {
+    return { success: false, provider: "MAILCHIMP", error: err instanceof Error ? err.message : String(err) };
   }
 }
 
