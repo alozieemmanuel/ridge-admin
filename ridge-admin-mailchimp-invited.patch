@@ -1,0 +1,49 @@
+diff --git a/src/app/[slug]/(admin)/campaigns/page.tsx b/src/app/[slug]/(admin)/campaigns/page.tsx
+index f08bed6..a43a941 100644
+--- a/src/app/[slug]/(admin)/campaigns/page.tsx
++++ b/src/app/[slug]/(admin)/campaigns/page.tsx
+@@ -244,7 +244,7 @@ export default function CampaignsPage() {
+         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
+         if (viaMailchimp) {
+           setMessage({
+-            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${skipped}`,
++            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
+             ok: true,
+           });
+           load();
+@@ -280,7 +280,7 @@ export default function CampaignsPage() {
+           <div className="border border-border rounded-xl p-5 mb-8">
+             <h3 className="font-medium text-sm">Sent with Mailchimp</h3>
+             <p className="text-xs text-muted mt-1 leading-relaxed">
+-              Campaigns go out through Mailchimp. Guests are added to your Mailchimp audience, and anyone who unsubscribed there is skipped. Invitations, reminders, tickets and confirmations are sent with Gmail.
++              Campaigns go out through Mailchimp. Guests are added to your Mailchimp audience, and anyone who unsubscribed there is skipped. A message with the reserve button counts as an invitation, so the guests it reaches are marked as invited. Reminders, tickets and confirmations are sent with Gmail.
+             </p>
+           </div>
+           <SenderStrip onChange={load} waitingOnly />
+diff --git a/src/app/api/admin/campaigns/mailchimp/route.ts b/src/app/api/admin/campaigns/mailchimp/route.ts
+index d0675f6..b2a2eec 100644
+--- a/src/app/api/admin/campaigns/mailchimp/route.ts
++++ b/src/app/api/admin/campaigns/mailchimp/route.ts
+@@ -84,11 +84,22 @@ export async function POST(request: NextRequest) {
+     ];
+     for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
+     await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
++    // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
++    // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
++    let markedInvited = 0;
++    if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
++      const marked = await prisma.registration.updateMany({
++        where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
++        data: { inviteSentAt: new Date() },
++      });
++      markedInvited = marked.count;
++    }
+     return NextResponse.json({
+       result: "success",
+       campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
+       skipped: { alreadyGot, alreadyWaiting: 0 },
+       blocked: null,
++      markedInvited,
+     });
+   } catch (err) {
+     // Nothing was sent, so the campaign row is removed and the same send can be tried again.

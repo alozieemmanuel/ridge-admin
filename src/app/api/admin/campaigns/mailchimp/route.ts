@@ -84,11 +84,22 @@ export async function POST(request: NextRequest) {
     ];
     for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
     await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
+    // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
+    // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
+    let markedInvited = 0;
+    if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
+      const marked = await prisma.registration.updateMany({
+        where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
+        data: { inviteSentAt: new Date() },
+      });
+      markedInvited = marked.count;
+    }
     return NextResponse.json({
       result: "success",
       campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
       skipped: { alreadyGot, alreadyWaiting: 0 },
       blocked: null,
+      markedInvited,
     });
   } catch (err) {
     // Nothing was sent, so the campaign row is removed and the same send can be tried again.

@@ -244,7 +244,7 @@ export default function CampaignsPage() {
         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
         if (viaMailchimp) {
           setMessage({
-            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${skipped}`,
+            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
             ok: true,
           });
           load();
@@ -280,7 +280,7 @@ export default function CampaignsPage() {
           <div className="border border-border rounded-xl p-5 mb-8">
             <h3 className="font-medium text-sm">Sent with Mailchimp</h3>
             <p className="text-xs text-muted mt-1 leading-relaxed">
-              Campaigns go out through Mailchimp. Guests are added to your Mailchimp audience, and anyone who unsubscribed there is skipped. Invitations, reminders, tickets and confirmations are sent with Gmail.
+              Campaigns go out through Mailchimp. Guests are added to your Mailchimp audience, and anyone who unsubscribed there is skipped. A message with the reserve button counts as an invitation, so the guests it reaches are marked as invited. Reminders, tickets and confirmations are sent with Gmail.
             </p>
           </div>
           <SenderStrip onChange={load} waitingOnly />
