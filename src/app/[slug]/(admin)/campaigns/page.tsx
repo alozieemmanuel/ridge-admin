@@ -4,11 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
 import AdminShell from "@/components/AdminShell";
 import { flushUntilDone } from "@/lib/flushQueue";
-import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useIsOwner } from "@/lib/useIsOwner";
-import Pagination from "@/components/Pagination";
 import SenderStrip from "@/components/SenderStrip";
-import { getStoredPageSize, storePageSize } from "@/lib/clientCache";
+import { summarizeBlocked } from "@/lib/sendErrorText";
 
 type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
 
@@ -35,124 +33,34 @@ interface Campaign {
   id: string;
   subject: string;
   audience: Audience;
-  category?: string | null;
-  recipientCount: number;
-  sentCount: number;
-  failedCount: number;
-  waitingCount?: number;
   sentAt: string;
   sentByName: string | null;
-  delivered?: number;
-  opened?: number;
-  bounced?: number;
-  complained?: number;
-}
-
-interface CampaignStats {
-  delivered: number;
-  opened: number;
-  bounced: number;
-  complained: number;
-}
-
-function percent(part: number, whole: number): string {
-  if (!whole) return "0%";
-  return `${Math.round((part / whole) * 100)}%`;
-}
-
-function StatCard({ label, value, hint, tone }: { label: string; value: number; hint?: string; tone: string }) {
-  return (
-    <div className="border border-border rounded-xl px-5 py-4">
-      <div className="text-xs uppercase tracking-wider text-muted mb-2">{label}</div>
-      <div className={`font-serif text-2xl ${tone}`}>{value}</div>
-      {hint && <div className="text-xs text-muted mt-1">{hint}</div>}
-    </div>
-  );
-}
-
-interface Recipient {
-  registrationId: string;
-  fullName: string;
-  email: string;
-  status: "FAILED" | "SENT" | "DELIVERED" | "OPENED" | "BOUNCED" | "COMPLAINED";
-  sentAt: string | null;
-  deliveredAt: string | null;
-  openedAt: string | null;
-  error: string | null;
 }
 
 interface CampaignDetail extends Campaign {
   body: string;
+  ctaLabel?: string | null;
 }
 
-const STATUS_LABEL: Record<Recipient["status"], { text: string; tone: string }> = {
-  FAILED: { text: "Failed", tone: "text-red-400" },
-  SENT: { text: "Sent", tone: "text-muted" },
-  DELIVERED: { text: "Delivered", tone: "text-emerald-400" },
-  OPENED: { text: "Opened", tone: "text-goldlight" },
-  BOUNCED: { text: "Bounced", tone: "text-red-400" },
-  COMPLAINED: { text: "Marked as spam", tone: "text-red-400" },
-};
-
-const STATUS_FILTERS: { value: string; label: string }[] = [
-  { value: "", label: "All" },
-  { value: "OPENED", label: "Opened" },
-  { value: "DELIVERED", label: "Delivered" },
-  { value: "SENT", label: "Sent only" },
-  { value: "BOUNCED", label: "Bounced" },
-  { value: "FAILED", label: "Failed" },
-];
-
-/** One campaign in full: the email that went out, how it performed, and what happened to each recipient. */
+/** One campaign: who it went to and the email itself. */
 function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: () => void }) {
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
-  const [recipients, setRecipients] = useState<Recipient[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(() => Math.min(getStoredPageSize(), 50));
-  const [status, setStatus] = useState("");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setQuery(search.trim());
-      setPage(1);
-    }, 250);
-    return () => clearTimeout(t);
-  }, [search]);
-
-  const load = useCallback(async () => {
-    try {
-      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
-      if (query) params.set("search", query);
-      if (status) params.set("status", status);
-      const res = await fetch(`/api/admin/campaigns/${campaignId}?${params.toString()}`);
-      if (!res.ok) {
+    let alive = true;
+    fetch(`/api/admin/campaigns/${campaignId}?pageSize=1`)
+      .then(async (res) => {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || "Couldn't load this campaign.");
-        return;
-      }
-      const data = await res.json();
-      setDetail(data.campaign);
-      setRecipients(data.recipients);
-      setTotal(data.total);
-      setError(null);
-    } catch {
-      setError("Couldn't reach the server.");
-    } finally {
-      setLoading(false);
-    }
-  }, [campaignId, page, pageSize, query, status]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Opens and bounces keep arriving after the send.
-  useAutoRefresh(() => load(), 15_000);
+        if (!alive) return;
+        if (res.ok) setDetail(data.campaign);
+        else setError(data.error || "Couldn't load this campaign.");
+      })
+      .catch(() => alive && setError("Couldn't reach the server."));
+    return () => {
+      alive = false;
+    };
+  }, [campaignId]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -162,29 +70,13 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const delivered = detail?.delivered ?? 0;
-  const opened = detail?.opened ?? 0;
-  const bounced = detail?.bounced ?? 0;
-  const complained = detail?.complained ?? 0;
-
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
-      <div
-        className="bg-pagebg border border-border rounded-2xl w-full max-w-4xl my-8 p-6"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
+      <div className="bg-pagebg border border-border rounded-2xl w-full max-w-2xl my-8 p-6" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <div className="flex items-start justify-between gap-4 mb-5">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-wider text-muted mb-1">Campaign</p>
-            <h3 className="font-serif text-2xl break-words">{detail?.subject ?? (loading ? "Loading…" : "Campaign")}</h3>
-            {detail && (
-              <p className="text-sm text-muted mt-1">
-                {audienceLabel(detail.audience)} · {new Date(detail.sentAt).toLocaleString()}
-                {detail.sentByName ? ` · by ${detail.sentByName}` : ""}
-              </p>
-            )}
+            <h3 className="font-serif text-2xl break-words">{detail?.subject ?? (error ? "Campaign" : "Loading…")}</h3>
           </div>
           <button onClick={onClose} className="text-muted hover:text-fg text-2xl leading-none" aria-label="Close">
             ×
@@ -195,92 +87,32 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: 
 
         {detail && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-              <StatCard label="Sent" value={detail.sentCount} hint={`of ${detail.recipientCount}${detail.failedCount ? ` · ${detail.failedCount} failed` : ""}`} tone="text-fg" />
-              <StatCard label="Delivered" value={delivered} hint={`${percent(delivered, detail.sentCount)} of sent`} tone="text-emerald-400" />
-              <StatCard label="Opened" value={opened} hint={`${percent(opened, delivered)} of delivered`} tone="text-emerald-400" />
-              <StatCard label="Bounced" value={bounced} hint={`${percent(bounced, detail.sentCount)} of sent`} tone="text-red-400" />
-              <StatCard label="Complained" value={complained} hint="Marked as spam" tone="text-red-400" />
-            </div>
+            <dl className="grid grid-cols-[auto,1fr] gap-x-6 gap-y-2 text-sm mb-6">
+              <dt className="text-muted">Sent to</dt>
+              <dd>{audienceLabel(detail.audience)}</dd>
+              <dt className="text-muted">Date</dt>
+              <dd>{new Date(detail.sentAt).toLocaleString()}</dd>
+              {detail.sentByName && (
+                <>
+                  <dt className="text-muted">Sent by</dt>
+                  <dd>{detail.sentByName}</dd>
+                </>
+              )}
+            </dl>
 
-            <p className="text-xs uppercase tracking-wider text-muted mb-2">Message</p>
-            <div className="border border-border rounded-xl p-5 mb-2 max-h-72 overflow-y-auto">
+            <p className="text-xs uppercase tracking-wider text-muted mb-2">Email</p>
+            <div className="border border-border rounded-xl p-5 max-h-[50vh] overflow-y-auto">
               <p className="text-sm font-medium mb-3">{detail.subject}</p>
               <div className="text-sm text-muted whitespace-pre-wrap">{detail.body}</div>
+              {detail.ctaLabel && (
+                <p className="mt-4">
+                  <span className="inline-block text-xs uppercase tracking-widest border border-border rounded-full px-4 py-2">{detail.ctaLabel}</span>
+                </p>
+              )}
             </div>
-            <p className="text-xs text-muted mb-6">
+            <p className="text-xs text-muted mt-2">
               Shown as written. {"{{first_name}}"} and {"{{full_name}}"} were filled in for each person.
             </p>
-
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              {STATUS_FILTERS.map((f) => (
-                <button
-                  key={f.value}
-                  onClick={() => {
-                    setStatus(f.value);
-                    setPage(1);
-                  }}
-                  className={`text-sm px-3.5 py-1.5 rounded-full border transition-colors whitespace-nowrap ${
-                    status === f.value ? "border-gold text-goldlight bg-gold/10" : "border-border text-muted"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name or email"
-                className="bg-inputbg border border-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-gold ml-auto max-w-[14rem] w-full"
-              />
-            </div>
-
-            <div className="border border-border rounded-xl overflow-hidden">
-              <div className="table-scroll overflow-auto max-h-[45vh]">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
-                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Name</th>
-                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Email</th>
-                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Status</th>
-                      <th className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">Opened</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recipients.length === 0 && (
-                      <tr>
-                        <td colSpan={4} className="px-5 py-8 text-center text-muted">
-                          {loading ? "Loading…" : "No recipients match."}
-                        </td>
-                      </tr>
-                    )}
-                    {recipients.map((r) => (
-                      <tr key={r.registrationId} className="border-b border-border/50 last:border-b-0">
-                        <td className="px-5 py-3 whitespace-nowrap font-medium">{r.fullName}</td>
-                        <td className="px-5 py-3 whitespace-nowrap text-muted">{r.email}</td>
-                        <td className={`px-5 py-3 whitespace-nowrap ${STATUS_LABEL[r.status].tone}`} title={r.error ?? ""}>
-                          {STATUS_LABEL[r.status].text}
-                        </td>
-                        <td className="px-5 py-3 whitespace-nowrap text-muted">
-                          {r.openedAt ? new Date(r.openedAt).toLocaleString() : "-"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Pagination
-                page={page}
-                pageSize={pageSize}
-                total={total}
-                onPage={setPage}
-                onPageSize={(n) => {
-                  storePageSize(n);
-                  setPageSize(n);
-                  setPage(1);
-                }}
-              />
-            </div>
           </>
         )}
       </div>
@@ -297,7 +129,6 @@ export default function CampaignsPage() {
   const [body, setBody] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [stats, setStats] = useState<CampaignStats>({ delivered: 0, opened: 0, bounced: 0, complained: 0 });
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<"compose" | "confirm">("compose");
   const [sending, setSending] = useState(false);
@@ -307,6 +138,7 @@ export default function CampaignsPage() {
   const [withButton, setWithButton] = useState(false);
   const [buttonLabel, setButtonLabel] = useState("");
   const ctaLabel = withButton ? (buttonLabel.trim() || terms.action) : undefined;
+  const [hasMailchimp, setHasMailchimp] = useState(false);
   const [testTo, setTestTo] = useState("");
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -344,7 +176,7 @@ export default function CampaignsPage() {
       if (campaignsRes.ok) {
         const data = await campaignsRes.json();
         setCampaigns(data.campaigns);
-        if (data.stats) setStats(data.stats);
+        setHasMailchimp(Boolean(data.mailchimp));
       }
     } catch {
       // Network hiccup — keep showing the last data; the next poll will retry.
@@ -357,13 +189,8 @@ export default function CampaignsPage() {
     load();
   }, [load]);
 
-  // Opens and bounces arrive from Brevo after the send, so refresh in the background.
-  useAutoRefresh(() => load(), 15_000);
-
   const recipientCount = counts[audience] ?? 0;
   const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
-
-  const totalSent = campaigns.reduce((sum, c) => sum + c.sentCount, 0);
 
   async function handleDelete(c: Campaign) {
     if (
@@ -388,7 +215,7 @@ export default function CampaignsPage() {
     setSending(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/admin/campaigns", {
+      const res = await fetch(hasMailchimp ? "/api/admin/campaigns/mailchimp" : "/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audience, subject, body, ctaLabel }),
@@ -413,9 +240,18 @@ export default function CampaignsPage() {
           blocked = r.blocked;
           lost = r.error ?? null;
         }
+        const viaMailchimp = hasMailchimp;
         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
+        if (viaMailchimp) {
+          setMessage({
+            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${skipped}`,
+            ok: true,
+          });
+          load();
+          return;
+        }
         setMessage({
-          text: `Sent to ${sentCount} of ${data.campaign.recipientCount}${failedCount ? ` (${failedCount} failed)` : ""}.${waitingCount ? ` ${waitingCount} are still waiting${blocked ? `: ${blocked}` : lost ? `: ${lost}` : ""}. Nothing is lost. They go out when you press Send waiting emails now, or at the next daily run.` : ""}${skipped}`,
+          text: `Sent to ${sentCount} of ${data.campaign.recipientCount}${failedCount ? ` (${failedCount} failed)` : ""}.${waitingCount ? ` ${waitingCount} are still waiting${blocked ? `: ${summarizeBlocked(blocked)}` : lost ? `: ${summarizeBlocked(lost)}` : ""}. Nothing is lost. They go out when you press Send waiting emails now, or at the next daily run.` : ""}${skipped}`,
           ok: !blocked && !lost,
         });
         load();
@@ -439,7 +275,19 @@ export default function CampaignsPage() {
         </p>
       </div>
 
-      <SenderStrip onChange={load} />
+      {hasMailchimp ? (
+        <>
+          <div className="border border-border rounded-xl p-5 mb-8">
+            <h3 className="font-medium text-sm">Sent with Mailchimp</h3>
+            <p className="text-xs text-muted mt-1 leading-relaxed">
+              Campaigns go out through Mailchimp. Guests are added to your Mailchimp audience, and anyone who unsubscribed there is skipped. Invitations, reminders, tickets and confirmations are sent with Gmail.
+            </p>
+          </div>
+          <SenderStrip onChange={load} waitingOnly />
+        </>
+      ) : (
+        <SenderStrip onChange={load} />
+      )}
 
       <div className="border border-border rounded-xl p-6 mb-8">
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Send to</label>
@@ -568,36 +416,7 @@ export default function CampaignsPage() {
         )}
       </div>
 
-      <h3 className="font-serif text-xl mb-4">Campaign results</h3>
-
-      {!loading && campaigns.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <StatCard
-            label="Delivered"
-            value={stats.delivered}
-            hint={`${percent(stats.delivered, totalSent)} of sent`}
-            tone="text-emerald-400"
-          />
-          <StatCard
-            label="Opened"
-            value={stats.opened}
-            hint={`${percent(stats.opened, stats.delivered)} of delivered`}
-            tone="text-emerald-400"
-          />
-          <StatCard
-            label="Bounced"
-            value={stats.bounced}
-            hint={`${percent(stats.bounced, totalSent)} of sent`}
-            tone="text-red-400"
-          />
-          <StatCard
-            label="Complained"
-            value={stats.complained}
-            hint="Marked as spam"
-            tone="text-red-400"
-          />
-        </div>
-      )}
+      <h3 className="font-serif text-xl mb-4">Sent campaigns</h3>
 
       {loading && <p className="text-muted">Loading…</p>}
       {!loading && campaigns.length === 0 && <p className="text-muted text-sm">No campaigns sent yet.</p>}
@@ -609,19 +428,12 @@ export default function CampaignsPage() {
                 <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Subject</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Audience</th>
-                  <th className="px-5 py-3 font-medium whitespace-nowrap">Sent</th>
-                  <th className="px-5 py-3 font-medium whitespace-nowrap">Delivered</th>
-                  <th className="px-5 py-3 font-medium whitespace-nowrap">Opened</th>
-                  <th className="px-5 py-3 font-medium whitespace-nowrap">Bounced</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap">Date</th>
                   <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
                 </tr>
               </thead>
               <tbody>
                 {campaigns.map((c) => {
-                  const delivered = c.delivered ?? 0;
-                  const opened = c.opened ?? 0;
-                  const bounced = c.bounced ?? 0;
                   return (
                     <tr
                       key={c.id}
@@ -631,22 +443,6 @@ export default function CampaignsPage() {
                       <td className="px-5 py-4 whitespace-nowrap font-medium">{c.subject}</td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {audienceLabel(c.audience)}
-                      </td>
-                      <td className="px-5 py-4 text-muted whitespace-nowrap">
-                        {c.sentCount} of {c.recipientCount}
-                        {c.failedCount > 0 && <span className="text-red-400"> ({c.failedCount} failed)</span>}
-                        {(c.waitingCount ?? 0) > 0 && <span className="text-amber-400"> ({c.waitingCount} waiting)</span>}
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap text-emerald-400">
-                        {delivered}
-                        <span className="text-muted ml-1.5">{percent(delivered, c.sentCount)}</span>
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap text-emerald-400">
-                        {opened}
-                        <span className="text-muted ml-1.5">{percent(opened, delivered)}</span>
-                      </td>
-                      <td className={`px-5 py-4 whitespace-nowrap ${bounced > 0 ? "text-red-400" : "text-muted"}`}>
-                        {bounced}
                       </td>
                       <td className="px-5 py-4 text-muted whitespace-nowrap">
                         {new Date(c.sentAt).toLocaleString()}
@@ -667,10 +463,6 @@ export default function CampaignsPage() {
               </tbody>
             </table>
           </div>
-          <p className="px-5 py-3 text-xs text-muted border-t border-border">
-            Open counts are approximate. Some mail apps block the tracking pixel, and others open every message
-            automatically. Campaigns sent before this update show zeros here.
-          </p>
         </div>
       )}
       </>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { ghostButton } from "@/components/ui";
 import { flushUntilDone } from "@/lib/flushQueue";
+import { summarizeBlocked, summarizeSendError } from "@/lib/sendErrorText";
 
 export interface SenderRow {
   kind: string;
@@ -29,7 +30,7 @@ const STATE_TEXT: Record<SenderRow["state"], string> = {
 };
 
 /** What each email sender has sent today, shown on the Campaigns page. */
-export default function SenderStrip({ onChange }: { onChange?: () => void }) {
+export default function SenderStrip({ onChange, waitingOnly = false }: { onChange?: () => void; waitingOnly?: boolean }) {
   const [data, setData] = useState<{ senders: SenderRow[]; waiting: number; resetsAt: string; isOwner: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -50,18 +51,19 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
     setBusy(false);
     setNote(
       r.error ||
-        `Sent ${r.sent}${r.failed ? `, ${r.failed} failed` : ""}${r.skipped ? `, ${r.skipped} skipped (already had it)` : ""}. ${r.waiting} still waiting.${r.blocked ? ` Stopped: ${r.blocked}` : ""}`
+        `Sent ${r.sent}${r.failed ? `, ${r.failed} failed` : ""}${r.skipped ? `, ${r.skipped} skipped (already had it)` : ""}. ${r.waiting} still waiting.${r.blocked ? ` Stopped. ${summarizeBlocked(r.blocked)}` : ""}`
     );
     load();
     onChange?.();
   }
 
   if (!data) return null;
+  if (waitingOnly && data.waiting === 0) return null;
   const resets = new Date(data.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   return (
     <div className="border border-border rounded-xl p-5 mb-8">
-      <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
+      {!waitingOnly && <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
         <div>
           <h3 className="font-medium text-sm">Email senders</h3>
           <p className="text-xs text-muted mt-1">
@@ -70,9 +72,9 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
               : `Each email goes through the first sender with room left. The count resets at ${resets}. Senders are set once for all events, from Email senders on the All events page.`}
           </p>
         </div>
-      </div>
+      </div>}
 
-      {data.senders.length > 0 && (
+      {!waitingOnly && data.senders.length > 0 && (
         <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {data.senders.map((s, i) => {
             const pct = s.dailyLimit > 0 ? Math.min(100, Math.round((s.used / s.dailyLimit) * 100)) : 0;
@@ -87,7 +89,11 @@ export default function SenderStrip({ onChange }: { onChange?: () => void }) {
                 <p className="text-xs text-muted mt-1.5">
                   {s.used} sent today{s.dailyLimit > 0 ? ` of ${s.dailyLimit}` : ", no limit"}
                 </p>
-                {s.lastError && <p className="text-xs text-red-400 mt-2 break-words">Last problem: {s.lastError}</p>}
+                {s.lastError && (
+                  <p className="text-xs text-red-400 mt-2 break-words" title={s.lastError}>
+                    {summarizeSendError(s.lastError)}
+                  </p>
+                )}
                 {s.dailyLimit > 0 && (
                   <div className="h-1.5 rounded-full bg-border mt-2 overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
                     <div className={`h-full ${pct >= 100 ? "bg-amber-400" : "bg-gold"}`} style={{ width: `${pct}%` }} />

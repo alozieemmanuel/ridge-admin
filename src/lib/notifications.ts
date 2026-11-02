@@ -61,7 +61,7 @@ async function recordEvent(params: {
   id: string;
   type: "SENT" | "FAILED";
   kind?: EmailKind;
-  provider?: "GMAIL" | "BREVO" | "MAILERSEND";
+  provider?: "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
   subject?: string;
   providerMessageId?: string;
   errorMessage?: string;
@@ -469,6 +469,34 @@ export async function sendCampaignEmail(
       }),
     }),
   });
+}
+
+/**
+ * The email for a Mailchimp campaign. Mailchimp sends one email to everyone, so the parts that differ by person become
+ * Mailchimp merge tags (*|FNAME|* and so on) that Mailchimp fills in for each guest.
+ */
+export function buildMailchimpCampaignEmail(settings: Settings, subject: string, bodyText: string, ctaLabel?: string | null): { subject: string; html: string } {
+  const vars: Settings = {
+    ...settings,
+    first_name: "*|FNAME|*",
+    full_name: "*|FNAME|* *|LNAME|*",
+    email: "*|EMAIL|*",
+    phone: "*|PHONE|*",
+    reserve_link: "*|RSVLINK|*",
+  };
+  const mergedSubject = mergeTemplate(subject, vars);
+  const mergedBody = mergeTemplate(bodyText, vars);
+  return {
+    subject: mergedSubject,
+    // The sender-name comment at the front is only for our own senders, so it is dropped here.
+    html: renderBrandedEmail({
+      brand: emailBrand(settings),
+      eyebrow: settings.event_caption,
+      heading: mergedSubject,
+      bodyText: mergedBody,
+      ...(ctaLabel ? { ctaLabel, ctaUrl: "*|RSVLINK|*" } : {}),
+    }).replace(/^<!--from:[^>]*?-->/, ""),
+  };
 }
 
 /**

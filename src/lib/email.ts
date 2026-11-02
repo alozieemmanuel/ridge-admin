@@ -503,7 +503,7 @@ export interface SendEmailInput {
   attachments?: GmailAttachment[];
 }
 
-export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND";
+export type EmailProvider = "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP";
 
 export interface SendEmailResult {
   success: boolean;
@@ -528,13 +528,15 @@ function withName(addr: { name?: string; email: string }, fromName?: string): { 
 }
 
 function parseAddress(value: string): { name?: string; email: string } {
-  const v = value.trim();
+  // Env values are often pasted with quotes around the whole thing, so strip those first.
+  const v = value.trim().replace(/^["']+|["']+$/g, "").trim();
   const match = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
   if (match) {
     const name = match[1].trim();
     return name ? { name, email: match[2].trim() } : { email: match[2].trim() };
   }
-  return { email: v };
+  const bare = v.match(/[^\s<>"',;]+@[^\s<>"',;]+\.[^\s<>"',;]+/);
+  return { email: bare ? bare[0] : v };
 }
 
 /** Brevo errors arrive as JSON like {"code":"invalid_parameter","message":"..."} — pull out the readable part. */
@@ -576,6 +578,15 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
     return { success: true, provider: "BREVO", providerMessageId: undefined };
   }
 
+  const brevoFrom = withName(parseAddress(from), input.fromName);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(brevoFrom.email)) {
+    return {
+      success: false,
+      provider: "BREVO",
+      error: `EMAIL_FROM on the server is not an email address (it reads "${from.slice(0, 40)}"). Use the form Name <you@example.com>, with no quotes around it.`,
+    };
+  }
+
   try {
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
@@ -585,7 +596,7 @@ export async function sendViaBrevo(input: SendEmailInput): Promise<SendEmailResu
         Accept: "application/json",
       },
       body: JSON.stringify({
-        sender: withName(parseAddress(from), input.fromName),
+        sender: brevoFrom,
         to: [{ email: input.to }],
         subject: input.subject,
         htmlContent: input.html,
@@ -622,44 +633,6 @@ export async function sendViaGmailChannel(input: SendEmailInput): Promise<SendEm
   return res.ok
     ? { success: true, provider: "GMAIL", providerMessageId: res.id }
     : { success: false, provider: "GMAIL", error: res.error || "Gmail send failed." };
-}
-
-/**
- * Sends via MailerSend's email API. Needs MAILERSEND_API_KEY and MAILERSEND_FROM (an address on a domain verified in MailerSend).
- * Delivery and open tracking are not wired up for this sender yet, so those emails show as Sent only.
- */
-export async function sendViaMailerSend(input: SendEmailInput): Promise<SendEmailResult> {
-  const apiKey = process.env.MAILERSEND_API_KEY;
-  const from = process.env.MAILERSEND_FROM || process.env.EMAIL_FROM || "";
-  if (!apiKey) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_API_KEY is not set on the server." };
-  if (!from) return { success: false, provider: "MAILERSEND", error: "MAILERSEND_FROM is not set on the server (an address on a domain verified in MailerSend)." };
-  const sender = withName(parseAddress(from), input.fromName);
-  const reply = input.replyTo ? parseAddress(input.replyTo) : null;
-  try {
-    const response = await fetch("https://api.mailersend.com/v1/email", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-      body: JSON.stringify({
-        from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) },
-        to: [{ email: input.to }],
-        subject: input.subject,
-        html: input.html,
-        ...(reply ? { reply_to: { email: reply.email, ...(reply.name ? { name: reply.name } : {}) } } : {}),
-      }),
-    });
-    if (response.status === 202 || response.ok) return { success: true, provider: "MAILERSEND", providerMessageId: response.headers.get("x-message-id") ?? undefined };
-    const text = await response.text();
-    let message = text.slice(0, 300);
-    try {
-      const parsed = JSON.parse(text) as { message?: string };
-      if (parsed.message) message = parsed.message;
-    } catch {
-      // not JSON
-    }
-    return { success: false, provider: "MAILERSEND", error: `MailerSend ${response.status}: ${message}` };
-  } catch (err) {
-    return { success: false, provider: "MAILERSEND", error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 /**

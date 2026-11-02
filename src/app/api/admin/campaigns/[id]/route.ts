@@ -87,6 +87,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       id: campaign.id,
       subject: campaign.subject,
       body: campaign.body,
+      ctaLabel: campaign.ctaLabel,
       audience: campaign.audience,
       category: campaign.category,
       recipientCount: campaign.recipientCount,

@@ -36,6 +36,7 @@ enum EmailProvider {
   RESEND // legacy: campaigns sent before the move to Brevo. Kept so old rows still read; never written now.
   BREVO // campaigns (broadcast email)
   MAILERSEND // a sender in the pool (see EmailSender)
+  MAILCHIMP // Mailchimp Transactional, a sender in the pool
 }
 
 enum ProofStatus {
@@ -587,7 +588,7 @@ model PaymentRecord {
 // own keys stay in the environment (GMAIL_*, BREVO_API_KEY, MAILERSEND_API_KEY). dailyLimit 0 means no limit.
 model EmailSender {
   id         String   @id @default(cuid())
-  kind       String   @unique // "GMAIL" | "BREVO" | "MAILERSEND"
+  kind       String   @unique // "GMAIL" | "BREVO" | "MAILERSEND" | "MAILCHIMP"
   label      String
   position   Int
   dailyLimit Int      @default(0)
