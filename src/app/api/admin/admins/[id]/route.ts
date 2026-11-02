@@ -12,7 +12,7 @@ const patchSchema = z.discriminatedUnion("action", [
     action: z.literal("edit"),
     name: z.string().trim().min(1, "Name can't be empty.").max(120),
     email: z.string().trim().toLowerCase().email("Enter a valid email."),
-    role: z.enum(["OWNER", "SUPER_ADMIN", "ADMIN"]),
+    role: z.enum(["OWNER", "SUPER_ADMIN", "ADMIN", "CHECKIN"]),
   }),
   z.object({
     action: z.literal("password"),

@@ -50,15 +50,42 @@ export async function middleware(request: NextRequest) {
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   let valid = false;
+  let role: unknown = null;
   if (token) {
     try {
-      await jwtVerify(token, getSecretKey());
+      role = (await jwtVerify(token, getSecretKey())).payload.role;
       valid = true;
     } catch {
       valid = false;
     }
   }
-  if (valid) return NextResponse.next();
+  if (valid) {
+    // Door staff (role check-in) can only reach the check-in page and the few calls it needs.
+    if (role === "CHECKIN") {
+      if (isApi) {
+        const allowed = pathname === "/api/admin/checkin" || pathname === "/api/admin/event" || pathname === "/api/admin/me" || pathname === "/api/admin/logout" || pathname === "/api/events";
+        if (!allowed) return NextResponse.json({ error: "This account can only check people in." }, { status: 403 });
+      } else {
+        const m = /^\/([^/]+)(\/.*)?$/.exec(pathname);
+        const slug = m?.[1];
+        const onlyCheckin = slug && !["login", "api", "team", "senders", "new"].includes(slug);
+        if (onlyCheckin && !/^\/[^/]+\/checkin\/?$/.test(pathname)) {
+          // Old tickets point at the attendance page. They land on the check-in page with the same code.
+          const url = request.nextUrl.clone();
+          url.pathname = `/${slug}/checkin`;
+          if (!(pathname === `/${slug}/attendance` && request.nextUrl.searchParams.get("code"))) url.search = "";
+          return NextResponse.redirect(url);
+        }
+        if (!onlyCheckin && pathname !== "/" && pathname !== "/login") {
+          const url = request.nextUrl.clone();
+          url.pathname = "/";
+          url.search = "";
+          return NextResponse.redirect(url);
+        }
+      }
+    }
+    return NextResponse.next();
+  }
 
   if (isApi) return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 

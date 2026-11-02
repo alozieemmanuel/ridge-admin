@@ -59,6 +59,7 @@ export async function GET() {
 
   return NextResponse.json({
     isOwner,
+    role: session.role,
     events: events.map((e) => {
       const s = byEvent.get(e.id);
       const cap = parseInt(setting(e.id, "seat_capacity"), 10);
@@ -197,7 +198,7 @@ export async function POST(request: NextRequest) {
 
   // Only real, active, non-owner admins can be given access here.
   const adminIds = Array.isArray(b.adminIds) ? b.adminIds.filter((x): x is string => typeof x === "string") : [];
-  const admins = adminIds.length ? await prisma.admin.findMany({ where: { id: { in: adminIds }, role: "ADMIN", archivedAt: null }, select: { id: true } }) : [];
+  const admins = adminIds.length ? await prisma.admin.findMany({ where: { id: { in: adminIds }, role: { in: ["ADMIN", "CHECKIN"] }, archivedAt: null }, select: { id: true } }) : [];
 
   const event = await prisma.event.create({
     data: {

@@ -67,9 +67,11 @@ export function forgetEvent(slug?: string): void {
   else eventMemo.clear();
 }
 
-export async function requireEvent(request: Request, opts: { module?: ModuleKey | ModuleKey[]; owner?: boolean } = {}): Promise<EventContext> {
+export async function requireEvent(request: Request, opts: { module?: ModuleKey | ModuleKey[]; owner?: boolean; checkin?: boolean } = {}): Promise<EventContext> {
   const session = await getSession();
   if (!session) return fail("Not signed in.", 401);
+  // Door staff can only use the routes that say so (the check-in page and the event details its frame needs).
+  if (session.role === "CHECKIN" && !opts.checkin) return fail("This account can only check people in.", 403);
 
   const url = new URL(request.url);
   const slug = (request.headers.get("x-event") || url.searchParams.get("event") || "").trim().toLowerCase();

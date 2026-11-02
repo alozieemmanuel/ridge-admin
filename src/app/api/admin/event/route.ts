@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 /** The open event, for the dashboard shell: its name, brand, wording, which parts are on, and who is looking. */
 export async function GET(request: NextRequest) {
-  const ctx = await requireEvent(request);
+  const ctx = await requireEvent(request, { checkin: true });
   if (!ctx.ok) return ctx.response;
   const { event, session } = ctx;
   return NextResponse.json({
