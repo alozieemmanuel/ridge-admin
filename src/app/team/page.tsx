@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ROLE_LABEL, canManage, type Role } from "@/lib/roles";
+import { ROLE_LABEL, canManage, isEventScoped, type Role } from "@/lib/roles";
 import AdminShell from "@/components/AdminShell";
 import PasswordInput from "@/components/PasswordInput";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
@@ -189,7 +189,7 @@ export default function ManageAdminsPage() {
                     )}
                     {isOwner && (
                       <td className="px-6 py-5 text-muted whitespace-nowrap">
-                        {a.role !== "ADMIN" ? "All events" : (a.eventIds?.length ?? 0) === 0 ? "None yet" : `${a.eventIds!.length} of ${events.length}`}
+                        {!isEventScoped(a.role) ? "All events" : (a.eventIds?.length ?? 0) === 0 ? "None yet" : `${a.eventIds!.length} of ${events.length}`}
                       </td>
                     )}
                     <td className="px-6 py-5 text-muted whitespace-nowrap">
@@ -198,7 +198,7 @@ export default function ManageAdminsPage() {
                     {isOwner && (
                       <td className="px-6 py-5 whitespace-nowrap text-right">
                         <div className="flex items-center justify-end gap-4 text-xs">
-                          {canManage(viewerRole, a.role) && a.role === "ADMIN" && (
+                          {canManage(viewerRole, a.role) && isEventScoped(a.role) && (
                             <button onClick={() => setDialog({ kind: "events", admin: a })} className="text-goldlight hover:underline">
                               Events
                             </button>
@@ -340,7 +340,7 @@ function AddAdminForm({ viewerRole, events, onAdded }: { viewerRole: Role; event
       const res = await fetch("/api/admin/admins", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password, role, eventIds: role === "ADMIN" ? eventIds : [] }),
+        body: JSON.stringify({ name, email, password, role, eventIds: isEventScoped(role) ? eventIds : [] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to add admin.");
@@ -378,12 +378,13 @@ function AddAdminForm({ viewerRole, events, onAdded }: { viewerRole: Role; event
           <label className={labelClass}>Role</label>
           <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={inputClass}>
             <option value="ADMIN">Admin (chosen events)</option>
+            <option value="CHECKIN">Check-in only (door staff, chosen events)</option>
             {viewerRole === "OWNER" && <option value="SUPER_ADMIN">Super admin (all events, no technical details)</option>}
             {viewerRole === "OWNER" && <option value="OWNER">Owner (everything)</option>}
           </select>
         </div>
       </div>
-      {role === "ADMIN" && (
+      {isEventScoped(role) && (
         <div className="mt-5">
           <label className={labelClass}>Events this admin can open</label>
           <EventChecks events={events} chosen={eventIds} onChange={setEventIds} />
@@ -443,6 +444,7 @@ function EditDialog({
         <label className={labelClass}>Role</label>
         <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={inputClass}>
           <option value="ADMIN">Admin (chosen events)</option>
+            <option value="CHECKIN">Check-in only (door staff, chosen events)</option>
           {viewerRole === "OWNER" && <option value="SUPER_ADMIN">Super admin (all events, no technical details)</option>}
           {viewerRole === "OWNER" && <option value="OWNER">Owner (everything)</option>}
         </select>

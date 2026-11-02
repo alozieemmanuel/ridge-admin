@@ -144,7 +144,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         if (checkingIn && !registration.reservedAt) {
           return NextResponse.json({ error: `${registration.fullName} hasn't reserved a seat. Reserve one for them first.` }, { status: 409 });
         }
-        const updated = await prisma.registration.update({ where: { id }, data: { checkedInAt: checkingIn ? new Date() : null } });
+        const updated = await prisma.registration.update({ where: { id }, data: { checkedInAt: checkingIn ? new Date() : null, checkedInByName: checkingIn ? session.name : null } });
         await log("registration.checkin", { checkedIn: checkingIn });
         return NextResponse.json({ result: "success", checkedInAt: updated.checkedInAt?.toISOString() ?? null });
       }

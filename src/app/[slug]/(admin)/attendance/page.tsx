@@ -246,7 +246,7 @@ function AttendanceInner() {
 
       <section className="border border-border rounded-xl p-5 mb-6 bg-cardbg">
         <h3 className="font-serif text-xl mb-1">Find a ticket</h3>
-        <p className="text-sm text-muted mb-3">Type the code on the guest&apos;s ticket (it looks like IH-7K3F9Q), or scan their QR code with a phone camera.</p>
+        <p className="text-sm text-muted mb-3">Type the code on the guest&apos;s ticket (it looks like IH-7K3F9Q), or scan their QR code with a phone camera. For the door, use the <Link href={ep("/checkin")} className="text-goldlight underline">check-in page</Link>: it checks a guest in as soon as their QR code is opened, and door staff can be given a login that opens only that page (Team, role Check-in only).</p>
         <form
           onSubmit={(e) => {
             e.preventDefault();

@@ -14,6 +14,7 @@ interface EventRow extends EventCardData {
 }
 interface Response {
   isOwner: boolean;
+  role?: string;
   events: EventRow[];
 }
 
@@ -54,7 +55,7 @@ export default function EventsPage() {
         cacheSet(URL, json);
         // An admin who was added to just one event has nothing to choose: they go straight into it.
         if (!json.isOwner && json.events.length === 1) {
-          router.replace(`/${json.events[0].slug}`);
+          router.replace(json.role === "CHECKIN" ? `/${json.events[0].slug}/checkin` : `/${json.events[0].slug}`);
           return;
         }
         setData(json);

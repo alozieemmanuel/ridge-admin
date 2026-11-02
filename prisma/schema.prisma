@@ -53,6 +53,7 @@ enum AdminRole {
   OWNER
   SUPER_ADMIN
   ADMIN
+  CHECKIN // door staff: sees only the check-in page of the events they were added to
 }
 
 enum EventStatus {
@@ -168,6 +169,7 @@ model Registration {
   payLaterReminderAt DateTime? // when the scheduled reminder was actually sent
   seatInviteSentAt DateTime? // last time the "pick your seat" email was sent
   checkedInAt      DateTime? // when the attendee was marked as arrived on Day 7 (attendance)
+  checkedInByName  String? // who checked them in (the official at the door)
   attendanceMode     AttendanceMode? // set when the participant picks a seat (IN_PERSON) or chooses to attend online (ONLINE)
   attendanceChosenAt DateTime?
 

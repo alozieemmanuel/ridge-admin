@@ -15,7 +15,7 @@ export function generateTicketCode(): string {
 
 /** What the QR code holds: a link that opens the Attendance page already looking at this ticket. */
 export function ticketVerifyUrl(ticketCode: string, eventSlug: string): string {
-  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/attendance?code=${encodeURIComponent(ticketCode)}`;
+  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/checkin?code=${encodeURIComponent(ticketCode)}`;
 }
 
 const QR_OPTIONS = {
