@@ -117,6 +117,8 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
         method: "POST",
         body: {
           update_existing: true,
+          // Without this, Mailchimp refuses a guest whose merge fields do not satisfy the audience's field rules (for example a guest with only one name).
+          skip_merge_validation: true,
           members: batch.map((g) => ({ email_address: g.email, status_if_new: "subscribed", merge_fields: { FNAME: g.firstName, LNAME: g.lastName, RSVLINK: g.link } })),
         },
       });
@@ -139,10 +141,10 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
-  // Unsubscribed people are skipped on purpose. Anything else (refused addresses, a full audience, cleaned or archived contacts)
+  // Unsubscribed, cleaned (bounced before) and archived contacts are skipped on purpose. Anything else (refused addresses, a full audience)
   // means the audience is not ready, so stop BEFORE a campaign exists in Mailchimp instead of sending to only part of the list.
   const reasons = tally(left);
-  const unexpected = left.filter((l) => !/: unsubscribed in Mailchimp$/.test(l.reason));
+  const unexpected = left.filter((l) => !/: (unsubscribed|cleaned|archived) in Mailchimp$/.test(l.reason));
   if (unexpected.length > Math.max(5, Math.floor(opts.guests.length * 0.02))) {
     const top = tally(unexpected).slice(0, 3).map((r) => `${r.count} x ${r.reason}`).join(" | ");
     throw new Error(`Mailchimp would only take ${sent.length} of ${opts.guests.length} guests, so nothing was sent and no campaign was created. Reasons: ${top}`);
