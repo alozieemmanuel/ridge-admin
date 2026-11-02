@@ -9,7 +9,7 @@ import { mailchimpConfigured, sendMailchimpCampaign, withMailchimpFooter, type M
 import type { Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Sends a broadcast through Mailchimp's own campaigns. The guests are added to the Mailchimp audience and Mailchimp sends

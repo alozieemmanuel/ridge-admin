@@ -88,29 +88,49 @@ export interface MailchimpResult {
 export async function sendMailchimpCampaign(opts: { name: string; subject: string; html: string; guests: MailchimpGuest[]; budgetMs?: number }): Promise<MailchimpResult> {
   const c = config();
   const started = Date.now();
-  const budget = opts.budgetMs ?? 45_000;
+  const budget = opts.budgetMs ?? 200_000;
   await ensureLinkField();
 
   const sent: MailchimpGuest[] = [];
   const left: { guest: MailchimpGuest; reason: string }[] = [];
-  const queue = [...opts.guests];
+  const byEmail = new Map(opts.guests.map((g) => [g.email.toLowerCase(), g]));
+
+  // Mailchimp's batch endpoint takes up to 500 members per request, so 1,800 guests is 4 requests rather than 1,800.
+  // An existing member keeps their status (status_if_new only applies to new ones), so nobody who unsubscribed is re-subscribed.
+  const batches: MailchimpGuest[][] = [];
+  for (let i = 0; i < opts.guests.length; i += 500) batches.push(opts.guests.slice(i, i + 500));
+  type Member = { email_address: string; status?: string };
+  type BatchReply = { new_members?: Member[]; updated_members?: Member[]; errors?: { email_address?: string; error?: string; error_code?: string }[] };
+  const queue = [...batches];
   const worker = async () => {
-    for (let g = queue.shift(); g; g = queue.shift()) {
-      if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, it carries on quickly for guests already added.");
-      const r = await api<{ status?: string }>(`/lists/${c.audience}/members/${md5(g.email)}`, {
-        method: "PUT",
-        body: { email_address: g.email, status_if_new: "subscribed", merge_fields: { FNAME: g.firstName, LNAME: g.lastName, RSVLINK: g.link } },
+    for (let batch = queue.shift(); batch; batch = queue.shift()) {
+      if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, guests already added are quick to update.");
+      const r = await api<BatchReply>(`/lists/${c.audience}`, {
+        method: "POST",
+        body: {
+          update_existing: true,
+          members: batch.map((g) => ({ email_address: g.email, status_if_new: "subscribed", merge_fields: { FNAME: g.firstName, LNAME: g.lastName, RSVLINK: g.link } })),
+        },
       });
-      if (!r.ok) {
-        const d = r.data as { title?: string; detail?: string } | null;
-        // A refused address (for example one Mailchimp considers fake) only drops that person.
-        if (r.status === 400 || r.status === 403) left.push({ guest: g, reason: `Mailchimp refused this address${d?.title ? `: ${d.title}` : ""}` });
-        else throw new Error(problem(r));
-      } else if (r.data.status === "subscribed") sent.push(g);
-      else left.push({ guest: g, reason: `Not emailed: ${r.data.status || "not subscribed"} in Mailchimp` });
+      if (!r.ok) throw new Error(problem(r));
+      const seen = new Set<string>();
+      for (const m of [...(r.data.new_members || []), ...(r.data.updated_members || [])]) {
+        const g = byEmail.get(m.email_address.toLowerCase());
+        if (!g) continue;
+        seen.add(g.email.toLowerCase());
+        if (m.status === "subscribed") sent.push(g);
+        else left.push({ guest: g, reason: `Not emailed: ${m.status || "not subscribed"} in Mailchimp` });
+      }
+      // A refused address (for example one Mailchimp considers fake) only drops that person.
+      for (const e of r.data.errors || []) {
+        const g = e.email_address ? byEmail.get(e.email_address.toLowerCase()) : undefined;
+        if (!g || seen.has(g.email.toLowerCase())) continue;
+        seen.add(g.email.toLowerCase());
+        left.push({ guest: g, reason: `Mailchimp refused this address${e.error ? `: ${e.error.slice(0, 120)}` : ""}` });
+      }
     }
   };
-  await Promise.all(Array.from({ length: 8 }, worker));
+  await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
   if (sent.length === 0) throw new Error("Mailchimp would not email any of these guests (they are unsubscribed or refused there). Nothing was sent.");
 
   const seg = await api<{ id: number }>(`/lists/${c.audience}/segments`, { method: "POST", body: { name: `${opts.name} ${new Date().toISOString().slice(0, 16)}`.slice(0, 100), static_segment: sent.map((g) => g.email) } });
