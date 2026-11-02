@@ -244,7 +244,7 @@ export default function CampaignsPage() {
         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
         if (viaMailchimp) {
           setMessage({
-            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out because they unsubscribed or were refused in Mailchimp.` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
+            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out (${((data.reasons as { reason: string; count: number }[] | undefined) || []).map((r) => `${r.count}: ${r.reason}`).join("; ") || "unsubscribed or refused in Mailchimp"}).` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
             ok: true,
           });
           load();

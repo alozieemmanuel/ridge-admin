@@ -100,6 +100,7 @@ export async function POST(request: NextRequest) {
       skipped: { alreadyGot, alreadyWaiting: 0 },
       blocked: null,
       markedInvited,
+      reasons: res.reasons.slice(0, 3),
     });
   } catch (err) {
     // Nothing was sent, so the campaign row is removed and the same send can be tried again.

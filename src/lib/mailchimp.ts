@@ -79,6 +79,14 @@ export interface MailchimpResult {
   /** Guests Mailchimp will not email (unsubscribed there, or removed), with the reason. */
   left: { guest: MailchimpGuest; reason: string }[];
   mailchimpCampaignId: string;
+  /** How many guests were left out for each reason, biggest first. */
+  reasons: { reason: string; count: number }[];
+}
+
+function tally(left: { reason: string }[]): { reason: string; count: number }[] {
+  const m = new Map<string, number>();
+  for (const l of left) m.set(l.reason, (m.get(l.reason) || 0) + 1);
+  return [...m.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
 }
 
 /**
@@ -126,11 +134,19 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
         const g = e.email_address ? byEmail.get(e.email_address.toLowerCase()) : undefined;
         if (!g || seen.has(g.email.toLowerCase())) continue;
         seen.add(g.email.toLowerCase());
-        left.push({ guest: g, reason: `Mailchimp refused this address${e.error ? `: ${e.error.slice(0, 120)}` : ""}` });
+        left.push({ guest: g, reason: `Mailchimp refused this address${e.error_code || e.error ? `: ${[e.error_code, e.error].filter(Boolean).join(" ").slice(0, 160)}` : ""}` });
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
+  // Unsubscribed people are skipped on purpose. Anything else (refused addresses, a full audience, cleaned or archived contacts)
+  // means the audience is not ready, so stop BEFORE a campaign exists in Mailchimp instead of sending to only part of the list.
+  const reasons = tally(left);
+  const unexpected = left.filter((l) => !/: unsubscribed in Mailchimp$/.test(l.reason));
+  if (unexpected.length > Math.max(5, Math.floor(opts.guests.length * 0.02))) {
+    const top = tally(unexpected).slice(0, 3).map((r) => `${r.count} x ${r.reason}`).join(" | ");
+    throw new Error(`Mailchimp would only take ${sent.length} of ${opts.guests.length} guests, so nothing was sent and no campaign was created. Reasons: ${top}`);
+  }
   if (sent.length === 0) throw new Error("Mailchimp would not email any of these guests (they are unsubscribed or refused there). Nothing was sent.");
 
   const seg = await api<{ id: number }>(`/lists/${c.audience}/segments`, { method: "POST", body: { name: `${opts.name} ${new Date().toISOString().slice(0, 16)}`.slice(0, 100), static_segment: sent.map((g) => g.email) } });
@@ -158,7 +174,7 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
 
   const go = await api(`/campaigns/${camp.data.id}/actions/send`, { method: "POST" });
   if (!go.ok) throw new Error(problem(go));
-  return { sent, left, mailchimpCampaignId: camp.data.id };
+  return { sent, left, mailchimpCampaignId: camp.data.id, reasons };
 }
 
 /** Adds the unsubscribe link and address that Mailchimp requires, if the email does not already have them. */
