@@ -61,6 +61,25 @@ function bullets(el: HTMLTextAreaElement, value: string, onChange: (v: string) =
   reselect(el, lineStart, lineStart + next.length);
 }
 
+/** Puts a [button] line at the cursor, in a paragraph of its own: that is where the reserve button will appear in the email. */
+function insertButton(el: HTMLTextAreaElement, value: string, onChange: (v: string) => void) {
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  // Enough line breaks on each side to leave a blank line between the button and the text around it.
+  const newlines = (text: string, fromEnd: boolean) => {
+    const n = fromEnd ? text.length - text.replace(/\n+$/, "").length : text.length - text.replace(/^\n+/, "").length;
+    return "\n".repeat(Math.max(0, 2 - n));
+  };
+  const lead = before === "" ? "" : newlines(before, true);
+  const trail = after === "" ? "" : newlines(after, false);
+  const marker = "[button]";
+  onChange(before + lead + marker + trail + after);
+  const caret = before.length + lead.length + marker.length + trail.length;
+  reselect(el, caret, caret);
+}
+
 /** Ctrl/Cmd + B, I and U on the textarea. Pass this as its onKeyDown. */
 export function formatKeyHandler(e: KeyboardEvent<HTMLTextAreaElement>, value: string, onChange: (v: string) => void) {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
@@ -73,7 +92,18 @@ export function formatKeyHandler(e: KeyboardEvent<HTMLTextAreaElement>, value: s
 const button =
   "min-w-[2.25rem] text-sm px-3 py-1.5 rounded-lg border border-border text-muted hover:border-gold hover:text-fg transition-colors whitespace-nowrap";
 
-export default function FormatToolbar({ textareaRef, value, onChange }: { textareaRef: RefObject<HTMLTextAreaElement>; value: string; onChange: (v: string) => void }) {
+export default function FormatToolbar({
+  textareaRef,
+  value,
+  onChange,
+  onButton,
+}: {
+  textareaRef: RefObject<HTMLTextAreaElement>;
+  value: string;
+  onChange: (v: string) => void;
+  /** When given, a "Button" control is shown. It is called after the [button] line is inserted (so the page can switch the button on). */
+  onButton?: () => void;
+}) {
   // onMouseDown keeps the selection in the textarea while a button is pressed.
   const run = (action: (el: HTMLTextAreaElement) => void) => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -94,6 +124,20 @@ export default function FormatToolbar({ textareaRef, value, onChange }: { textar
       <button type="button" className={button} onMouseDown={run((el) => bullets(el, value, onChange))} title="Bullet points" aria-label="Bullet points">
         • List
       </button>
+      {onButton && (
+        <button
+          type="button"
+          className={button}
+          onMouseDown={run((el) => {
+            insertButton(el, value, onChange);
+            onButton();
+          })}
+          title="Put the reserve button at the cursor"
+          aria-label="Insert reserve button"
+        >
+          + Button
+        </button>
+      )}
     </div>
   );
 }

@@ -1,0 +1,306 @@
+From 7738d4ddc3eaf9d983470dc0e202c1fa2330c096 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 11:55:32 +0100
+Subject: [PATCH] Campaigns: place the reserve button anywhere in the message
+
+A [button] line in the message is where the reserve button appears, so it
+can sit between paragraphs or anywhere else. The new + Button control in
+the toolbar inserts that line at the cursor and switches the button on.
+Without a [button] line the button stays at the bottom, as before. The
+preview and the campaign history show the button in its place.
+
+Also keeps Mailchimp merge tags such as *|FNAME|* from being read as
+italic by the text formatter.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LHbnzt849egZ8yN5Kkk57L
+---
+ src/app/[slug]/(admin)/campaigns/page.tsx | 20 ++++++---
+ src/components/FormatToolbar.tsx          | 46 ++++++++++++++++++++-
+ src/lib/email.ts                          | 14 ++++---
+ src/lib/richText.ts                       | 50 +++++++++++++++++------
+ 4 files changed, 106 insertions(+), 24 deletions(-)
+
+diff --git a/src/app/[slug]/(admin)/campaigns/page.tsx b/src/app/[slug]/(admin)/campaigns/page.tsx
+index 2a901bd..be08bd3 100644
+--- a/src/app/[slug]/(admin)/campaigns/page.tsx
++++ b/src/app/[slug]/(admin)/campaigns/page.tsx
+@@ -7,7 +7,7 @@ import { flushUntilDone } from "@/lib/flushQueue";
+ import { useIsOwner } from "@/lib/useIsOwner";
+ import SenderStrip from "@/components/SenderStrip";
+ import FormatToolbar, { formatKeyHandler } from "@/components/FormatToolbar";
+-import { richHtml } from "@/lib/richText";
++import { hasButtonMarker, richHtml, screenButtonHtml } from "@/lib/richText";
+ import { summarizeBlocked } from "@/lib/sendErrorText";
+ 
+ type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
+@@ -105,8 +105,8 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose:
+             <p className="text-xs uppercase tracking-wider text-muted mb-2">Email</p>
+             <div className="border border-border rounded-xl p-5 max-h-[50vh] overflow-y-auto">
+               <p className="text-sm font-medium mb-3">{detail.subject}</p>
+-              <div className="text-sm text-muted" dangerouslySetInnerHTML={{ __html: richHtml(detail.body, "screen") }} />
+-              {detail.ctaLabel && (
++              <div className="text-sm text-muted" dangerouslySetInnerHTML={{ __html: richHtml(detail.body, "screen", { button: detail.ctaLabel ? screenButtonHtml(detail.ctaLabel) : undefined }) }} />
++              {detail.ctaLabel && !hasButtonMarker(detail.body) && (
+                 <p className="mt-4">
+                   <span className="inline-block text-xs uppercase tracking-widest border border-border rounded-full px-4 py-2">{detail.ctaLabel}</span>
+                 </p>
+@@ -318,7 +318,7 @@ export default function CampaignsPage() {
+         />
+ 
+         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Message</label>
+-        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
++        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} onButton={() => setWithButton(true)} />
+         <textarea
+           ref={bodyRef}
+           value={body}
+@@ -330,12 +330,19 @@ export default function CampaignsPage() {
+         />
+         <p className="text-xs text-muted mb-4">
+           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize. Select text and press a button above, or type **bold**, *italic*, ++underline++, and start a line with - for a bullet point.
++          To place the reserve button, put the cursor where you want it and press + Button. It adds a line that says [button].
+         </p>
++        {hasButtonMarker(body) && !withButton && (
++          <p className="text-xs text-amber-300 mb-4">Your message has a [button] line, but "Add a reserve button" below is off, so no button will be sent.</p>
++        )}
+ 
+         {body.trim() && (
+           <div className="border border-border rounded-xl p-4 mb-5">
+             <p className="text-xs uppercase tracking-wider text-muted mb-2">Preview of the message</p>
+-            <div className="text-sm" dangerouslySetInnerHTML={{ __html: richHtml(body, "screen") }} />
++            <div className="text-sm" dangerouslySetInnerHTML={{ __html: richHtml(body, "screen", { button: ctaLabel ? screenButtonHtml(ctaLabel) : undefined }) }} />
++            {ctaLabel && !hasButtonMarker(body) && (
++              <div className="mt-3 text-center text-sm" dangerouslySetInnerHTML={{ __html: screenButtonHtml(ctaLabel) }} />
++            )}
+           </div>
+         )}
+ 
+@@ -345,7 +352,8 @@ export default function CampaignsPage() {
+             <span>
+               <span className="font-medium">Add a reserve button</span>
+               <span className="block text-xs text-muted mt-1 leading-relaxed">
+-                Each guest gets a button under your message that opens their own reserve page, where one click reserves their seat and emails their ticket. Use your message to explain what reserving means and how limited the seats are.
++                Each guest gets a button that opens their own reserve page, where one click reserves their seat and emails their ticket. Use your message to explain what reserving means and how limited the seats are.
++                Press + Button above the message to choose where it goes, for example between two paragraphs. If you do not place it, it goes at the bottom.
+                 You can also put {"{{reserve_link}}"} inside the text.
+               </span>
+             </span>
+diff --git a/src/components/FormatToolbar.tsx b/src/components/FormatToolbar.tsx
+index 10903e7..4a1c489 100644
+--- a/src/components/FormatToolbar.tsx
++++ b/src/components/FormatToolbar.tsx
+@@ -61,6 +61,25 @@ function bullets(el: HTMLTextAreaElement, value: string, onChange: (v: string) =
+   reselect(el, lineStart, lineStart + next.length);
+ }
+ 
++/** Puts a [button] line at the cursor, in a paragraph of its own: that is where the reserve button will appear in the email. */
++function insertButton(el: HTMLTextAreaElement, value: string, onChange: (v: string) => void) {
++  const start = el.selectionStart;
++  const end = el.selectionEnd;
++  const before = value.slice(0, start);
++  const after = value.slice(end);
++  // Enough line breaks on each side to leave a blank line between the button and the text around it.
++  const newlines = (text: string, fromEnd: boolean) => {
++    const n = fromEnd ? text.length - text.replace(/\n+$/, "").length : text.length - text.replace(/^\n+/, "").length;
++    return "\n".repeat(Math.max(0, 2 - n));
++  };
++  const lead = before === "" ? "" : newlines(before, true);
++  const trail = after === "" ? "" : newlines(after, false);
++  const marker = "[button]";
++  onChange(before + lead + marker + trail + after);
++  const caret = before.length + lead.length + marker.length + trail.length;
++  reselect(el, caret, caret);
++}
++
+ /** Ctrl/Cmd + B, I and U on the textarea. Pass this as its onKeyDown. */
+ export function formatKeyHandler(e: KeyboardEvent<HTMLTextAreaElement>, value: string, onChange: (v: string) => void) {
+   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+@@ -73,7 +92,18 @@ export function formatKeyHandler(e: KeyboardEvent<HTMLTextAreaElement>, value: s
+ const button =
+   "min-w-[2.25rem] text-sm px-3 py-1.5 rounded-lg border border-border text-muted hover:border-gold hover:text-fg transition-colors whitespace-nowrap";
+ 
+-export default function FormatToolbar({ textareaRef, value, onChange }: { textareaRef: RefObject<HTMLTextAreaElement>; value: string; onChange: (v: string) => void }) {
++export default function FormatToolbar({
++  textareaRef,
++  value,
++  onChange,
++  onButton,
++}: {
++  textareaRef: RefObject<HTMLTextAreaElement>;
++  value: string;
++  onChange: (v: string) => void;
++  /** When given, a "Button" control is shown. It is called after the [button] line is inserted (so the page can switch the button on). */
++  onButton?: () => void;
++}) {
+   // onMouseDown keeps the selection in the textarea while a button is pressed.
+   const run = (action: (el: HTMLTextAreaElement) => void) => (e: React.MouseEvent) => {
+     e.preventDefault();
+@@ -94,6 +124,20 @@ export default function FormatToolbar({ textareaRef, value, onChange }: { textar
+       <button type="button" className={button} onMouseDown={run((el) => bullets(el, value, onChange))} title="Bullet points" aria-label="Bullet points">
+         • List
+       </button>
++      {onButton && (
++        <button
++          type="button"
++          className={button}
++          onMouseDown={run((el) => {
++            insertButton(el, value, onChange);
++            onButton();
++          })}
++          title="Put the reserve button at the cursor"
++          aria-label="Insert reserve button"
++        >
++          + Button
++        </button>
++      )}
+     </div>
+   );
+ }
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index 414d4c4..fd50ea4 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -2,7 +2,7 @@ import { sendViaGmail, type GmailAttachment } from "./gmail";
+ import { BRAND_NAME, LOGO_URL } from "./brand";
+ import { DEFAULT_COLOR, mix, normalizeHex, onColor, textOnWhite } from "./eventTheme";
+ import { BASE_PATH } from "./basePath";
+-import { richHtml } from "./richText";
++import { hasButtonMarker, richHtml } from "./richText";
+ 
+ // Brand palette: white and lemon green (the platform default). An event with its own colour overrides the accent
+ // parts (button, badges, borders, tints) while an email is being rendered; see withBrand() below.
+@@ -139,8 +139,8 @@ function withoutSubject(text: string, subject?: string): string {
+ }
+ 
+ /** With rich = true, **bold**, *italic*, ++underline++ and "- " bullet lines are turned into formatting (see src/lib/richText.ts). */
+-function paragraphsFromPlainText(text: string, rich = false): string {
+-  if (rich) return richHtml(text, "email");
++function paragraphsFromPlainText(text: string, rich = false, buttonHtml?: string): string {
++  if (rich) return richHtml(text, "email", { button: buttonHtml });
+   return text
+     .split(/\n\s*\n/)
+     .map((block) => block.trim())
+@@ -225,14 +225,18 @@ function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
+     )
+     .join("");
+ 
++  // The button goes where the message has a [button] line. Without one it stays at the bottom, as before.
++  const button = ctaButton(opts.ctaLabel, opts.ctaUrl);
++  const placed = Boolean(button) && hasButtonMarker(opts.bodyText);
++
+   const inner = `
+       <div style="padding:28px 40px 8px;text-align:center;">
+         ${eyebrowPill(opts.eyebrow)}
+-        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true)}</div>
++        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
+       </div>
+       ${summaryHtml}`;
+ 
+-  return emailShell(inner, { maxWidth: 560, ctaHtml: ctaButton(opts.ctaLabel, opts.ctaUrl) });
++  return emailShell(inner, { maxWidth: 560, ctaHtml: placed ? "" : button });
+ }
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/src/lib/richText.ts b/src/lib/richText.ts
+index 3100bd3..66f28c6 100644
+--- a/src/lib/richText.ts
++++ b/src/lib/richText.ts
+@@ -2,6 +2,7 @@
+  * Light formatting for email text. The message stays plain text; these markers become HTML when it is shown or sent:
+  *   **bold**   *italic*   ++underline++   ***bold and italic***
+  *   a line that starts with "- " is a bullet point
++ *   a line that says [button] is where the reserve button goes (when the campaign has one)
+  * A blank line starts a new paragraph. Everything is escaped first, so only these markers can ever become tags.
+  * Safe to import from both server and client code (no server-only imports).
+  */
+@@ -16,14 +17,32 @@ const BOLD = /\*\*(?=\S)(.+?)(?<=\S)\*\*/g;
+ const UNDERLINE = /\+\+(?=\S)(.+?)(?<=\S)\+\+/g;
+ const ITALIC = /(?<![*\w])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![*\w])/g;
+ const BULLET = /^\s*[-•]\s+(.*)$/;
++// Mailchimp merge tags such as *|FNAME|* contain asterisks. They are set aside while the markers are read.
++const MERGE_TAG = /\*\|[^|*\s]+\|\*/g;
++
++const BUTTON_LINE = /^\s*\[button\]\s*$/i;
++const BUTTON_ANYWHERE = /^\s*\[button\]\s*$/im;
++
++/** True when the text has a line that says [button], the spot the admin chose for the reserve button. */
++export function hasButtonMarker(text: string): boolean {
++  return BUTTON_ANYWHERE.test(text);
++}
+ 
+ /** Turns the markers inside one line of already-escaped text into tags. */
+ function inline(escaped: string): string {
+-  return escaped
++  const tags: string[] = [];
++  const kept = escaped.replace(MERGE_TAG, (tag) => `\u0000${tags.push(tag) - 1}\u0000`);
++  const formatted = kept
+     .replace(BOLD_ITALIC, "<strong><em>$1</em></strong>")
+     .replace(BOLD, "<strong>$1</strong>")
+     .replace(UNDERLINE, "<u>$1</u>")
+     .replace(ITALIC, "<em>$1</em>");
++  return formatted.replace(/\u0000(\d+)\u0000/g, (_, i) => tags[Number(i)]);
++}
++
++/** The reserve button as shown on screen (the preview and the campaign history). The label is escaped. */
++export function screenButtonHtml(label: string): string {
++  return `<span style="display:inline-block;border:1px solid currentColor;border-radius:999px;padding:8px 18px;font-size:12px;letter-spacing:0.1em;text-transform:uppercase;">${esc(label)}</span>`;
+ }
+ 
+ export type RichVariant = "email" | "screen";
+@@ -32,35 +51,42 @@ export type RichVariant = "email" | "screen";
+  * Plain text with markers to HTML.
+  *  - "email": inline styles, black Arial text, for the email itself.
+  *  - "screen": no colours, so it follows the dashboard theme (previews and the campaign history).
++ * options.button is the HTML of the button. It is placed where a [button] line stands; without it, a [button] line shows nothing.
+  */
+-export function richHtml(text: string, variant: RichVariant = "email"): string {
++export function richHtml(text: string, variant: RichVariant = "email", options: { button?: string } = {}): string {
+   const email = variant === "email";
+   const font = email ? "color:#000000;font-size:15px;line-height:1.6;font-family:Arial,sans-serif;" : "";
+   const pStyle = `margin:0 0 ${email ? 14 : 10}px;${font}`;
+   const ulStyle = `margin:0 0 ${email ? 14 : 10}px;padding-left:${email ? "22px" : "1.25rem"};${email ? "" : "list-style:disc;"}${font}`;
+   const liStyle = "margin:0 0 6px;";
++  const buttonStyle = `margin:6px 0 ${email ? 20 : 12}px;text-align:center;`;
+ 
+   return text
+     .split(/\n\s*\n/)
+     .map((block) => block.trim())
+     .filter(Boolean)
+     .map((block) => {
+-      // Group the lines of a block into runs: consecutive bullet lines make one list, other lines make one paragraph.
+-      const runs: { bullet: boolean; lines: string[] }[] = [];
++      // Group the lines of a block into runs: consecutive bullet lines make one list, other lines make one paragraph,
++      // and a [button] line is its own run, so the button can stand between two paragraphs or inside one.
++      const runs: { kind: "p" | "ul" | "button"; lines: string[] }[] = [];
+       for (const line of block.split("\n")) {
++        if (BUTTON_LINE.test(line)) {
++          runs.push({ kind: "button", lines: [] });
++          continue;
++        }
+         const m = BULLET.exec(line);
+-        const bullet = m !== null;
++        const kind = m ? "ul" : "p";
+         const content = m ? m[1] : line.trim();
+         const last = runs[runs.length - 1];
+-        if (last && last.bullet === bullet) last.lines.push(content);
+-        else runs.push({ bullet, lines: [content] });
++        if (last && last.kind === kind) last.lines.push(content);
++        else runs.push({ kind, lines: [content] });
+       }
+       return runs
+-        .map((run) =>
+-          run.bullet
+-            ? `<ul style="${ulStyle}">${run.lines.map((l) => `<li style="${liStyle}">${inline(esc(l))}</li>`).join("")}</ul>`
+-            : `<p style="${pStyle}">${run.lines.map((l) => inline(esc(l))).join("<br/>")}</p>`
+-        )
++        .map((run) => {
++          if (run.kind === "button") return options.button ? `<div style="${buttonStyle}">${options.button}</div>` : "";
++          if (run.kind === "ul") return `<ul style="${ulStyle}">${run.lines.map((l) => `<li style="${liStyle}">${inline(esc(l))}</li>`).join("")}</ul>`;
++          return `<p style="${pStyle}">${run.lines.map((l) => inline(esc(l))).join("<br/>")}</p>`;
++        })
+         .join("");
+     })
+     .join("");
+-- 
+2.43.0
+

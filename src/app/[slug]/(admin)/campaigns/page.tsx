@@ -7,7 +7,7 @@ import { flushUntilDone } from "@/lib/flushQueue";
 import { useIsOwner } from "@/lib/useIsOwner";
 import SenderStrip from "@/components/SenderStrip";
 import FormatToolbar, { formatKeyHandler } from "@/components/FormatToolbar";
-import { richHtml } from "@/lib/richText";
+import { hasButtonMarker, richHtml, screenButtonHtml } from "@/lib/richText";
 import { summarizeBlocked } from "@/lib/sendErrorText";
 
 type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
@@ -105,8 +105,8 @@ function CampaignDialog({ campaignId, onClose }: { campaignId: string; onClose: 
             <p className="text-xs uppercase tracking-wider text-muted mb-2">Email</p>
             <div className="border border-border rounded-xl p-5 max-h-[50vh] overflow-y-auto">
               <p className="text-sm font-medium mb-3">{detail.subject}</p>
-              <div className="text-sm text-muted" dangerouslySetInnerHTML={{ __html: richHtml(detail.body, "screen") }} />
-              {detail.ctaLabel && (
+              <div className="text-sm text-muted" dangerouslySetInnerHTML={{ __html: richHtml(detail.body, "screen", { button: detail.ctaLabel ? screenButtonHtml(detail.ctaLabel) : undefined }) }} />
+              {detail.ctaLabel && !hasButtonMarker(detail.body) && (
                 <p className="mt-4">
                   <span className="inline-block text-xs uppercase tracking-widest border border-border rounded-full px-4 py-2">{detail.ctaLabel}</span>
                 </p>
@@ -318,7 +318,7 @@ export default function CampaignsPage() {
         />
 
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Message</label>
-        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
+        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} onButton={() => setWithButton(true)} />
         <textarea
           ref={bodyRef}
           value={body}
@@ -330,12 +330,19 @@ export default function CampaignsPage() {
         />
         <p className="text-xs text-muted mb-4">
           Use {"{{first_name}}"} or {"{{full_name}}"} to personalize. Select text and press a button above, or type **bold**, *italic*, ++underline++, and start a line with - for a bullet point.
+          To place the reserve button, put the cursor where you want it and press + Button. It adds a line that says [button].
         </p>
+        {hasButtonMarker(body) && !withButton && (
+          <p className="text-xs text-amber-300 mb-4">Your message has a [button] line, but "Add a reserve button" below is off, so no button will be sent.</p>
+        )}
 
         {body.trim() && (
           <div className="border border-border rounded-xl p-4 mb-5">
             <p className="text-xs uppercase tracking-wider text-muted mb-2">Preview of the message</p>
-            <div className="text-sm" dangerouslySetInnerHTML={{ __html: richHtml(body, "screen") }} />
+            <div className="text-sm" dangerouslySetInnerHTML={{ __html: richHtml(body, "screen", { button: ctaLabel ? screenButtonHtml(ctaLabel) : undefined }) }} />
+            {ctaLabel && !hasButtonMarker(body) && (
+              <div className="mt-3 text-center text-sm" dangerouslySetInnerHTML={{ __html: screenButtonHtml(ctaLabel) }} />
+            )}
           </div>
         )}
 
@@ -345,7 +352,8 @@ export default function CampaignsPage() {
             <span>
               <span className="font-medium">Add a reserve button</span>
               <span className="block text-xs text-muted mt-1 leading-relaxed">
-                Each guest gets a button under your message that opens their own reserve page, where one click reserves their seat and emails their ticket. Use your message to explain what reserving means and how limited the seats are.
+                Each guest gets a button that opens their own reserve page, where one click reserves their seat and emails their ticket. Use your message to explain what reserving means and how limited the seats are.
+                Press + Button above the message to choose where it goes, for example between two paragraphs. If you do not place it, it goes at the bottom.
                 You can also put {"{{reserve_link}}"} inside the text.
               </span>
             </span>

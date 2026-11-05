@@ -2,7 +2,7 @@ import { sendViaGmail, type GmailAttachment } from "./gmail";
 import { BRAND_NAME, LOGO_URL } from "./brand";
 import { DEFAULT_COLOR, mix, normalizeHex, onColor, textOnWhite } from "./eventTheme";
 import { BASE_PATH } from "./basePath";
-import { richHtml } from "./richText";
+import { hasButtonMarker, richHtml } from "./richText";
 
 // Brand palette: white and lemon green (the platform default). An event with its own colour overrides the accent
 // parts (button, badges, borders, tints) while an email is being rendered; see withBrand() below.
@@ -139,8 +139,8 @@ function withoutSubject(text: string, subject?: string): string {
 }
 
 /** With rich = true, **bold**, *italic*, ++underline++ and "- " bullet lines are turned into formatting (see src/lib/richText.ts). */
-function paragraphsFromPlainText(text: string, rich = false): string {
-  if (rich) return richHtml(text, "email");
+function paragraphsFromPlainText(text: string, rich = false, buttonHtml?: string): string {
+  if (rich) return richHtml(text, "email", { button: buttonHtml });
   return text
     .split(/\n\s*\n/)
     .map((block) => block.trim())
@@ -225,14 +225,18 @@ function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
     )
     .join("");
 
+  // The button goes where the message has a [button] line. Without one it stays at the bottom, as before.
+  const button = ctaButton(opts.ctaLabel, opts.ctaUrl);
+  const placed = Boolean(button) && hasButtonMarker(opts.bodyText);
+
   const inner = `
       <div style="padding:28px 40px 8px;text-align:center;">
         ${eyebrowPill(opts.eyebrow)}
-        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true)}</div>
+        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
       </div>
       ${summaryHtml}`;
 
-  return emailShell(inner, { maxWidth: 560, ctaHtml: ctaButton(opts.ctaLabel, opts.ctaUrl) });
+  return emailShell(inner, { maxWidth: 560, ctaHtml: placed ? "" : button });
 }
 
 // ---------------------------------------------------------------------------
