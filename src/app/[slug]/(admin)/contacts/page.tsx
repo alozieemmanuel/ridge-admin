@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
 import AddContactDialog from "@/components/AddContactDialog";
@@ -163,6 +164,9 @@ function RegistrationsInner() {
                 {sheetLinked ? "Live sheet" : "Connect live sheet"}
               </button>
             )}
+            <Link href={ep("/contacts/email-check")} className={ghostButton}>
+              Check emails
+            </Link>
             <button onClick={() => setAdding(true)} className={ghostButton}>
               Add {person.toLowerCase()}
             </button>

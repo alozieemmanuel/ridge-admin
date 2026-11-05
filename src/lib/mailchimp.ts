@@ -54,6 +54,14 @@ function problem(r: { status: number; data: unknown }): string {
   return `Mailchimp ${r.status}${d?.title ? ` ${d.title}` : ""}: ${d?.detail || "request failed"}${extra}`;
 }
 
+/** Only the merge values that have something in them: an empty last name is left out rather than sent as "". */
+function mergeFields(g: MailchimpGuest): Record<string, string> {
+  const m: Record<string, string> = { RSVLINK: g.link };
+  if (g.firstName.trim()) m.FNAME = g.firstName.trim();
+  if (g.lastName.trim()) m.LNAME = g.lastName.trim();
+  return m;
+}
+
 const md5 = (email: string) => createHash("md5").update(email.trim().toLowerCase()).digest("hex");
 
 export interface MailchimpGuest {
@@ -119,7 +127,7 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
           update_existing: true,
           // Without this, Mailchimp refuses a guest whose merge fields do not satisfy the audience's field rules (for example a guest with only one name).
           skip_merge_validation: true,
-          members: batch.map((g) => ({ email_address: g.email, status_if_new: "subscribed", merge_fields: { FNAME: g.firstName, LNAME: g.lastName, RSVLINK: g.link } })),
+          members: batch.map((g) => ({ email_address: g.email, status_if_new: "subscribed", merge_fields: mergeFields(g) })),
         },
       });
       if (!r.ok) throw new Error(problem(r));
@@ -141,6 +149,36 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
+  // The batch call refuses some guests with "merge fields were invalid" without saying which field. Adding one guest at a time
+  // is slower but names the field. The first refused guest is tried alone: if Mailchimp still refuses, stop at once with its exact reason.
+  const isMerge = (l: { reason: string }) => /merge fields were invalid/i.test(l.reason);
+  const retry = left.filter(isMerge);
+  if (retry.length) {
+    for (let i = left.length - 1; i >= 0; i--) if (isMerge(left[i])) left.splice(i, 1);
+    const putOne = async (g: MailchimpGuest) =>
+      api<{ status?: string }>(`/lists/${c.audience}/members/${md5(g.email)}`, {
+        method: "PUT",
+        body: { email_address: g.email, status_if_new: "subscribed", skip_merge_validation: true, merge_fields: mergeFields(g) },
+      });
+    const settle = (g: MailchimpGuest, r: { ok: boolean; status: number; data: { status?: string } }) => {
+      if (r.ok && r.data.status === "subscribed") sent.push(g);
+      else if (r.ok) left.push({ guest: g, reason: `Not emailed: ${r.data.status || "not subscribed"} in Mailchimp` });
+      else left.push({ guest: g, reason: `Mailchimp refused this address: ${problem(r).slice(0, 200)}` });
+    };
+    const probe = await putOne(retry[0].guest);
+    if (!probe.ok && probe.status !== 429 && /merge|field/i.test(problem(probe))) {
+      throw new Error(`Mailchimp refuses these guests because of a field problem. Nothing was sent. Tested on ${retry[0].guest.email}: ${problem(probe)}`);
+    }
+    settle(retry[0].guest, probe);
+    const rest = retry.slice(1).map((l) => l.guest);
+    const again = async () => {
+      for (let g = rest.shift(); g; g = rest.shift()) {
+        if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, guests already added are skipped faster.");
+        settle(g, await putOne(g));
+      }
+    };
+    await Promise.all(Array.from({ length: 8 }, again));
+  }
   // Unsubscribed, cleaned (bounced before) and archived contacts are skipped on purpose. Anything else (refused addresses, a full audience)
   // means the audience is not ready, so stop BEFORE a campaign exists in Mailchimp instead of sending to only part of the list.
   const reasons = tally(left);
