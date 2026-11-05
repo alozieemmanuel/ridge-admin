@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { followUpLabel } from "@/lib/followUp";
+import { followUpLabel, isFollowUpStatus } from "@/lib/followUp";
 import { requireEvent } from "@/lib/event";
+import { SEAT_FILTER_LABELS, registrationWhere } from "@/lib/registrationFilters";
 
 export const runtime = "nodejs";
 
@@ -12,13 +13,25 @@ function csvEscape(value: unknown): string {
   return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
-/** The event's whole contact list as a CSV (what Excel and Google Sheets open). The link carries ?event=<slug>. */
+/**
+ * The event's contact list as a CSV (what Excel and Google Sheets open). The link carries ?event=<slug>.
+ * Optional filters, the same ones the Contacts page uses, so the download matches the list on screen:
+ *   seat=RESERVED | NOT_RESERVED | INVITED | AWAITING | NOT_INVITED
+ *   followUp=<status> | CONTACTED
+ *   search=<text>
+ * With no filter, everyone is exported.
+ */
 export async function GET(request: NextRequest) {
   const ctx = await requireEvent(request);
   if (!ctx.ok) return ctx.response;
   const { event } = ctx;
+  const { searchParams } = request.nextUrl;
+  const seat = searchParams.get("seat");
+  const followUp = searchParams.get("followUp");
+  const search = searchParams.get("search")?.trim() || "";
+
   const people = await prisma.registration.findMany({
-    where: { eventId: event.id },
+    where: registrationWhere(event.id, { search, followUp, seat }),
     orderBy: { createdAt: "desc" },
     include: { followUpNotes: { orderBy: { createdAt: "asc" } } },
   });
@@ -64,7 +77,14 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const filename = `${event.slug}-contacts-${new Date().toISOString().slice(0, 10)}.csv`;
+  // The file name says what is inside, e.g. investor-hangout-reserved-2026-11-05.csv
+  const parts = [event.slug, SEAT_FILTER_LABELS[seat ?? ""] ?? "contacts"];
+  if (followUp === "CONTACTED") parts.push("contacted");
+  else if (isFollowUpStatus(followUp)) parts.push(followUp.toLowerCase().replace(/_/g, "-"));
+  if (search) parts.push("search");
+  parts.push(new Date().toISOString().slice(0, 10));
+  const filename = `${parts.join("-")}.csv`;
+
   return new NextResponse("﻿" + lines.join("\r\n"), {
     status: 200,
     headers: {

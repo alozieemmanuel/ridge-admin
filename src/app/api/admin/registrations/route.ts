@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
-import { FOLLOW_UP_VALUES, isFollowUpStatus } from "@/lib/followUp";
+import { FOLLOW_UP_VALUES } from "@/lib/followUp";
+import { registrationWhere } from "@/lib/registrationFilters";
 import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { addOrUpdateContact } from "@/lib/contactSources";
@@ -12,25 +12,6 @@ export const runtime = "nodejs";
  * The event's contact list. Filters: search (name, email, phone), followUp (one status, or "CONTACTED" for anyone already called), seat
  * ("RESERVED" | "NOT_RESERVED" | "INVITED" | "AWAITING" | "NOT_INVITED"). Counts for the filter pills cover the whole list, whatever page or filter is on.
  */
-const INVITED: Prisma.RegistrationWhereInput = { OR: [{ inviteSentAt: { not: null } }, { reservedAt: { not: null } }] };
-
-function seatFilter(seat: string | null): Prisma.RegistrationWhereInput {
-  switch (seat) {
-    case "RESERVED":
-      return { reservedAt: { not: null } };
-    case "NOT_RESERVED":
-      return { reservedAt: null };
-    case "INVITED": // an invitation went out (including those who already reserved)
-      return INVITED;
-    case "AWAITING": // invited, no reply yet
-      return { inviteSentAt: { not: null }, reservedAt: null };
-    case "NOT_INVITED":
-      return { inviteSentAt: null, reservedAt: null };
-    default:
-      return {};
-  }
-}
-
 export async function GET(request: NextRequest) {
   const ctx = await requireEvent(request);
   if (!ctx.ok) return ctx.response;
@@ -42,22 +23,7 @@ export async function GET(request: NextRequest) {
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
   const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10) || 50));
 
-  const where: Prisma.RegistrationWhereInput = {
-    AND: [
-      { eventId: event.id },
-      search
-        ? {
-            OR: [
-              { fullName: { contains: search, mode: "insensitive" } },
-              { email: { contains: search, mode: "insensitive" } },
-              { phone: { contains: search } },
-            ],
-          }
-        : {},
-      isFollowUpStatus(followUp) ? { followUpStatus: followUp } : followUp === "CONTACTED" ? { followUpStatus: { not: "NOT_CONTACTED" } } : {},
-      seatFilter(seat),
-    ],
-  };
+  const where = registrationWhere(event.id, { search, followUp, seat });
 
   const [total, list, groups] = await Promise.all([
     prisma.registration.count({ where }),

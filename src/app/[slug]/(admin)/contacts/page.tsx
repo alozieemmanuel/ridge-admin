@@ -140,6 +140,14 @@ function RegistrationsInner() {
 
   const anyFilter = Boolean(query || followUp || seat);
 
+  // The download follows the filters on screen: pick "Seat: Reserved" and Export CSV gives only those people.
+  const exportParams = new URLSearchParams();
+  if (query) exportParams.set("search", query);
+  if (followUp) exportParams.set("followUp", followUp);
+  if (seat) exportParams.set("seat", seat);
+  const exportQuery = exportParams.toString();
+  const exportHref = apiHref(`/api/admin/registrations/export${exportQuery ? `?${exportQuery}` : ""}`);
+
   return (
     <AdminShell>
       <PageHeader
@@ -147,8 +155,8 @@ function RegistrationsInner() {
         subtitle={`${(counts?.all ?? 0).toLocaleString()} ${lpeople} on the list. Click one to open the full record.`}
         actions={
           <>
-            <a href={apiHref("/api/admin/registrations/export")} className={ghostButton}>
-              Export CSV
+            <a href={exportHref} className={ghostButton} title={anyFilter ? "Downloads only the people matching the filters below" : "Downloads everyone"}>
+              {anyFilter ? `Export CSV (${total.toLocaleString()})` : "Export CSV"}
             </a>
             {showSheet && (
               <button onClick={() => setSheetOpen(true)} className={ghostButton}>
