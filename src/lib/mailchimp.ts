@@ -32,13 +32,21 @@ function config() {
   return { key, audience, dc, fromName: m ? m[1].trim() : "", fromEmail: email };
 }
 
-async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ ok: boolean; status: number; data: T }> {
+async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<{ ok: boolean; status: number; data: T }> {
   const c = config();
-  const res = await fetch(`https://${c.dc}.api.mailchimp.com/3.0${path}`, {
-    method: init.method || "GET",
-    headers: { Authorization: `Basic ${Buffer.from(`any:${c.key}`).toString("base64")}`, "Content-Type": "application/json" },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://${c.dc}.api.mailchimp.com/3.0${path}`, {
+      method: init.method || "GET",
+      headers: { Authorization: `Basic ${Buffer.from(`any:${c.key}`).toString("base64")}`, "Content-Type": "application/json" },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      // A request that never answers must not hang the page: give up and say so.
+      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
+    });
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    throw new Error(timedOut ? "Mailchimp did not answer in time. Try again in a minute." : `Could not reach Mailchimp (${err instanceof Error ? err.message : "network error"}).`);
+  }
   const text = await res.text();
   let data: unknown = null;
   try {
@@ -102,7 +110,7 @@ function tally(left: { reason: string }[]): { reason: string; count: number }[] 
   return [...m.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
 }
 
-const SKIPPED_ON_PURPOSE = /: (unsubscribed|cleaned|archived) in Mailchimp$/;
+export const SKIPPED_ON_PURPOSE = /: (unsubscribed|cleaned|archived) in Mailchimp$/;
 
 /**
  * Every address in the audience that Mailchimp will never email: unsubscribed, cleaned (it bounced) or archived.
@@ -110,23 +118,35 @@ const SKIPPED_ON_PURPOSE = /: (unsubscribed|cleaned|archived) in Mailchimp$/;
  */
 export async function blockedMembers(): Promise<{ email: string; status: string }[]> {
   const c = config();
-  const out: { email: string; status: string }[] = [];
-  for (const status of ["unsubscribed", "cleaned", "archived"]) {
-    for (let offset = 0; ; offset += 1000) {
-      const r = await api<{ members?: { email_address: string; status: string }[] }>(
-        `/lists/${c.audience}/members?status=${status}&count=1000&offset=${offset}&fields=members.email_address,members.status`
-      );
-      if (!r.ok) {
-        // "archived" is not offered on every account. The other two are needed, so their failure is reported.
-        if (status === "archived") break;
-        throw new Error(problem(r));
-      }
-      const members = r.data.members || [];
-      for (const m of members) out.push({ email: m.email_address.toLowerCase(), status: m.status });
-      if (members.length < 1000) break;
+  const PAGE = 1000;
+  type Page = { total_items?: number; members?: { email_address: string; status: string }[] };
+  const url = (status: string, offset: number) =>
+    `/lists/${c.audience}/members?status=${status}&count=${PAGE}&offset=${offset}&fields=total_items,members.email_address,members.status`;
+
+  // The three statuses are read side by side, and every page after the first one is read side by side too,
+  // so a big audience takes a few seconds instead of a few minutes.
+  const readStatus = async (status: string): Promise<{ email: string; status: string }[]> => {
+    const first = await api<Page>(url(status, 0), { timeoutMs: 20_000 });
+    if (!first.ok) {
+      // "archived" is not offered on every account. The other two are needed, so their failure is reported.
+      if (status === "archived") return [];
+      throw new Error(problem(first));
     }
-  }
-  return out;
+    const rows = [...(first.data.members || [])];
+    const total = first.data.total_items ?? rows.length;
+    const offsets: number[] = [];
+    for (let o = PAGE; o < total; o += PAGE) offsets.push(o);
+    for (let i = 0; i < offsets.length; i += 5) {
+      const pages = await Promise.all(offsets.slice(i, i + 5).map((o) => api<Page>(url(status, o), { timeoutMs: 20_000 })));
+      for (const p of pages) {
+        if (!p.ok) throw new Error(problem(p));
+        rows.push(...(p.data.members || []));
+      }
+    }
+    return rows.map((m) => ({ email: m.email_address.toLowerCase(), status: m.status }));
+  };
+
+  return (await Promise.all(["unsubscribed", "cleaned", "archived"].map(readStatus))).flat();
 }
 
 /**

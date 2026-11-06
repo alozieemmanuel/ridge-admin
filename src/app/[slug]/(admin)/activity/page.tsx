@@ -46,6 +46,8 @@ const ACTION_LABELS: Record<string, string> = {
   "brochure.delete": "Deleted brochure request",
   "campaign.send": "Sent campaign",
   "campaign.test": "Sent a test email",
+  "campaign.schedule": "Scheduled a campaign",
+  "campaign.unschedule": "Cancelled a scheduled campaign",
   "event.create": "Created the event",
   "event.update": "Changed the event",
   "event.access": "Changed who can open an event",
@@ -110,6 +112,9 @@ function summarize(row: LogRow): string {
       return `${d.email ?? ""}${d.amountPaid ? ` · had paid ${d.amountPaid}` : ""}`;
     case "campaign.delete":
       return `${d.audience ?? ""}: had sent ${d.sentCount ?? 0} of ${d.recipientCount ?? 0}`;
+    case "campaign.schedule":
+    case "campaign.unschedule":
+      return `${d.subject ?? ""}${d.runAt ? ` · ${String(d.runAt).slice(0, 16).replace("T", " ")} UTC` : ""}`;
     case "campaign.send":
       return `${d.audience ?? ""}: ${d.sentCount ?? 0} sent, ${d.failedCount ?? 0} failed of ${d.recipientCount ?? 0}`;
     case "seat.update":

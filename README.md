@@ -79,6 +79,7 @@ Price, currency and how guests pay (bank transfer, payment link, pay at the door
 
 Set `CRON_SECRET`, then call these every few minutes from cron-job.org or GitHub Actions (Vercel's free plan runs a job once a day):
 `/event/api/cron/sheet-sync?key=<CRON_SECRET>` every 5 minutes and `/event/api/cron/email-queue?key=<CRON_SECRET>` every 15 minutes.
+Scheduled campaigns (Campaigns page, "Schedule for later") are sent by `/event/api/cron/scheduled-campaigns?key=<CRON_SECRET>`: call it every 5 minutes, so a campaign goes out within 5 minutes of its time even when nobody is logged in. Run `npx prisma migrate deploy` once to create the table. The page also sends due campaigns while it is open.
 
 ## Getting started
 

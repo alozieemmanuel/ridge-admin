@@ -1,6 +1,6 @@
 "use client";
 
-import type { KeyboardEvent, RefObject } from "react";
+import { useState, type KeyboardEvent, type RefObject } from "react";
 
 /**
  * Formatting buttons for a plain textarea. They wrap the selected text in markers (see src/lib/richText.ts):
@@ -63,6 +63,11 @@ function bullets(el: HTMLTextAreaElement, value: string, onChange: (v: string) =
 
 /** Puts a [button] line at the cursor, in a paragraph of its own: that is where the reserve button will appear in the email. */
 function insertButton(el: HTMLTextAreaElement, value: string, onChange: (v: string) => void) {
+  insertBlock(el, value, "[button]", onChange);
+}
+
+/** Puts a marker line at the cursor, in a paragraph of its own. */
+function insertBlock(el: HTMLTextAreaElement, value: string, marker: string, onChange: (v: string) => void) {
   const start = el.selectionStart;
   const end = el.selectionEnd;
   const before = value.slice(0, start);
@@ -74,7 +79,6 @@ function insertButton(el: HTMLTextAreaElement, value: string, onChange: (v: stri
   };
   const lead = before === "" ? "" : newlines(before, true);
   const trail = after === "" ? "" : newlines(after, false);
-  const marker = "[button]";
   onChange(before + lead + marker + trail + after);
   const caret = before.length + lead.length + marker.length + trail.length;
   reselect(el, caret, caret);
@@ -97,13 +101,45 @@ export default function FormatToolbar({
   value,
   onChange,
   onButton,
+  withImage,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement>;
   value: string;
   onChange: (v: string) => void;
   /** When given, a "Button" control is shown. It is called after the [button] line is inserted (so the page can switch the button on). */
   onButton?: () => void;
+  /** Shows the "Image" control (a picture that can be clicked). */
+  withImage?: boolean;
 }) {
+  const [imageOpen, setImageOpen] = useState(false);
+  const [imgUrl, setImgUrl] = useState("");
+  const [imgLink, setImgLink] = useState("");
+  const [imgAlt, setImgAlt] = useState("");
+  const [imgError, setImgError] = useState("");
+
+  function insertImage() {
+    const src = imgUrl.trim();
+    if (!/^https:\/\/\S+$/i.test(src)) {
+      setImgError("Paste the picture's address. It must start with https://");
+      return;
+    }
+    const link = imgLink.trim();
+    if (link && !/^https:\/\/\S+$/i.test(link) && !/^\{\{\s*reserve_link\s*\}\}$/.test(link)) {
+      setImgError("The link must start with https:// (or be {{reserve_link}}).");
+      return;
+    }
+    const clean = (v: string) => v.replace(/[\]|\n]/g, " ").trim();
+    const parts = [src, link, clean(imgAlt)];
+    while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+    const line = `[image: ${parts.join(" | ")}]`;
+    if (textareaRef.current) insertBlock(textareaRef.current, value, line, onChange);
+    setImgUrl("");
+    setImgLink("");
+    setImgAlt("");
+    setImgError("");
+    setImageOpen(false);
+  }
+
   // onMouseDown keeps the selection in the textarea while a button is pressed.
   const run = (action: (el: HTMLTextAreaElement) => void) => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -137,6 +173,24 @@ export default function FormatToolbar({
         >
           + Button
         </button>
+      )}
+      {withImage && (
+        <button type="button" className={button} onMouseDown={(e) => { e.preventDefault(); setImageOpen((o) => !o); }} title="Add a picture that can be clicked" aria-label="Insert image" aria-expanded={imageOpen}>
+          + Image
+        </button>
+      )}
+      {withImage && imageOpen && (
+        <div className="basis-full border border-border rounded-xl p-3 mt-1 space-y-2 bg-pagebg">
+          <input value={imgUrl} onChange={(e) => setImgUrl(e.target.value)} placeholder="Picture address (https://…/photo.jpg)" className="w-full bg-cardbg border border-border rounded-lg px-3 py-2 text-sm" aria-label="Picture address" />
+          <input value={imgLink} onChange={(e) => setImgLink(e.target.value)} placeholder="Where it goes when clicked (optional, https://…)" className="w-full bg-cardbg border border-border rounded-lg px-3 py-2 text-sm" aria-label="Link when clicked" />
+          <input value={imgAlt} onChange={(e) => setImgAlt(e.target.value)} placeholder="Short description (optional, shown if the picture is blocked)" className="w-full bg-cardbg border border-border rounded-lg px-3 py-2 text-sm" aria-label="Picture description" />
+          {imgError && <p className="text-xs text-red-400">{imgError}</p>}
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={insertImage} className="text-sm px-4 py-2 rounded-full border border-gold text-goldlight">Add at cursor</button>
+            <button type="button" onClick={() => setImageOpen(false)} className="text-sm text-muted hover:text-fg">Close</button>
+            <p className="text-xs text-muted">The picture must already be online. It shows at the cursor, in a paragraph of its own.</p>
+          </div>
+        </div>
       )}
     </div>
   );

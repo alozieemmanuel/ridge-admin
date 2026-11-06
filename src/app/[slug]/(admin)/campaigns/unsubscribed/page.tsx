@@ -31,23 +31,37 @@ export default function UnsubscribedPage() {
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
+    setWarning("");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 65_000);
     try {
-      const res = await fetch("/api/admin/campaigns/mailchimp/unsubscribed", { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(data.error || "Could not read the list from Mailchimp.");
+      const res = await fetch("/api/admin/campaigns/mailchimp/unsubscribed", { cache: "no-store", signal: controller.signal });
+      const text = await res.text();
+      let data: { error?: string; warning?: string; configured?: boolean; items?: Item[]; checked?: number } = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // The server answered with something that is not JSON (for example a timeout page).
+      }
+      if (!res.ok || data.error) {
+        setItems([]);
+        setError(data.error || (res.status === 504 || res.status === 408 ? "The server gave up waiting for Mailchimp (timeout). Press Refresh to try again." : `The server could not read the list (error ${res.status}). Press Refresh to try again.`));
         return;
       }
       setConfigured(data.configured !== false);
       setItems(data.items || []);
       setChecked(data.checked || 0);
-    } catch {
-      setError("Could not reach the server. Check your connection and try again.");
+      setWarning(data.warning || "");
+    } catch (err) {
+      setItems([]);
+      setError(err instanceof DOMException && err.name === "AbortError" ? "Mailchimp took too long to answer. Press Refresh to try again." : "Could not reach the server. Check your connection and try again.");
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   }, []);
@@ -74,7 +88,9 @@ export default function UnsubscribedPage() {
         subtitle={
           loading
             ? "Asking Mailchimp who has unsubscribed…"
-            : !configured
+            : error
+              ? "Could not read the list."
+              : !configured
               ? "Mailchimp is not set up on the server."
               : `${items.length.toLocaleString()} of ${checked.toLocaleString()} guests will not be emailed by Mailchimp. Campaigns skip them on their own, and they are never added back. Only the guest can re-subscribe, from a link in a Mailchimp email.`
         }
@@ -96,6 +112,7 @@ export default function UnsubscribedPage() {
       />
 
       {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {warning && <p className="text-amber-300 text-sm mb-4">{warning}</p>}
 
       <div className="border border-border rounded-xl overflow-hidden bg-cardbg">
         <div className="table-scroll overflow-auto max-h-[72vh]">

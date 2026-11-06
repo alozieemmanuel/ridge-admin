@@ -34,6 +34,16 @@ const OLD_AUDIENCE_LABELS: Record<string, string> = {
 };
 const audienceLabel = (a: string) => AUDIENCE_OPTIONS.find((o) => o.value === a)?.label ?? OLD_AUDIENCE_LABELS[a] ?? a;
 
+interface ScheduledRow {
+  id: string;
+  subject: string;
+  audience: string;
+  runAt: string;
+  status: string;
+  resultMessage: string | null;
+  createdByName: string | null;
+}
+
 interface Campaign {
   id: string;
   subject: string;
@@ -147,6 +157,72 @@ export default function CampaignsPage() {
   const [buttonLabel, setButtonLabel] = useState("");
   const ctaLabel = withButton ? (buttonLabel.trim() || terms.action) : undefined;
   const [hasMailchimp, setHasMailchimp] = useState(false);
+  const [when, setWhen] = useState<"now" | "later">("now");
+  const [runAtLocal, setRunAtLocal] = useState("");
+  const [scheduled, setScheduled] = useState<ScheduledRow[]>([]);
+  const [scheduledNote, setScheduledNote] = useState("");
+  const scheduledRef = useRef<ScheduledRow[]>([]);
+  scheduledRef.current = scheduled;
+
+  const loadScheduled = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/campaigns/scheduled", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      setScheduled(data.items || []);
+      setScheduledNote(data.unavailable || "");
+    } catch {
+      // the list is a convenience; the page works without it
+    }
+  }, []);
+
+  async function handleSchedule() {
+    setSending(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/admin/campaigns/scheduled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience, subject, body, ctaLabel, runAt: new Date(runAtLocal).toISOString() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ text: data.error || "The campaign could not be scheduled.", ok: false });
+        return;
+      }
+      setMessage({ text: `Scheduled for ${new Date(runAtLocal).toLocaleString()}. It goes out on its own, even if you are logged out.`, ok: true });
+      setStep("compose");
+      setWhen("now");
+      setRunAtLocal("");
+      loadScheduled();
+    } catch {
+      setMessage({ text: "Could not reach the server. Try again.", ok: false });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function cancelScheduled(id: string) {
+    if (!window.confirm("Cancel this scheduled campaign? Nobody will be emailed.")) return;
+    const res = await fetch(`/api/admin/campaigns/scheduled/${id}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) setMessage({ text: data.error || "Could not cancel it.", ok: false });
+    loadScheduled();
+  }
+
+  // While this page is open it also asks the server to send anything that is due, as a back-up for the outside timer.
+  useEffect(() => {
+    loadScheduled();
+    const t = setInterval(async () => {
+      const due = scheduledRef.current.some((r) => r.status === "PENDING" && new Date(r.runAt).getTime() <= Date.now());
+      if (due) {
+        await fetch("/api/admin/campaigns/scheduled/run", { method: "POST" }).catch(() => {});
+        load();
+      }
+      loadScheduled();
+    }, 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadScheduled]);
   const [testTo, setTestTo] = useState("");
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -347,7 +423,7 @@ export default function CampaignsPage() {
         />
 
         <label className="block text-xs uppercase tracking-wider text-muted mb-2">Message</label>
-        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} onButton={() => setWithButton(true)} />
+        <FormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} onButton={() => setWithButton(true)} withImage />
         <textarea
           ref={bodyRef}
           value={body}
@@ -484,10 +560,31 @@ export default function CampaignsPage() {
 
         {step === "confirm" && (
           <div className="border border-gold/30 rounded-xl p-4">
-            <p className="text-sm mb-4">
-              This will send to <span className="text-goldlight">{recipientCount}</span>{" "}
-              {audienceLabel(audience).toLowerCase()}. Continue?
+            <p className="text-sm mb-3">
+              This will go to <span className="text-goldlight">{recipientCount}</span> {audienceLabel(audience).toLowerCase()}.
             </p>
+            <div className="flex gap-4 mb-3 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="when" checked={when === "now"} onChange={() => setWhen("now")} /> Send now
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="when" checked={when === "later"} onChange={() => setWhen("later")} /> Schedule for later
+              </label>
+            </div>
+            {when === "later" && (
+              <div className="mb-4">
+                <input
+                  type="datetime-local"
+                  value={runAtLocal}
+                  min={new Date(Date.now() - new Date().getTimezoneOffset() * 60_000 + 120_000).toISOString().slice(0, 16)}
+                  onChange={(e) => setRunAtLocal(e.target.value)}
+                  className="bg-pagebg border border-border rounded-lg px-3 py-2 text-sm"
+                />
+                <p className="text-xs text-muted mt-2">
+                  Your time ({Intl.DateTimeFormat().resolvedOptions().timeZone}). It is sent by the server, so you can close this page and log out. It can be a few minutes late, never early. People who unsubscribed in Mailchimp by then are still skipped.
+                </p>
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setStep("compose")}
@@ -496,17 +593,71 @@ export default function CampaignsPage() {
               >
                 Back
               </button>
-              <button
-                onClick={handleSend}
-                disabled={sending}
-                className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
-              >
-                {sending ? "Sending…" : `Send to ${recipientCount}`}
-              </button>
+              {when === "now" ? (
+                <button
+                  onClick={handleSend}
+                  disabled={sending}
+                  className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
+                >
+                  {sending ? "Sending…" : `Send to ${recipientCount}`}
+                </button>
+              ) : (
+                <button
+                  onClick={handleSchedule}
+                  disabled={sending || !runAtLocal}
+                  className="text-sm px-5 py-2.5 rounded-full bg-gradient-to-br from-goldlight via-gold to-golddark text-[#141C08] font-semibold uppercase tracking-widest disabled:opacity-60"
+                >
+                  {sending ? "Scheduling…" : "Schedule"}
+                </button>
+              )}
             </div>
           </div>
         )}
       </div>
+
+      {(scheduled.length > 0 || scheduledNote) && (
+        <div className="mb-8">
+          <h3 className="font-serif text-xl mb-4">Scheduled campaigns</h3>
+          {scheduledNote && <p className="text-sm text-amber-300 mb-3">{scheduledNote}</p>}
+          <div className="border border-border rounded-xl overflow-hidden">
+            <div className="table-scroll overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
+                    {["When", "Subject", "To", "Status", ""].map((h) => (
+                      <th key={h} className="px-5 py-3 font-medium whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {scheduled.map((r) => (
+                    <tr key={r.id} className="border-b border-border/50 last:border-b-0 align-top">
+                      <td className="px-5 py-3.5 whitespace-nowrap">{new Date(r.runAt).toLocaleString()}</td>
+                      <td className="px-5 py-3.5">{r.subject}</td>
+                      <td className="px-5 py-3.5 text-muted whitespace-nowrap">{audienceLabel(r.audience as Audience)}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={r.status === "FAILED" ? "text-red-400" : r.status === "DONE" ? "text-goldlight" : "text-muted"}>
+                          {{ PENDING: "Waiting", RUNNING: "Sending now", DONE: "Sent", FAILED: "Failed", CANCELLED: "Cancelled" }[r.status] ?? r.status}
+                        </span>
+                        {r.resultMessage && <p className="text-xs text-muted mt-1 max-w-md">{r.resultMessage}</p>}
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        {r.status === "PENDING" && (
+                          <button onClick={() => cancelScheduled(r.id)} className="text-xs text-red-400 hover:underline">
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       <h3 className="font-serif text-xl mb-4">Sent campaigns</h3>
 

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { sendCampaignSchema } from "@/lib/validation";
-import { audienceWhere } from "@/lib/campaigns";
 import { requireEvent } from "@/lib/event";
-import { queueCampaignEmails, drainEmailQueue } from "@/lib/emailQueue";
+import { sendNormalCampaign, CampaignSendError } from "@/lib/campaignRun";
 import { mailchimpConfigured } from "@/lib/mailchimp";
-import type { Campaign, Registration } from "@prisma/client";
+import type { Campaign } from "@prisma/client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -111,68 +110,10 @@ export async function POST(request: NextRequest) {
   }
 
   const { audience, subject, body, ctaLabel } = parsed.data;
-  const category = parsed.data.category || null;
-
-  const recipients = await prisma.registration.findMany({ where: { AND: [{ eventId: event.id }, { email: { not: "" } }, audienceWhere(audience, category)] } });
-  if (recipients.length === 0) {
-    return NextResponse.json({ error: "No registrations match that audience." }, { status: 400 });
+  try {
+    return NextResponse.json(await sendNormalCampaign(event, session.name, { audience, subject, body, ctaLabel: ctaLabel ?? null, category: parsed.data.category || null }));
+  } catch (err) {
+    if (err instanceof CampaignSendError) return NextResponse.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, { status: err.status });
+    throw err;
   }
-
-  // The same email (event, subject, message, button) is never sent to the same person twice. People who already got it, or who are
-  // already waiting for it in the queue, are left out, so sending again after a cut-off only does the part that is left.
-  const ctaValue = ctaLabel ?? null;
-  const siblings = await prisma.campaign.findMany({ where: { eventId: event.id, subject, body, ctaLabel: ctaValue }, select: { id: true } });
-  const siblingIds = siblings.map((c) => c.id);
-  let alreadyGot = 0;
-  let alreadyWaiting = 0;
-  let toSend = recipients;
-  if (siblingIds.length) {
-    const ids = recipients.map((r: Registration) => r.id);
-    const [got, waiting] = await Promise.all([
-      prisma.emailEvent.findMany({ where: { type: "SENT", campaignId: { in: siblingIds }, registrationId: { in: ids } }, select: { registrationId: true }, distinct: ["registrationId"] }),
-      prisma.queuedEmail.findMany({ where: { status: { in: ["PENDING", "SENDING"] }, campaignId: { in: siblingIds }, registrationId: { in: ids } }, select: { registrationId: true }, distinct: ["registrationId"] }),
-    ]);
-    const gotSet = new Set(got.map((g) => g.registrationId));
-    const waitSet = new Set(waiting.map((w) => w.registrationId));
-    alreadyGot = gotSet.size;
-    alreadyWaiting = [...waitSet].filter((id) => !gotSet.has(id as string)).length;
-    toSend = recipients.filter((r: Registration) => !gotSet.has(r.id) && !waitSet.has(r.id));
-  }
-  if (toSend.length === 0) {
-    return NextResponse.json(
-      {
-        error: `Everyone in that audience already has this email (${alreadyGot}) or is already waiting for it (${alreadyWaiting}). Nothing was sent. Use "Send waiting emails now" to finish the ones that are waiting, or change the subject to send a new email.`,
-        code: "ALREADY_SENT",
-      },
-      { status: 409 }
-    );
-  }
-
-  const campaign = await prisma.campaign.create({
-    data: {
-      eventId: event.id,
-      subject,
-      body,
-      audience,
-      category,
-      recipientCount: toSend.length,
-      sentCount: 0,
-      failedCount: 0,
-      sentByName: session.name,
-      ctaLabel: ctaValue,
-    },
-  });
-
-  // Every recipient is written to the queue first, then sent in short runs that the page keeps asking for. A run that is cut off
-  // loses nothing: the rest is still in the queue.
-  await queueCampaignEmails(campaign.id, toSend.map((r: Registration) => r.id));
-  const run = await drainEmailQueue({ campaignId: campaign.id, budgetMs: 40_000 });
-  const fresh = await prisma.campaign.findUnique({ where: { id: campaign.id }, select: { sentCount: true, failedCount: true } });
-
-  return NextResponse.json({
-    result: "success",
-    campaign: { id: campaign.id, recipientCount: toSend.length, sentCount: fresh?.sentCount ?? run.sent, failedCount: fresh?.failedCount ?? run.failed, waitingCount: run.waiting },
-    skipped: { alreadyGot, alreadyWaiting },
-    blocked: run.blocked,
-  });
 }

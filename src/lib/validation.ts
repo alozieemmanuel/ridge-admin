@@ -127,6 +127,10 @@ export const sendCampaignSchema = z.object({
 });
 
 
+/** A campaign to send later. runAt is an exact moment (ISO 8601 with its time zone), at least a minute from now. */
+export const scheduleCampaignSchema = sendCampaignSchema.extend({
+  runAt: z.string().datetime({ offset: true, message: "Pick a date and time." }),
+});
 
 // ---------------------------------------------------------------------------
 // Prospects

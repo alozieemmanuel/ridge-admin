@@ -115,6 +115,7 @@ model Event {
   assets        EventAsset[]
   registrations Registration[]
   campaigns     Campaign[]
+  scheduledCampaigns ScheduledCampaign[]
   settings      Setting[]
   templates     EmailTemplate[]
   admins        EventAdmin[]
@@ -361,6 +362,29 @@ model Campaign {
   queuedEmails QueuedEmail[]
 
   @@index([sentAt])
+  @@index([eventId])
+}
+
+/// A campaign set to go out at a chosen time, whether or not anyone is logged in. status: PENDING, RUNNING, DONE, FAILED, CANCELLED.
+model ScheduledCampaign {
+  id            String           @id @default(cuid())
+  eventId       String
+  event         Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  subject       String
+  body          String           @db.Text
+  audience      CampaignAudience
+  category      String?
+  ctaLabel      String?
+  runAt         DateTime
+  status        String           @default("PENDING")
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  resultMessage String?
+  campaignId    String?
+  createdByName String?
+  createdAt     DateTime         @default(now())
+
+  @@index([status, runAt])
   @@index([eventId])
 }
 

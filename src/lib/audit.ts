@@ -35,6 +35,8 @@ export type AuditAction =
   | "brochure.delete"
   | "campaign.send"
   | "campaign.test"
+  | "campaign.schedule"
+  | "campaign.unschedule"
   | "event.create"
   | "event.update"
   | "event.access"
