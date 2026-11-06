@@ -1,0 +1,414 @@
+From f9e6d04f83931c7a5c4bdd840e774db19ddc2b92 Mon Sep 17 00:00:00 2001
+From: Emmanuel <aloziefrompg@gmail.com>
+Date: Fri, 6 Nov 2026 09:04:06 +0100
+Subject: [PATCH] Stop the live sheet from re-adding corrected emails as
+ duplicates
+
+The live sheet is only read by the dashboard, so correcting an email
+here left the old address in the sheet. The next sync found nobody
+with that address and added the guest a second time.
+
+Corrections are now remembered per event (old address -> corrected
+address). Every load of people (live sheet, CSV import, Supabase and
+website forms) reads an old address as the corrected one, so it
+updates the same guest. A sheet that holds both the wrong and the right
+row becomes one guest.
+
+For duplicates that already exist, Check emails shows the guest whose
+corrected address is taken and offers Merge into <name>, one at a time
+or all at once (owner only). The follow-up notes move to the kept
+guest and the correction is remembered. A duplicate with a seat
+reservation, ticket, check-in or payment is not merged automatically.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LHbnzt849egZ8yN5Kkk57L
+---
+ .../(admin)/contacts/email-check/page.tsx     | 58 ++++++++++++-
+ .../admin/registrations/[id]/merge/route.ts   | 79 ++++++++++++++++++
+ src/app/api/admin/registrations/[id]/route.ts |  6 +-
+ src/app/api/admin/settings/route.ts           |  5 +-
+ src/lib/contactSave.ts                        |  6 +-
+ src/lib/emailAliases.ts                       | 83 +++++++++++++++++++
+ 6 files changed, 231 insertions(+), 6 deletions(-)
+ create mode 100644 src/app/api/admin/registrations/[id]/merge/route.ts
+ create mode 100644 src/lib/emailAliases.ts
+
+diff --git a/src/app/[slug]/(admin)/contacts/email-check/page.tsx b/src/app/[slug]/(admin)/contacts/email-check/page.tsx
+index fbcfe9a..43d3aaa 100644
+--- a/src/app/[slug]/(admin)/contacts/email-check/page.tsx
++++ b/src/app/[slug]/(admin)/contacts/email-check/page.tsx
+@@ -24,6 +24,8 @@ export default function EmailCheckPage() {
+   const [errors, setErrors] = useState<Record<string, string>>({});
+   const [busy, setBusy] = useState<Record<string, boolean>>({});
+   const [bulk, setBulk] = useState(false);
++  // Rows whose corrected address already belongs to another guest: the same person entered twice.
++  const [clashes, setClashes] = useState<Record<string, { id: string; name: string }>>({});
+ 
+   const load = useCallback(async () => {
+     setLoading(true);
+@@ -48,11 +50,17 @@ export default function EmailCheckPage() {
+     const email = (edits[item.id] ?? "").trim().toLowerCase();
+     setBusy((b) => ({ ...b, [item.id]: true }));
+     setErrors((e) => ({ ...e, [item.id]: "" }));
++    setClashes((c) => {
++      const { [item.id]: _gone, ...rest } = c;
++      void _gone;
++      return rest;
++    });
+     try {
+       const res = await fetch(`/api/admin/registrations/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+       const json = await res.json().catch(() => ({}));
+       if (!res.ok) {
+         setErrors((e) => ({ ...e, [item.id]: json.error || "Could not save." }));
++        if (res.status === 409 && json.clashId) setClashes((c) => ({ ...c, [item.id]: { id: json.clashId, name: json.clashName || "that guest" } }));
+         return false;
+       }
+       setItems((list) => list.filter((i) => i.id !== item.id));
+@@ -65,6 +73,39 @@ export default function EmailCheckPage() {
+     }
+   }
+ 
++  async function mergeOne(item: Item): Promise<boolean> {
++    const into = clashes[item.id];
++    if (!into) return false;
++    setBusy((b) => ({ ...b, [item.id]: true }));
++    try {
++      const res = await fetch(`/api/admin/registrations/${item.id}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intoId: into.id }) });
++      const json = await res.json().catch(() => ({}));
++      if (!res.ok) {
++        setErrors((e) => ({ ...e, [item.id]: json.error || "Could not merge." }));
++        return false;
++      }
++      setItems((list) => list.filter((i) => i.id !== item.id));
++      return true;
++    } catch {
++      setErrors((e) => ({ ...e, [item.id]: "Could not merge. Check your connection." }));
++      return false;
++    } finally {
++      setBusy((b) => ({ ...b, [item.id]: false }));
++    }
++  }
++
++  const duplicates = items.filter((i) => clashes[i.id]);
++  async function mergeAll() {
++    if (!window.confirm(`Merge ${duplicates.length} duplicates into the guests already on the list? Each duplicate is removed and their follow-up notes move to the guest you keep. The live sheet will not bring them back.`)) return;
++    setBulk(true);
++    const queue = [...duplicates];
++    const worker = async () => {
++      for (let i = queue.shift(); i; i = queue.shift()) await mergeOne(i);
++    };
++    await Promise.all(Array.from({ length: 3 }, worker));
++    setBulk(false);
++  }
++
+   const fixable = items.filter((i) => i.suggestion);
+   async function fixAll() {
+     if (!window.confirm(`Replace ${fixable.length} addresses with the suggested corrections? You can still edit any of them afterwards from the contact.`)) return;
+@@ -82,7 +123,7 @@ export default function EmailCheckPage() {
+     <AdminShell>
+       <PageHeader
+         title="Check emails"
+-        subtitle={loading ? "Checking every address…" : `${checked.toLocaleString()} addresses checked. ${items.length ? `${items.length.toLocaleString()} need attention.` : "All of them look fine."} Fix these before sending a campaign so Mailchimp does not refuse them.`}
++        subtitle={loading ? "Checking every address…" : `${checked.toLocaleString()} addresses checked. ${items.length ? `${items.length.toLocaleString()} need attention.` : "All of them look fine."} Fix these before sending a campaign so Mailchimp does not refuse them. A fix made here is remembered, so the live sheet does not add the old address back as a second guest.`}
+         actions={
+           <>
+             <Link href={ep("/contacts")} className={ghostButton}>
+@@ -93,7 +134,12 @@ export default function EmailCheckPage() {
+             </button>
+             {fixable.length > 0 && (
+               <button onClick={fixAll} className={primaryButton} disabled={bulk}>
+-                {bulk ? "Fixing…" : `Apply ${fixable.length} suggested fixes`}
++                {bulk ? "Working…" : `Apply ${fixable.length} suggested fixes`}
++              </button>
++            )}
++            {duplicates.length > 0 && (
++              <button onClick={mergeAll} className={primaryButton} disabled={bulk}>
++                {bulk ? "Working…" : `Merge ${duplicates.length} duplicates`}
+               </button>
+             )}
+           </>
+@@ -146,6 +192,14 @@ export default function EmailCheckPage() {
+                         aria-label={`Corrected email for ${i.fullName}`}
+                       />
+                       {errors[i.id] && <p className="text-red-400 text-xs mt-1.5">{errors[i.id]}</p>}
++                      {clashes[i.id] && (
++                        <div className="mt-2">
++                          <p className="text-muted text-xs mb-1.5">This looks like the same person entered twice (often the live sheet adds the old address again).</p>
++                          <button onClick={() => mergeOne(i)} disabled={busy[i.id] || bulk} className={ghostButton}>
++                            {busy[i.id] ? "Merging…" : `Merge into ${clashes[i.id].name}`}
++                          </button>
++                        </div>
++                      )}
+                     </td>
+                     <td className="px-5 py-3.5">
+                       <button onClick={() => save(i)} disabled={busy[i.id] || bulk} className={ghostButton}>
+diff --git a/src/app/api/admin/registrations/[id]/merge/route.ts b/src/app/api/admin/registrations/[id]/merge/route.ts
+new file mode 100644
+index 0000000..cd456b9
+--- /dev/null
++++ b/src/app/api/admin/registrations/[id]/merge/route.ts
+@@ -0,0 +1,79 @@
++import { NextRequest, NextResponse } from "next/server";
++import { z } from "zod";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++import { recordEmailAlias } from "@/lib/emailAliases";
++
++export const runtime = "nodejs";
++
++const bodySchema = z.object({ intoId: z.string().min(1) }).strict();
++
++/**
++ * Folds a duplicate guest into the guest who is already on the list (owner only). Use it when a wrong email address was
++ * corrected and the corrected address already belongs to someone: they are the same person, entered twice (for example
++ * once by the guest and once again by the live sheet).
++ *
++ * The follow-up log moves across, blanks on the kept guest are filled in, then the duplicate is removed and the correction
++ * is remembered so the live sheet does not bring the duplicate back. Nothing is merged when the duplicate has a seat
++ * reservation, a ticket, a check-in or a payment, because that would lose something that cannot be recovered: those are
++ * sorted out by hand from the guest's own page.
++ */
++export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const ctx = await requireEvent(request, { owner: true });
++  if (!ctx.ok) return ctx.response;
++  const { event, session } = ctx;
++  const { id } = await params;
++
++  let raw: unknown;
++  try {
++    raw = await request.json();
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }
++  const parsed = bodySchema.safeParse(raw);
++  if (!parsed.success) return NextResponse.json({ error: "Say which guest to keep." }, { status: 400 });
++  const { intoId } = parsed.data;
++  if (intoId === id) return NextResponse.json({ error: "A guest cannot be merged into themselves." }, { status: 400 });
++
++  const [dup, keep] = await Promise.all([
++    prisma.registration.findFirst({ where: { id, eventId: event.id } }),
++    prisma.registration.findFirst({ where: { id: intoId, eventId: event.id } }),
++  ]);
++  if (!dup || !keep) return NextResponse.json({ error: "One of the two guests was not found." }, { status: 404 });
++
++  const holds = [
++    dup.reservedAt && "a seat reservation",
++    dup.ticketCode && "a ticket",
++    dup.checkedInAt && "a check-in",
++    dup.attendanceMode && "an attendance choice",
++    (dup.amountPaid ?? 0) > 0 && "a payment",
++  ].filter(Boolean) as string[];
++  if (holds.length) {
++    return NextResponse.json({ error: `${dup.fullName} (${dup.email}) has ${holds.join(" and ")}, so they were not merged automatically. Open their page and sort it out by hand.` }, { status: 409 });
++  }
++
++  const dupExtra = (dup.extra as Record<string, string> | null) ?? {};
++  const keepExtra = (keep.extra as Record<string, string> | null) ?? {};
++  await prisma.$transaction([
++    prisma.followUpNote.updateMany({ where: { registrationId: dup.id }, data: { registrationId: keep.id } }),
++    prisma.registration.update({
++      where: { id: keep.id },
++      data: {
++        ...(keep.phone ? {} : dup.phone ? { phone: dup.phone } : {}),
++        ...(keep.followUpStatus === "NOT_CONTACTED" && dup.followUpStatus !== "NOT_CONTACTED" ? { followUpStatus: dup.followUpStatus } : {}),
++        ...(keep.inviteSentAt || !dup.inviteSentAt ? {} : { inviteSentAt: dup.inviteSentAt }),
++        ...(keep.callFeedback || !dup.callFeedback ? {} : { callFeedback: dup.callFeedback }),
++        ...(Object.keys(dupExtra).length ? { extra: { ...dupExtra, ...keepExtra } } : {}),
++      },
++    }),
++    prisma.registration.delete({ where: { id: dup.id } }),
++  ]);
++  await recordEmailAlias(event.id, dup.email, keep.email);
++  await logAdminAction(
++    session,
++    { action: "registration.delete", entityType: "registration", entityId: dup.id, entityLabel: dup.fullName, details: { email: dup.email, mergedInto: keep.email } },
++    request
++  );
++  return NextResponse.json({ result: "success", keptId: keep.id });
++}
+diff --git a/src/app/api/admin/registrations/[id]/route.ts b/src/app/api/admin/registrations/[id]/route.ts
+index b98f3a4..8e13fca 100644
+--- a/src/app/api/admin/registrations/[id]/route.ts
++++ b/src/app/api/admin/registrations/[id]/route.ts
+@@ -6,6 +6,7 @@ import { logAdminAction } from "@/lib/audit";
+ import { describeActivity } from "@/lib/activity";
+ import { reserveLink } from "@/lib/notifications";
+ import { EMAIL_RE } from "@/lib/csvImport";
++import { recordEmailAlias } from "@/lib/emailAliases";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -91,7 +92,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+ 
+   if (data.email && data.email !== existing.email) {
+     const clash = await prisma.registration.findFirst({ where: { eventId: event.id, email: data.email }, select: { id: true, fullName: true } });
+-    if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.` }, { status: 409 });
++    if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.`, clashId: clash.id, clashName: clash.fullName }, { status: 409 });
+   }
+ 
+   await prisma.registration.update({
+@@ -103,6 +104,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
+     },
+   });
+ 
++  // The live sheet is only read, never written, so it still holds the old address. Remember the correction, or the next sync adds the guest again.
++  if (data.email && existing.email && data.email !== existing.email) await recordEmailAlias(event.id, existing.email, data.email);
++
+   const changes = (["fullName", "email", "phone"] as const)
+     .filter((f) => data[f] !== undefined && data[f] !== existing[f])
+     .map((f) => ({ field: f, from: existing[f], to: data[f] as string }));
+diff --git a/src/app/api/admin/settings/route.ts b/src/app/api/admin/settings/route.ts
+index 6831189..23339ab 100644
+--- a/src/app/api/admin/settings/route.ts
++++ b/src/app/api/admin/settings/route.ts
+@@ -4,12 +4,13 @@ import { getSettingsMap } from "@/lib/settings";
+ import { updateSettingsSchema } from "@/lib/validation";
+ import { HIDDEN_SETTING_KEYS } from "@/lib/contactSources";
+ import { requireEvent, forgetEvent } from "@/lib/event";
++import { isAliasKey } from "@/lib/emailAliases";
+ 
+ const DERIVED_KEYS = ["event_slug", "event_name", "event_id", "event_brand_name", "event_color", "event_logo_url", "event_timezone"];
+ 
+ /** The live sheet, Supabase connection and website-form settings have their own screens, not the Event details form. The Supabase key never leaves the server. */
+ function withoutSheetKeys(settings: Record<string, string>) {
+-  return Object.fromEntries(Object.entries(settings).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key)));
++  return Object.fromEntries(Object.entries(settings).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key) && !isAliasKey(key)));
+ }
+ 
+ export const runtime = "nodejs";
+@@ -37,7 +38,7 @@ export async function PUT(request: NextRequest) {
+     return NextResponse.json({ error: "Invalid settings payload." }, { status: 400 });
+   }
+ 
+-  const entries = Object.entries(parsed.data).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key));
++  const entries = Object.entries(parsed.data).filter(([key]) => !HIDDEN_SETTING_KEYS.includes(key) && !DERIVED_KEYS.includes(key) && !isAliasKey(key));
+   await prisma.$transaction(
+     entries.map(([key, value]) =>
+       prisma.setting.upsert({
+diff --git a/src/lib/contactSave.ts b/src/lib/contactSave.ts
+index c24a4a9..e5406cc 100644
+--- a/src/lib/contactSave.ts
++++ b/src/lib/contactSave.ts
+@@ -1,5 +1,6 @@
+ import { prisma } from "@/lib/prisma";
+ import type { ImportedPerson } from "@/lib/csvImport";
++import { applyEmailAliases } from "@/lib/emailAliases";
+ 
+ const CHUNK = 500;
+ 
+@@ -30,6 +31,7 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
+  * Saves people read from a CSV file or a live sheet into one event. Nobody is emailed.
+  *
+  *   New emails are added. Call feedback that came with a person becomes the first entry in their follow-up log.
++ *   Addresses corrected on the dashboard (see emailAliases.ts) are read as the corrected address first.
+  *   Emails already on the list are left alone ("skip") or filled in from the file ("update"). An update never blanks a
+  *   field, never touches a reservation, and never adds a follow-up entry that is already in the log, so running it
+  *   again and again (as the live sheet does) is safe.
+@@ -40,11 +42,13 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
+  */
+ export async function saveImportedPeople(
+   eventId: string,
+-  people: ImportedPerson[],
++  incoming: ImportedPerson[],
+   onDuplicate: "skip" | "update",
+   opts: { author?: string; overwriteStatus?: boolean } = {}
+ ): Promise<SaveResult> {
+   const author = opts.author ?? "Imported from CSV";
++  // An address corrected on the dashboard is read as the corrected one, so the sheet's old row does not come back as a duplicate.
++  const people = await applyEmailAliases(eventId, incoming);
+   const overwriteStatus = opts.overwriteStatus ?? true;
+ 
+   const existing: { id: string; email: string; fullName: string; phone: string; followUpStatus: string; extra: unknown }[] = [];
+diff --git a/src/lib/emailAliases.ts b/src/lib/emailAliases.ts
+new file mode 100644
+index 0000000..d0406b0
+--- /dev/null
++++ b/src/lib/emailAliases.ts
+@@ -0,0 +1,83 @@
++import { prisma } from "@/lib/prisma";
++import type { ImportedPerson } from "@/lib/csvImport";
++
++/**
++ * Corrections made on the dashboard, remembered per event as "old address -> corrected address".
++ *
++ * Why: the live sheet (and a CSV that is loaded again, or a website form) is only READ by the dashboard. Fixing a typo
++ * here does not change the sheet, so the next sync would find the old address in the sheet, see nobody with that
++ * address, and add the guest a second time. With the correction remembered, the old address in the sheet is read as the
++ * corrected one, so the sync updates the same contact instead of creating a duplicate.
++ *
++ * One setting row per correction (key "email_alias:<old address>"), so several corrections saved at the same moment
++ * (for example "Apply all suggested fixes") can never overwrite each other.
++ */
++
++export const ALIAS_PREFIX = "email_alias:";
++
++export function isAliasKey(key: string): boolean {
++  return key.startsWith(ALIAS_PREFIX);
++}
++
++const norm = (e: string) => e.trim().toLowerCase();
++
++/** Remembers that `from` was corrected to `to`. Does nothing when either is empty or they are the same. */
++export async function recordEmailAlias(eventId: string, from: string, to: string): Promise<void> {
++  const a = norm(from);
++  const b = norm(to);
++  if (!a || !b || a === b) return;
++  // The corrected address is the real one now, so it is no longer an old address.
++  await prisma.setting.deleteMany({ where: { eventId, key: `${ALIAS_PREFIX}${b}` } });
++  // Corrections that pointed at the address just corrected again now point at the final one (A -> B and then B -> C makes A -> C).
++  await prisma.setting.updateMany({ where: { eventId, key: { startsWith: ALIAS_PREFIX }, value: a }, data: { value: b } });
++  await prisma.setting.upsert({
++    where: { eventId_key: { eventId, key: `${ALIAS_PREFIX}${a}` } },
++    update: { value: b },
++    create: { eventId, key: `${ALIAS_PREFIX}${a}`, value: b },
++  });
++}
++
++export async function loadEmailAliases(eventId: string): Promise<Map<string, string>> {
++  const rows = await prisma.setting.findMany({ where: { eventId, key: { startsWith: ALIAS_PREFIX } }, select: { key: true, value: true } });
++  return new Map(rows.map((r: { key: string; value: string }) => [r.key.slice(ALIAS_PREFIX.length), r.value]));
++}
++
++/** The corrected address for `email`, following a chain of corrections (stops after a few steps, so a loop cannot hang). */
++export function resolveEmail(aliases: Map<string, string>, email: string): string {
++  let current = norm(email);
++  for (let i = 0; i < 5; i++) {
++    const next = aliases.get(current);
++    if (!next || next === current) break;
++    current = next;
++  }
++  return current;
++}
++
++/**
++ * Reads people coming from a sheet, CSV or form as their corrected address. If the sheet holds both the wrong and the
++ * right row for the same person, they become one person: the first row wins and blanks are filled from the other.
++ */
++export async function applyEmailAliases(eventId: string, people: ImportedPerson[]): Promise<ImportedPerson[]> {
++  const aliases = await loadEmailAliases(eventId);
++  if (aliases.size === 0) return people;
++
++  const out = new Map<string, ImportedPerson>();
++  for (const p of people) {
++    const email = resolveEmail(aliases, p.email);
++    const person = email === p.email ? p : { ...p, email };
++    const seen = out.get(email);
++    if (!seen) {
++      out.set(email, person);
++      continue;
++    }
++    out.set(email, {
++      ...seen,
++      fullName: seen.fullName || person.fullName,
++      phone: seen.phone || person.phone,
++      followUpStatus: seen.followUpStatus ?? person.followUpStatus,
++      callFeedback: seen.callFeedback || person.callFeedback,
++      extra: { ...person.extra, ...seen.extra },
++    });
++  }
++  return [...out.values()];
++}
+-- 
+2.43.0
+

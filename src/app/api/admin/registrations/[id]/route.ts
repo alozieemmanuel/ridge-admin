@@ -6,6 +6,7 @@ import { logAdminAction } from "@/lib/audit";
 import { describeActivity } from "@/lib/activity";
 import { reserveLink } from "@/lib/notifications";
 import { EMAIL_RE } from "@/lib/csvImport";
+import { recordEmailAlias } from "@/lib/emailAliases";
 
 export const runtime = "nodejs";
 
@@ -91,7 +92,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   if (data.email && data.email !== existing.email) {
     const clash = await prisma.registration.findFirst({ where: { eventId: event.id, email: data.email }, select: { id: true, fullName: true } });
-    if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.` }, { status: 409 });
+    if (clash) return NextResponse.json({ error: `${clash.fullName} is already on the list with that email address.`, clashId: clash.id, clashName: clash.fullName }, { status: 409 });
   }
 
   await prisma.registration.update({
@@ -102,6 +103,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       ...(data.phone !== undefined ? { phone: data.phone } : {}),
     },
   });
+
+  // The live sheet is only read, never written, so it still holds the old address. Remember the correction, or the next sync adds the guest again.
+  if (data.email && existing.email && data.email !== existing.email) await recordEmailAlias(event.id, existing.email, data.email);
 
   const changes = (["fullName", "email", "phone"] as const)
     .filter((f) => data[f] !== undefined && data[f] !== existing[f])

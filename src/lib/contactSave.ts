@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { ImportedPerson } from "@/lib/csvImport";
+import { applyEmailAliases } from "@/lib/emailAliases";
 
 const CHUNK = 500;
 
@@ -30,6 +31,7 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
  * Saves people read from a CSV file or a live sheet into one event. Nobody is emailed.
  *
  *   New emails are added. Call feedback that came with a person becomes the first entry in their follow-up log.
+ *   Addresses corrected on the dashboard (see emailAliases.ts) are read as the corrected address first.
  *   Emails already on the list are left alone ("skip") or filled in from the file ("update"). An update never blanks a
  *   field, never touches a reservation, and never adds a follow-up entry that is already in the log, so running it
  *   again and again (as the live sheet does) is safe.
@@ -40,11 +42,13 @@ function sameExtra(a: unknown, b: Record<string, string>): boolean {
  */
 export async function saveImportedPeople(
   eventId: string,
-  people: ImportedPerson[],
+  incoming: ImportedPerson[],
   onDuplicate: "skip" | "update",
   opts: { author?: string; overwriteStatus?: boolean } = {}
 ): Promise<SaveResult> {
   const author = opts.author ?? "Imported from CSV";
+  // An address corrected on the dashboard is read as the corrected one, so the sheet's old row does not come back as a duplicate.
+  const people = await applyEmailAliases(eventId, incoming);
   const overwriteStatus = opts.overwriteStatus ?? true;
 
   const existing: { id: string; email: string; fullName: string; phone: string; followUpStatus: string; extra: unknown }[] = [];
