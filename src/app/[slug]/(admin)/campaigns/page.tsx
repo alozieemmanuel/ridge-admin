@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import Link from "next/link";
 import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
 import AdminShell from "@/components/AdminShell";
 import { flushUntilDone } from "@/lib/flushQueue";
@@ -8,6 +9,8 @@ import { useIsOwner } from "@/lib/useIsOwner";
 import SenderStrip from "@/components/SenderStrip";
 import FormatToolbar, { formatKeyHandler } from "@/components/FormatToolbar";
 import { hasButtonMarker, richHtml, screenButtonHtml } from "@/lib/richText";
+import { SEND_STEPS, sendPercent, type SendProgress } from "@/lib/sendProgress";
+import { readSendStream } from "@/lib/readSendStream";
 import { summarizeBlocked } from "@/lib/sendErrorText";
 
 type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
@@ -135,6 +138,8 @@ export default function CampaignsPage() {
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<"compose" | "confirm">("compose");
   const [sending, setSending] = useState(false);
+  const [progress, setProgress] = useState<SendProgress | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const { admin } = useEvent();
   const terms = useTerms();
@@ -192,6 +197,14 @@ export default function CampaignsPage() {
     load();
   }, [load]);
 
+  // Seconds since Send was pressed, so a slow step never looks frozen.
+  useEffect(() => {
+    if (!sending) return;
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [sending]);
+
   const recipientCount = counts[audience] ?? 0;
   const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
 
@@ -217,13 +230,26 @@ export default function CampaignsPage() {
   async function handleSend() {
     setSending(true);
     setMessage(null);
+    setProgress(hasMailchimp ? { stage: "audience", message: "Starting…" } : null);
     try {
       const res = await fetch(hasMailchimp ? "/api/admin/campaigns/mailchimp" : "/api/admin/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audience, subject, body, ctaLabel }),
       });
-      const data = await res.json();
+      // The Mailchimp send streams its progress, one line at a time. Anything else (an error before it started) is plain JSON.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any;
+      if (hasMailchimp && res.ok && res.body && (res.headers.get("content-type") || "").includes("ndjson")) {
+        const streamed = await readSendStream<unknown>(res.body, setProgress);
+        if (!streamed.ok) {
+          setMessage({ text: streamed.error, ok: false });
+          return;
+        }
+        data = streamed.data;
+      } else {
+        data = await res.json();
+      }
       if (res.ok) {
         setSubject("");
         setBody("");
@@ -246,8 +272,10 @@ export default function CampaignsPage() {
         const viaMailchimp = hasMailchimp;
         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
         if (viaMailchimp) {
+          const unsub: number = data.unsubscribed ?? 0;
+          const refused: number = data.refused ?? Math.max(0, failedCount - unsub);
           setMessage({
-            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out (${((data.reasons as { reason: string; count: number }[] | undefined) || []).map((r) => `${r.count}: ${r.reason}`).join("; ") || "unsubscribed or refused in Mailchimp"}).` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
+            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${unsub ? ` ${unsub} unsubscribed in Mailchimp and were left out.` : ""}${refused ? ` ${refused} were refused by Mailchimp (${((data.reasons as { reason: string; count: number }[] | undefined) || []).filter((r) => !/: (unsubscribed|cleaned|archived) in Mailchimp$/.test(r.reason)).map((r) => `${r.count}: ${r.reason}`).join("; ") || "wrong address"}). Fix them under Check emails.` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
             ok: true,
           });
           load();
@@ -265,6 +293,7 @@ export default function CampaignsPage() {
       setMessage({ text: "Couldn't reach the server. Check your connection and try again.", ok: false });
     } finally {
       setSending(false);
+      setProgress(null);
     }
   }
 
@@ -409,6 +438,48 @@ export default function CampaignsPage() {
           >
             Continue
           </button>
+        )}
+
+        {sending && progress && (
+          <div className="border border-gold/30 rounded-xl p-4 mb-4" role="status" aria-live="polite">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-sm font-medium">Sending your campaign</p>
+              <p className="text-xs text-muted tabular-nums">
+                {sendPercent(progress)}% · {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+              </p>
+            </div>
+            <div className="h-2 rounded-full bg-border/60 overflow-hidden mb-3">
+              <div className="h-full rounded-full bg-gradient-to-r from-goldlight via-gold to-golddark transition-all duration-500" style={{ width: `${sendPercent(progress)}%` }} />
+            </div>
+            <ol className="space-y-1 mb-3">
+              {SEND_STEPS.map((st) => {
+                const at = SEND_STEPS.findIndex((x) => x.stages.includes(progress.stage));
+                const idx = SEND_STEPS.indexOf(st);
+                const state = idx < at ? "done" : idx === at ? "now" : "next";
+                return (
+                  <li key={st.label} className={`text-sm flex items-center gap-2 ${state === "next" ? "text-muted/60" : state === "now" ? "text-fg" : "text-muted"}`}>
+                    <span className="w-4 text-center">{state === "done" ? "✓" : state === "now" ? "›" : "·"}</span>
+                    {st.label}
+                  </li>
+                );
+              })}
+            </ol>
+            <p className="text-sm text-goldlight">{progress.message}</p>
+            <p className="text-xs text-muted mt-2">Keep this page open until it finishes. Large lists can take a few minutes.</p>
+          </div>
+        )}
+
+        {hasMailchimp && (
+          <p className="text-xs text-muted mb-4">
+            Guests who unsubscribed in Mailchimp are skipped automatically and never added back.{" "}
+            <Link href={ep("/campaigns/unsubscribed")} className="text-goldlight hover:underline">
+              See who they are
+            </Link>
+            {" · "}
+            <Link href={ep("/contacts/email-check")} className="text-goldlight hover:underline">
+              Check wrong emails
+            </Link>
+          </p>
         )}
 
         {step === "confirm" && (

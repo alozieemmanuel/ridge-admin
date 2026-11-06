@@ -1,0 +1,779 @@
+git From ac1772e221c9dce9fe566c5710195ce8993a4f90 Mon Sep 17 00:00:00 2001
+From: Emmanuel <aloziefrompg@gmail.com>
+Date: Fri, 6 Nov 2026 08:49:02 +0100
+Subject: [PATCH] Mailchimp: skip unsubscribed guests, show send progress
+
+Campaigns now go to every guest who has not unsubscribed in Mailchimp.
+Unsubscribed, cleaned and archived guests are read from Mailchimp
+first, left out, and never re-subscribed. A refused address no longer
+cancels the whole send; it is left out and reported.
+
+The "merge fields were invalid" refusals came from sending
+skip_merge_validation in the request body. Mailchimp reads it from the
+query string, so it is now sent there.
+
+The send streams its progress, so the Campaigns page shows a progress
+bar, the current step, a count of guests added and a timer. A new page,
+Campaigns > Unsubscribed in Mailchimp, lists the guests who are left
+out, with a CSV download.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LHbnzt849egZ8yN5Kkk57L
+---
+ src/app/[slug]/(admin)/campaigns/page.tsx     |  75 ++++++++-
+ .../(admin)/campaigns/unsubscribed/page.tsx   | 151 ++++++++++++++++++
+ .../api/admin/campaigns/mailchimp/route.ts    |  92 +++++++----
+ .../campaigns/mailchimp/unsubscribed/route.ts |  34 ++++
+ src/lib/mailchimp.ts                          | 102 +++++++++---
+ src/lib/readSendStream.ts                     |  49 ++++++
+ src/lib/sendProgress.ts                       |  44 +++++
+ 7 files changed, 495 insertions(+), 52 deletions(-)
+ create mode 100644 src/app/[slug]/(admin)/campaigns/unsubscribed/page.tsx
+ create mode 100644 src/app/api/admin/campaigns/mailchimp/unsubscribed/route.ts
+ create mode 100644 src/lib/readSendStream.ts
+ create mode 100644 src/lib/sendProgress.ts
+
+diff --git a/src/app/[slug]/(admin)/campaigns/page.tsx b/src/app/[slug]/(admin)/campaigns/page.tsx
+index be08bd3..a7e6dbc 100644
+--- a/src/app/[slug]/(admin)/campaigns/page.tsx
++++ b/src/app/[slug]/(admin)/campaigns/page.tsx
+@@ -1,6 +1,7 @@
+ "use client";
+ 
+ import { useEffect, useState, useCallback, useRef } from "react";
++import Link from "next/link";
+ import { useEvent, useEventPath, useTerms } from "@/lib/useEvent";
+ import AdminShell from "@/components/AdminShell";
+ import { flushUntilDone } from "@/lib/flushQueue";
+@@ -8,6 +9,8 @@ import { useIsOwner } from "@/lib/useIsOwner";
+ import SenderStrip from "@/components/SenderStrip";
+ import FormatToolbar, { formatKeyHandler } from "@/components/FormatToolbar";
+ import { hasButtonMarker, richHtml, screenButtonHtml } from "@/lib/richText";
++import { SEND_STEPS, sendPercent, type SendProgress } from "@/lib/sendProgress";
++import { readSendStream } from "@/lib/readSendStream";
+ import { summarizeBlocked } from "@/lib/sendErrorText";
+ 
+ type Audience = "ALL" | "NOT_INVITED" | "INVITED_NOT_RESERVED" | "RESERVED" | "CHECKED_IN" | "NOT_CHECKED_IN" | "EARLY_BIRD" | "LATE" | "NOT_PAID" | "PARTIAL" | "PAID";
+@@ -135,6 +138,8 @@ export default function CampaignsPage() {
+   const [loading, setLoading] = useState(true);
+   const [step, setStep] = useState<"compose" | "confirm">("compose");
+   const [sending, setSending] = useState(false);
++  const [progress, setProgress] = useState<SendProgress | null>(null);
++  const [elapsed, setElapsed] = useState(0);
+   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+   const { admin } = useEvent();
+   const terms = useTerms();
+@@ -192,6 +197,14 @@ export default function CampaignsPage() {
+     load();
+   }, [load]);
+ 
++  // Seconds since Send was pressed, so a slow step never looks frozen.
++  useEffect(() => {
++    if (!sending) return;
++    setElapsed(0);
++    const t = setInterval(() => setElapsed((n) => n + 1), 1000);
++    return () => clearInterval(t);
++  }, [sending]);
++
+   const recipientCount = counts[audience] ?? 0;
+   const canSend = subject.trim() !== "" && body.trim() !== "" && recipientCount > 0;
+ 
+@@ -217,13 +230,26 @@ export default function CampaignsPage() {
+   async function handleSend() {
+     setSending(true);
+     setMessage(null);
++    setProgress(hasMailchimp ? { stage: "audience", message: "Starting…" } : null);
+     try {
+       const res = await fetch(hasMailchimp ? "/api/admin/campaigns/mailchimp" : "/api/admin/campaigns", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ audience, subject, body, ctaLabel }),
+       });
+-      const data = await res.json();
++      // The Mailchimp send streams its progress, one line at a time. Anything else (an error before it started) is plain JSON.
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      let data: any;
++      if (hasMailchimp && res.ok && res.body && (res.headers.get("content-type") || "").includes("ndjson")) {
++        const streamed = await readSendStream<unknown>(res.body, setProgress);
++        if (!streamed.ok) {
++          setMessage({ text: streamed.error, ok: false });
++          return;
++        }
++        data = streamed.data;
++      } else {
++        data = await res.json();
++      }
+       if (res.ok) {
+         setSubject("");
+         setBody("");
+@@ -246,8 +272,10 @@ export default function CampaignsPage() {
+         const viaMailchimp = hasMailchimp;
+         const skipped = data.skipped?.alreadyGot || data.skipped?.alreadyWaiting ? ` ${(data.skipped.alreadyGot ?? 0) + (data.skipped.alreadyWaiting ?? 0)} people already had this email or were already waiting for it, so they were left out.` : "";
+         if (viaMailchimp) {
++          const unsub: number = data.unsubscribed ?? 0;
++          const refused: number = data.refused ?? Math.max(0, failedCount - unsub);
+           setMessage({
+-            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${failedCount ? ` ${failedCount} were left out (${((data.reasons as { reason: string; count: number }[] | undefined) || []).map((r) => `${r.count}: ${r.reason}`).join("; ") || "unsubscribed or refused in Mailchimp"}).` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
++            text: `Sent with Mailchimp to ${sentCount} of ${data.campaign.recipientCount}.${unsub ? ` ${unsub} unsubscribed in Mailchimp and were left out.` : ""}${refused ? ` ${refused} were refused by Mailchimp (${((data.reasons as { reason: string; count: number }[] | undefined) || []).filter((r) => !/: (unsubscribed|cleaned|archived) in Mailchimp$/.test(r.reason)).map((r) => `${r.count}: ${r.reason}`).join("; ") || "wrong address"}). Fix them under Check emails.` : ""}${data.markedInvited ? ` ${data.markedInvited} were marked as invited.` : ""}${skipped}`,
+             ok: true,
+           });
+           load();
+@@ -265,6 +293,7 @@ export default function CampaignsPage() {
+       setMessage({ text: "Couldn't reach the server. Check your connection and try again.", ok: false });
+     } finally {
+       setSending(false);
++      setProgress(null);
+     }
+   }
+ 
+@@ -411,6 +440,48 @@ export default function CampaignsPage() {
+           </button>
+         )}
+ 
++        {sending && progress && (
++          <div className="border border-gold/30 rounded-xl p-4 mb-4" role="status" aria-live="polite">
++            <div className="flex items-center justify-between gap-3 mb-2">
++              <p className="text-sm font-medium">Sending your campaign</p>
++              <p className="text-xs text-muted tabular-nums">
++                {sendPercent(progress)}% · {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
++              </p>
++            </div>
++            <div className="h-2 rounded-full bg-border/60 overflow-hidden mb-3">
++              <div className="h-full rounded-full bg-gradient-to-r from-goldlight via-gold to-golddark transition-all duration-500" style={{ width: `${sendPercent(progress)}%` }} />
++            </div>
++            <ol className="space-y-1 mb-3">
++              {SEND_STEPS.map((st) => {
++                const at = SEND_STEPS.findIndex((x) => x.stages.includes(progress.stage));
++                const idx = SEND_STEPS.indexOf(st);
++                const state = idx < at ? "done" : idx === at ? "now" : "next";
++                return (
++                  <li key={st.label} className={`text-sm flex items-center gap-2 ${state === "next" ? "text-muted/60" : state === "now" ? "text-fg" : "text-muted"}`}>
++                    <span className="w-4 text-center">{state === "done" ? "✓" : state === "now" ? "›" : "·"}</span>
++                    {st.label}
++                  </li>
++                );
++              })}
++            </ol>
++            <p className="text-sm text-goldlight">{progress.message}</p>
++            <p className="text-xs text-muted mt-2">Keep this page open until it finishes. Large lists can take a few minutes.</p>
++          </div>
++        )}
++
++        {hasMailchimp && (
++          <p className="text-xs text-muted mb-4">
++            Guests who unsubscribed in Mailchimp are skipped automatically and never added back.{" "}
++            <Link href={ep("/campaigns/unsubscribed")} className="text-goldlight hover:underline">
++              See who they are
++            </Link>
++            {" · "}
++            <Link href={ep("/contacts/email-check")} className="text-goldlight hover:underline">
++              Check wrong emails
++            </Link>
++          </p>
++        )}
++
+         {step === "confirm" && (
+           <div className="border border-gold/30 rounded-xl p-4">
+             <p className="text-sm mb-4">
+diff --git a/src/app/[slug]/(admin)/campaigns/unsubscribed/page.tsx b/src/app/[slug]/(admin)/campaigns/unsubscribed/page.tsx
+new file mode 100644
+index 0000000..7a3f45d
+--- /dev/null
++++ b/src/app/[slug]/(admin)/campaigns/unsubscribed/page.tsx
+@@ -0,0 +1,151 @@
++"use client";
++
++import { useCallback, useEffect, useState } from "react";
++import Link from "next/link";
++import AdminShell from "@/components/AdminShell";
++import { useEventPath } from "@/lib/useEvent";
++import { PageHeader, Pill, ghostButton } from "@/components/ui";
++
++interface Item {
++  id: string;
++  fullName: string;
++  email: string;
++  phone: string;
++  status: string;
++}
++
++const STATUS_TEXT: Record<string, { label: string; tone: string }> = {
++  unsubscribed: { label: "Unsubscribed", tone: "text-amber-300" },
++  cleaned: { label: "Cleaned (address bounced)", tone: "text-red-400" },
++  archived: { label: "Archived", tone: "text-muted" },
++};
++
++function csvCell(v: string): string {
++  return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
++}
++
++export default function UnsubscribedPage() {
++  const ep = useEventPath();
++  const [items, setItems] = useState<Item[]>([]);
++  const [checked, setChecked] = useState(0);
++  const [configured, setConfigured] = useState(true);
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState("");
++
++  const load = useCallback(async () => {
++    setLoading(true);
++    setError("");
++    try {
++      const res = await fetch("/api/admin/campaigns/mailchimp/unsubscribed", { cache: "no-store" });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) {
++        setError(data.error || "Could not read the list from Mailchimp.");
++        return;
++      }
++      setConfigured(data.configured !== false);
++      setItems(data.items || []);
++      setChecked(data.checked || 0);
++    } catch {
++      setError("Could not reach the server. Check your connection and try again.");
++    } finally {
++      setLoading(false);
++    }
++  }, []);
++
++  useEffect(() => {
++    load();
++  }, [load]);
++
++  function download() {
++    const lines = [["Name", "Email", "Phone", "Status in Mailchimp"], ...items.map((i) => [i.fullName, i.email, i.phone, STATUS_TEXT[i.status]?.label ?? i.status])].map((r) => r.map(csvCell).join(","));
++    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
++    const url = URL.createObjectURL(blob);
++    const a = document.createElement("a");
++    a.href = url;
++    a.download = `unsubscribed-${new Date().toISOString().slice(0, 10)}.csv`;
++    a.click();
++    URL.revokeObjectURL(url);
++  }
++
++  return (
++    <AdminShell>
++      <PageHeader
++        title="Unsubscribed in Mailchimp"
++        subtitle={
++          loading
++            ? "Asking Mailchimp who has unsubscribed…"
++            : !configured
++              ? "Mailchimp is not set up on the server."
++              : `${items.length.toLocaleString()} of ${checked.toLocaleString()} guests will not be emailed by Mailchimp. Campaigns skip them on their own, and they are never added back. Only the guest can re-subscribe, from a link in a Mailchimp email.`
++        }
++        actions={
++          <>
++            <Link href={ep("/campaigns")} className={ghostButton}>
++              Back to campaigns
++            </Link>
++            <button onClick={load} className={ghostButton} disabled={loading}>
++              Refresh
++            </button>
++            {items.length > 0 && (
++              <button onClick={download} className={ghostButton}>
++                Download CSV
++              </button>
++            )}
++          </>
++        }
++      />
++
++      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
++
++      <div className="border border-border rounded-xl overflow-hidden bg-cardbg">
++        <div className="table-scroll overflow-auto max-h-[72vh]">
++          <table className="w-full text-sm">
++            <thead>
++              <tr className="text-left text-xs uppercase tracking-wider text-muted border-b border-border">
++                {["Name", "Email", "Phone", "Status in Mailchimp"].map((h) => (
++                  <th key={h} className="sticky top-0 z-20 bg-pagebg px-5 py-3 font-medium whitespace-nowrap">
++                    {h}
++                  </th>
++                ))}
++              </tr>
++            </thead>
++            <tbody>
++              {loading && (
++                <tr>
++                  <td colSpan={4} className="px-5 py-10 text-center text-muted">
++                    Loading…
++                  </td>
++                </tr>
++              )}
++              {!loading && !error && items.length === 0 && (
++                <tr>
++                  <td colSpan={4} className="px-5 py-10 text-center text-muted">
++                    Nobody on this guest list has unsubscribed in Mailchimp.
++                  </td>
++                </tr>
++              )}
++              {!loading &&
++                items.map((i) => {
++                  const st = STATUS_TEXT[i.status] ?? { label: i.status, tone: "text-muted" };
++                  return (
++                    <tr key={i.id} className="border-b border-border/50 last:border-b-0">
++                      <td className="px-5 py-3.5 font-medium whitespace-nowrap">
++                        <Link href={ep(`/contacts/${i.id}`)} className="hover:underline">
++                          {i.fullName}
++                        </Link>
++                      </td>
++                      <td className="px-5 py-3.5 text-muted break-all">{i.email}</td>
++                      <td className="px-5 py-3.5 text-muted whitespace-nowrap">{i.phone || "-"}</td>
++                      <td className="px-5 py-3.5">
++                        <Pill tone={st.tone}>{st.label}</Pill>
++                      </td>
++                    </tr>
++                  );
++                })}
++            </tbody>
++          </table>
++        </div>
++      </div>
++    </AdminShell>
++  );
++}
+diff --git a/src/app/api/admin/campaigns/mailchimp/route.ts b/src/app/api/admin/campaigns/mailchimp/route.ts
+index da07375..d4ed1f0 100644
+--- a/src/app/api/admin/campaigns/mailchimp/route.ts
++++ b/src/app/api/admin/campaigns/mailchimp/route.ts
+@@ -6,6 +6,7 @@ import { requireEvent } from "@/lib/event";
+ import { getSettingsMap } from "@/lib/settings";
+ import { buildMailchimpCampaignEmail, reserveLink } from "@/lib/notifications";
+ import { mailchimpConfigured, sendMailchimpCampaign, withMailchimpFooter, type MailchimpGuest } from "@/lib/mailchimp";
++import type { SendEvent, SendProgress } from "@/lib/sendProgress";
+ import type { Registration } from "@prisma/client";
+ 
+ export const runtime = "nodejs";
+@@ -76,35 +77,64 @@ export async function POST(request: NextRequest) {
+     data: { eventId: event.id, subject, body, audience, category, recipientCount: guests.length, sentCount: 0, failedCount: 0, sentByName: session.name, ctaLabel: ctaValue },
+   });
+ 
+-  try {
+-    const res = await sendMailchimpCampaign({ name: settings.event_name || event.name, subject: built.subject, html, guests });
+-    const rows = [
+-      ...res.sent.map((g) => ({ source: "CAMPAIGN" as const, type: "SENT" as const, registrationId: g.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), providerMessageId: res.mailchimpCampaignId })),
+-      ...res.left.map((l) => ({ source: "CAMPAIGN" as const, type: "FAILED" as const, registrationId: l.guest.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), errorMessage: l.reason })),
+-    ];
+-    for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
+-    await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
+-    // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
+-    // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
+-    let markedInvited = 0;
+-    if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
+-      const marked = await prisma.registration.updateMany({
+-        where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
+-        data: { inviteSentAt: new Date() },
+-      });
+-      markedInvited = marked.count;
+-    }
+-    return NextResponse.json({
+-      result: "success",
+-      campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
+-      skipped: { alreadyGot, alreadyWaiting: 0 },
+-      blocked: null,
+-      markedInvited,
+-      reasons: res.reasons.slice(0, 3),
+-    });
+-  } catch (err) {
+-    // Nothing was sent, so the campaign row is removed and the same send can be tried again.
+-    await prisma.campaign.delete({ where: { id: campaign.id } }).catch(() => {});
+-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+-  }
++  // The answer is streamed, one JSON object per line: progress while it works, then "done" or "error".
++  // This lets the Campaigns page show what is happening instead of a spinner that never ends.
++  const encoder = new TextEncoder();
++  const stream = new ReadableStream<Uint8Array>({
++    async start(controller) {
++      const write = (e: SendEvent) => {
++        try {
++          controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
++        } catch {
++          // The page was closed. The send carries on on the server.
++        }
++      };
++      const progress = (p: SendProgress) => write({ type: "progress", progress: p });
++      try {
++        const res = await sendMailchimpCampaign({ name: settings.event_name || event.name, subject: built.subject, html, guests, onProgress: progress });
++        progress({ stage: "saving", message: "Saving the results…" });
++        const rows = [
++          ...res.sent.map((g) => ({ source: "CAMPAIGN" as const, type: "SENT" as const, registrationId: g.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), providerMessageId: res.mailchimpCampaignId })),
++          ...res.left.map((l) => ({ source: "CAMPAIGN" as const, type: "FAILED" as const, registrationId: l.guest.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), errorMessage: l.reason })),
++        ];
++        for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
++        await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
++        // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
++        // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
++        let markedInvited = 0;
++        if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
++          const marked = await prisma.registration.updateMany({
++            where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
++            data: { inviteSentAt: new Date() },
++          });
++          markedInvited = marked.count;
++        }
++        write({
++          type: "done",
++          result: {
++            result: "success",
++            campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
++            skipped: { alreadyGot, alreadyWaiting: 0 },
++            blocked: null,
++            markedInvited,
++            unsubscribed: res.unsubscribed,
++            refused: res.refused,
++            reasons: res.reasons.slice(0, 3),
++          },
++        });
++      } catch (err) {
++        // Nothing was sent, so the campaign row is removed and the same send can be tried again.
++        await prisma.campaign.delete({ where: { id: campaign.id } }).catch(() => {});
++        write({ type: "error", error: err instanceof Error ? err.message : String(err) });
++      } finally {
++        try {
++          controller.close();
++        } catch {
++          // already closed
++        }
++      }
++    },
++  });
++
++  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
+ }
+diff --git a/src/app/api/admin/campaigns/mailchimp/unsubscribed/route.ts b/src/app/api/admin/campaigns/mailchimp/unsubscribed/route.ts
+new file mode 100644
+index 0000000..cf1107d
+--- /dev/null
++++ b/src/app/api/admin/campaigns/mailchimp/unsubscribed/route.ts
+@@ -0,0 +1,34 @@
++import { NextRequest, NextResponse } from "next/server";
++import { prisma } from "@/lib/prisma";
++import { requireEvent } from "@/lib/event";
++import { blockedMembers, mailchimpConfigured } from "@/lib/mailchimp";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++/**
++ * The guests of this event that Mailchimp will not email: unsubscribed, cleaned (the address bounced) or archived.
++ * Read live from Mailchimp, so the list is always current. Only the guests on this event are returned.
++ */
++export async function GET(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "campaigns" });
++  if (!ctx.ok) return ctx.response;
++  const { event } = ctx;
++  if (!mailchimpConfigured()) return NextResponse.json({ configured: false, items: [] });
++
++  try {
++    const blocked = new Map((await blockedMembers()).map((b) => [b.email, b.status]));
++    const guests = await prisma.registration.findMany({
++      where: { eventId: event.id, email: { not: "" } },
++      orderBy: { fullName: "asc" },
++      select: { id: true, fullName: true, email: true, phone: true },
++    });
++    const items = guests.flatMap((g: { id: string; fullName: string; email: string; phone: string }) => {
++      const status = blocked.get(g.email.trim().toLowerCase());
++      return status ? [{ ...g, status }] : [];
++    });
++    return NextResponse.json({ configured: true, checked: guests.length, items });
++  } catch (err) {
++    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
++  }
++}
+diff --git a/src/lib/mailchimp.ts b/src/lib/mailchimp.ts
+index 42c93c1..9a9928f 100644
+--- a/src/lib/mailchimp.ts
++++ b/src/lib/mailchimp.ts
+@@ -1,4 +1,5 @@
+ import { createHash } from "crypto";
++import type { SendProgress } from "./sendProgress";
+ 
+ /**
+  * Sends a campaign through Mailchimp's own campaigns (Marketing API), not through the sender list.
+@@ -89,6 +90,10 @@ export interface MailchimpResult {
+   mailchimpCampaignId: string;
+   /** How many guests were left out for each reason, biggest first. */
+   reasons: { reason: string; count: number }[];
++  /** Guests left out because they unsubscribed (or were cleaned or archived) in Mailchimp. They are never re-subscribed. */
++  unsubscribed: number;
++  /** Guests Mailchimp refused for another reason, usually a wrong email address. */
++  refused: number;
+ }
+ 
+ function tally(left: { reason: string }[]): { reason: string; count: number }[] {
+@@ -97,36 +102,87 @@ function tally(left: { reason: string }[]): { reason: string; count: number }[]
+   return [...m.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+ }
+ 
++const SKIPPED_ON_PURPOSE = /: (unsubscribed|cleaned|archived) in Mailchimp$/;
++
++/**
++ * Every address in the audience that Mailchimp will never email: unsubscribed, cleaned (it bounced) or archived.
++ * Read from Mailchimp itself, so it is always current. Nothing here is ever re-subscribed by the dashboard.
++ */
++export async function blockedMembers(): Promise<{ email: string; status: string }[]> {
++  const c = config();
++  const out: { email: string; status: string }[] = [];
++  for (const status of ["unsubscribed", "cleaned", "archived"]) {
++    for (let offset = 0; ; offset += 1000) {
++      const r = await api<{ members?: { email_address: string; status: string }[] }>(
++        `/lists/${c.audience}/members?status=${status}&count=1000&offset=${offset}&fields=members.email_address,members.status`
++      );
++      if (!r.ok) {
++        // "archived" is not offered on every account. The other two are needed, so their failure is reported.
++        if (status === "archived") break;
++        throw new Error(problem(r));
++      }
++      const members = r.data.members || [];
++      for (const m of members) out.push({ email: m.email_address.toLowerCase(), status: m.status });
++      if (members.length < 1000) break;
++    }
++  }
++  return out;
++}
++
+ /**
+- * Adds the guests to the audience (an existing member keeps their status, so nobody who unsubscribed is re-subscribed),
+- * makes a campaign for just them, checks it and sends it. Throws with a readable reason when something is wrong.
++ * Checks who has unsubscribed, adds everyone else to the audience (an existing member keeps their status, so nobody who
++ * unsubscribed is re-subscribed), makes a campaign for the guests who can be emailed, checks it and sends it.
++ * Unsubscribed guests and refused addresses are set aside and reported, they do not stop the send.
++ * Throws with a readable reason when nothing can be sent or something is wrong.
+  */
+-export async function sendMailchimpCampaign(opts: { name: string; subject: string; html: string; guests: MailchimpGuest[]; budgetMs?: number }): Promise<MailchimpResult> {
++export async function sendMailchimpCampaign(opts: {
++  name: string;
++  subject: string;
++  html: string;
++  guests: MailchimpGuest[];
++  budgetMs?: number;
++  onProgress?: (p: SendProgress) => void;
++}): Promise<MailchimpResult> {
+   const c = config();
+   const started = Date.now();
+   const budget = opts.budgetMs ?? 200_000;
++  const say = (p: SendProgress) => opts.onProgress?.(p);
++
++  say({ stage: "audience", message: "Checking who has unsubscribed in Mailchimp…", done: 0, total: 1 });
+   await ensureLinkField();
++  const blocked = new Map((await blockedMembers()).map((b) => [b.email, b.status]));
+ 
+   const sent: MailchimpGuest[] = [];
+   const left: { guest: MailchimpGuest; reason: string }[] = [];
+-  const byEmail = new Map(opts.guests.map((g) => [g.email.toLowerCase(), g]));
++  const toAdd: MailchimpGuest[] = [];
++  for (const g of opts.guests) {
++    const status = blocked.get(g.email.toLowerCase());
++    if (status) left.push({ guest: g, reason: `Not emailed: ${status} in Mailchimp` });
++    else toAdd.push(g);
++  }
++  say({ stage: "audience", message: `${left.length.toLocaleString()} guests are unsubscribed in Mailchimp and will be left out. ${toAdd.length.toLocaleString()} can be emailed.`, done: 1, total: 1 });
++  if (toAdd.length === 0) throw new Error("Every guest in this audience has unsubscribed in Mailchimp (or was cleaned), so there is nobody to email. Nothing was sent.");
++
++  const byEmail = new Map(toAdd.map((g) => [g.email.toLowerCase(), g]));
+ 
+   // Mailchimp's batch endpoint takes up to 500 members per request, so 1,800 guests is 4 requests rather than 1,800.
+-  // An existing member keeps their status (status_if_new only applies to new ones), so nobody who unsubscribed is re-subscribed.
++  // An existing member keeps their status (status_if_new only applies to new ones), so nobody is re-subscribed.
+   const batches: MailchimpGuest[][] = [];
+-  for (let i = 0; i < opts.guests.length; i += 500) batches.push(opts.guests.slice(i, i + 500));
++  for (let i = 0; i < toAdd.length; i += 500) batches.push(toAdd.slice(i, i + 500));
+   type Member = { email_address: string; status?: string };
+   type BatchReply = { new_members?: Member[]; updated_members?: Member[]; errors?: { email_address?: string; error?: string; error_code?: string }[] };
+   const queue = [...batches];
++  let added = 0;
++  say({ stage: "adding", message: `Adding guests to your Mailchimp audience… 0 of ${toAdd.length.toLocaleString()}`, done: 0, total: toAdd.length });
+   const worker = async () => {
+     for (let batch = queue.shift(); batch; batch = queue.shift()) {
+       if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, guests already added are quick to update.");
+-      const r = await api<BatchReply>(`/lists/${c.audience}`, {
++      // skip_merge_validation is a QUERY parameter in Mailchimp's batch endpoint (in the body it is ignored). Without it, Mailchimp refuses
++      // every guest whose merge fields do not satisfy the audience's field rules, with "Your merge fields were invalid".
++      const r = await api<BatchReply>(`/lists/${c.audience}?skip_merge_validation=true`, {
+         method: "POST",
+         body: {
+           update_existing: true,
+-          // Without this, Mailchimp refuses a guest whose merge fields do not satisfy the audience's field rules (for example a guest with only one name).
+-          skip_merge_validation: true,
+           members: batch.map((g) => ({ email_address: g.email, status_if_new: "subscribed", merge_fields: mergeFields(g) })),
+         },
+       });
+@@ -146,11 +202,14 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
+         seen.add(g.email.toLowerCase());
+         left.push({ guest: g, reason: `Mailchimp refused this address${e.error_code || e.error ? `: ${[e.error_code, e.error].filter(Boolean).join(" ").slice(0, 160)}` : ""}` });
+       }
++      added += batch.length;
++      say({ stage: "adding", message: `Adding guests to your Mailchimp audience… ${added.toLocaleString()} of ${toAdd.length.toLocaleString()}`, done: added, total: toAdd.length });
+     }
+   };
+   await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
+-  // The batch call refuses some guests with "merge fields were invalid" without saying which field. Adding one guest at a time
+-  // is slower but names the field. The first refused guest is tried alone: if Mailchimp still refuses, stop at once with its exact reason.
++
++  // If Mailchimp still says "merge fields were invalid", adding one guest at a time names the field. The first such guest is tried alone:
++  // if Mailchimp still refuses, stop at once with its exact reason.
+   const isMerge = (l: { reason: string }) => /merge fields were invalid/i.test(l.reason);
+   const retry = left.filter(isMerge);
+   if (retry.length) {
+@@ -165,30 +224,34 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
+       else if (r.ok) left.push({ guest: g, reason: `Not emailed: ${r.data.status || "not subscribed"} in Mailchimp` });
+       else left.push({ guest: g, reason: `Mailchimp refused this address: ${problem(r).slice(0, 200)}` });
+     };
++    say({ stage: "retrying", message: `Mailchimp refused ${retry.length.toLocaleString()} guests on the first try. Adding them one at a time…`, done: 0, total: retry.length });
+     const probe = await putOne(retry[0].guest);
+     if (!probe.ok && probe.status !== 429 && /merge|field/i.test(problem(probe))) {
+       throw new Error(`Mailchimp refuses these guests because of a field problem. Nothing was sent. Tested on ${retry[0].guest.email}: ${problem(probe)}`);
+     }
+     settle(retry[0].guest, probe);
++    let retried = 1;
+     const rest = retry.slice(1).map((l) => l.guest);
+     const again = async () => {
+       for (let g = rest.shift(); g; g = rest.shift()) {
+         if (Date.now() - started > budget) throw new Error("Adding the guests to Mailchimp took too long. Nothing was sent. Try again, guests already added are skipped faster.");
+         settle(g, await putOne(g));
++        retried++;
++        if (retried % 20 === 0 || retried === retry.length) say({ stage: "retrying", message: `Adding refused guests one at a time… ${retried.toLocaleString()} of ${retry.length.toLocaleString()}`, done: retried, total: retry.length });
+       }
+     };
+     await Promise.all(Array.from({ length: 8 }, again));
+   }
+-  // Unsubscribed, cleaned (bounced before) and archived contacts are skipped on purpose. Anything else (refused addresses, a full audience)
+-  // means the audience is not ready, so stop BEFORE a campaign exists in Mailchimp instead of sending to only part of the list.
++
+   const reasons = tally(left);
+-  const unexpected = left.filter((l) => !/: (unsubscribed|cleaned|archived) in Mailchimp$/.test(l.reason));
+-  if (unexpected.length > Math.max(5, Math.floor(opts.guests.length * 0.02))) {
+-    const top = tally(unexpected).slice(0, 3).map((r) => `${r.count} x ${r.reason}`).join(" | ");
+-    throw new Error(`Mailchimp would only take ${sent.length} of ${opts.guests.length} guests, so nothing was sent and no campaign was created. Reasons: ${top}`);
++  const unsubscribed = left.filter((l) => SKIPPED_ON_PURPOSE.test(l.reason)).length;
++  const refused = left.length - unsubscribed;
++  if (sent.length === 0) {
++    const top = reasons.slice(0, 3).map((r) => `${r.count} x ${r.reason}`).join(" | ");
++    throw new Error(`Mailchimp would not email any of these guests. Nothing was sent.${top ? ` Reasons: ${top}` : ""}`);
+   }
+-  if (sent.length === 0) throw new Error("Mailchimp would not email any of these guests (they are unsubscribed or refused there). Nothing was sent.");
+ 
++  say({ stage: "campaign", message: `Creating the campaign for ${sent.length.toLocaleString()} guests…` });
+   const seg = await api<{ id: number }>(`/lists/${c.audience}/segments`, { method: "POST", body: { name: `${opts.name} ${new Date().toISOString().slice(0, 16)}`.slice(0, 100), static_segment: sent.map((g) => g.email) } });
+   if (!seg.ok) throw new Error(problem(seg));
+ 
+@@ -212,9 +275,10 @@ export async function sendMailchimpCampaign(opts: { name: string; subject: strin
+     throw new Error(`Mailchimp is not ready to send: ${why || "unknown reason"}`);
+   }
+ 
++  say({ stage: "sending", message: `Handing the campaign to Mailchimp to send to ${sent.length.toLocaleString()} guests…` });
+   const go = await api(`/campaigns/${camp.data.id}/actions/send`, { method: "POST" });
+   if (!go.ok) throw new Error(problem(go));
+-  return { sent, left, mailchimpCampaignId: camp.data.id, reasons };
++  return { sent, left, mailchimpCampaignId: camp.data.id, reasons, unsubscribed, refused };
+ }
+ 
+ /** Adds the unsubscribe link and address that Mailchimp requires, if the email does not already have them. */
+diff --git a/src/lib/readSendStream.ts b/src/lib/readSendStream.ts
+new file mode 100644
+index 0000000..f2f11db
+--- /dev/null
++++ b/src/lib/readSendStream.ts
+@@ -0,0 +1,49 @@
++import type { SendEvent, SendProgress } from "./sendProgress";
++
++/**
++ * Reads the streamed answer of the Mailchimp send route (one JSON object per line) and reports each progress step.
++ * Resolves with the final result, or with ok = false and an error message. If the connection closes before a final line
++ * arrives (the server ran out of time, or the network dropped), it says so instead of waiting forever.
++ */
++export async function readSendStream<T>(body: ReadableStream<Uint8Array>, onProgress: (p: SendProgress) => void): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
++  const reader = body.getReader();
++  const decoder = new TextDecoder();
++  let buffer = "";
++  let final: { ok: true; data: T } | { ok: false; error: string } | null = null;
++
++  const handle = (line: string) => {
++    if (!line.trim()) return;
++    let event: SendEvent;
++    try {
++      event = JSON.parse(line) as SendEvent;
++    } catch {
++      return;
++    }
++    if (event.type === "progress") onProgress(event.progress);
++    else if (event.type === "done") final = { ok: true, data: event.result as T };
++    else if (event.type === "error") final = { ok: false, error: event.error };
++  };
++
++  try {
++    for (;;) {
++      const { value, done } = await reader.read();
++      if (value) buffer += decoder.decode(value, { stream: !done });
++      let nl = buffer.indexOf("\n");
++      while (nl !== -1) {
++        handle(buffer.slice(0, nl));
++        buffer = buffer.slice(nl + 1);
++        nl = buffer.indexOf("\n");
++      }
++      if (done) break;
++    }
++    handle(buffer);
++  } catch {
++    // fall through to the message below
++  }
++  return (
++    final ?? {
++      ok: false,
++      error: "The connection closed before the send finished, so it is not known whether the email went out. Look under Sent campaigns before trying again.",
++    }
++  );
++}
+diff --git a/src/lib/sendProgress.ts b/src/lib/sendProgress.ts
+new file mode 100644
+index 0000000..c73b090
+--- /dev/null
++++ b/src/lib/sendProgress.ts
+@@ -0,0 +1,44 @@
++/**
++ * What a campaign send reports while it runs, so the Campaigns page can show real progress instead of a spinner.
++ * The Mailchimp send route streams one JSON object per line (progress, then done or error).
++ */
++
++export type SendStage = "audience" | "adding" | "retrying" | "campaign" | "sending" | "saving";
++
++export interface SendProgress {
++  stage: SendStage;
++  /** One plain sentence about what is happening right now. */
++  message: string;
++  /** How far along this stage is (for example guests added so far), when it can be counted. */
++  done?: number;
++  total?: number;
++}
++
++export type SendEvent = { type: "progress"; progress: SendProgress } | { type: "done"; result: unknown } | { type: "error"; error: string };
++
++/** The steps shown to the admin, in order, and which stages belong to each. */
++export const SEND_STEPS: { label: string; stages: SendStage[] }[] = [
++  { label: "Checking who is subscribed in Mailchimp", stages: ["audience"] },
++  { label: "Adding guests to the audience", stages: ["adding", "retrying"] },
++  { label: "Creating the campaign", stages: ["campaign"] },
++  { label: "Sending", stages: ["sending"] },
++  { label: "Saving the results", stages: ["saving"] },
++];
++
++/** Overall progress, 0 to 100, from the stage and how far along it is. */
++export function sendPercent(p: SendProgress): number {
++  const fraction = p.total && p.total > 0 ? Math.min(1, (p.done ?? 0) / p.total) : 0;
++  switch (p.stage) {
++    case "audience":
++      return Math.round(2 + fraction * 13);
++    case "adding":
++    case "retrying":
++      return Math.round(15 + fraction * 45);
++    case "campaign":
++      return 65;
++    case "sending":
++      return 85;
++    case "saving":
++      return 95;
++  }
++}
+-- 
+2.43.0
+

@@ -6,6 +6,7 @@ import { requireEvent } from "@/lib/event";
 import { getSettingsMap } from "@/lib/settings";
 import { buildMailchimpCampaignEmail, reserveLink } from "@/lib/notifications";
 import { mailchimpConfigured, sendMailchimpCampaign, withMailchimpFooter, type MailchimpGuest } from "@/lib/mailchimp";
+import type { SendEvent, SendProgress } from "@/lib/sendProgress";
 import type { Registration } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -76,35 +77,64 @@ export async function POST(request: NextRequest) {
     data: { eventId: event.id, subject, body, audience, category, recipientCount: guests.length, sentCount: 0, failedCount: 0, sentByName: session.name, ctaLabel: ctaValue },
   });
 
-  try {
-    const res = await sendMailchimpCampaign({ name: settings.event_name || event.name, subject: built.subject, html, guests });
-    const rows = [
-      ...res.sent.map((g) => ({ source: "CAMPAIGN" as const, type: "SENT" as const, registrationId: g.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), providerMessageId: res.mailchimpCampaignId })),
-      ...res.left.map((l) => ({ source: "CAMPAIGN" as const, type: "FAILED" as const, registrationId: l.guest.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), errorMessage: l.reason })),
-    ];
-    for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
-    await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
-    // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
-    // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
-    let markedInvited = 0;
-    if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
-      const marked = await prisma.registration.updateMany({
-        where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
-        data: { inviteSentAt: new Date() },
-      });
-      markedInvited = marked.count;
-    }
-    return NextResponse.json({
-      result: "success",
-      campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
-      skipped: { alreadyGot, alreadyWaiting: 0 },
-      blocked: null,
-      markedInvited,
-      reasons: res.reasons.slice(0, 3),
-    });
-  } catch (err) {
-    // Nothing was sent, so the campaign row is removed and the same send can be tried again.
-    await prisma.campaign.delete({ where: { id: campaign.id } }).catch(() => {});
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
-  }
+  // The answer is streamed, one JSON object per line: progress while it works, then "done" or "error".
+  // This lets the Campaigns page show what is happening instead of a spinner that never ends.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const write = (e: SendEvent) => {
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
+        } catch {
+          // The page was closed. The send carries on on the server.
+        }
+      };
+      const progress = (p: SendProgress) => write({ type: "progress", progress: p });
+      try {
+        const res = await sendMailchimpCampaign({ name: settings.event_name || event.name, subject: built.subject, html, guests, onProgress: progress });
+        progress({ stage: "saving", message: "Saving the results…" });
+        const rows = [
+          ...res.sent.map((g) => ({ source: "CAMPAIGN" as const, type: "SENT" as const, registrationId: g.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), providerMessageId: res.mailchimpCampaignId })),
+          ...res.left.map((l) => ({ source: "CAMPAIGN" as const, type: "FAILED" as const, registrationId: l.guest.id, campaignId: campaign.id, kind: "campaign", provider: "MAILCHIMP" as const, subject: subject.slice(0, 300), errorMessage: l.reason })),
+        ];
+        for (let i = 0; i < rows.length; i += 500) await prisma.emailEvent.createMany({ data: rows.slice(i, i + 500) });
+        await prisma.campaign.update({ where: { id: campaign.id }, data: { sentCount: res.sent.length, failedCount: res.left.length } });
+        // An email that carries the guest's own reserve link is an invitation: the guests it reached count as invited,
+        // so "Not invited yet" and "Invited, not reserved" on the Attendance page stay right. Earlier invite dates are kept.
+        let markedInvited = 0;
+        if (ctaLabel || /\{\{\s*reserve_link\s*\}\}/.test(body)) {
+          const marked = await prisma.registration.updateMany({
+            where: { eventId: event.id, id: { in: res.sent.map((g) => g.id) }, inviteSentAt: null, reservedAt: null },
+            data: { inviteSentAt: new Date() },
+          });
+          markedInvited = marked.count;
+        }
+        write({
+          type: "done",
+          result: {
+            result: "success",
+            campaign: { id: campaign.id, recipientCount: guests.length, sentCount: res.sent.length, failedCount: res.left.length, waitingCount: 0 },
+            skipped: { alreadyGot, alreadyWaiting: 0 },
+            blocked: null,
+            markedInvited,
+            unsubscribed: res.unsubscribed,
+            refused: res.refused,
+            reasons: res.reasons.slice(0, 3),
+          },
+        });
+      } catch (err) {
+        // Nothing was sent, so the campaign row is removed and the same send can be tried again.
+        await prisma.campaign.delete({ where: { id: campaign.id } }).catch(() => {});
+        write({ type: "error", error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+      }
+    },
+  });
+
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
 }
