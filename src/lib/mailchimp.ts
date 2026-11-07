@@ -32,7 +32,32 @@ function config() {
   return { key, audience, dc, fromName: m ? m[1].trim() : "", fromEmail: email };
 }
 
+// Mailchimp allows 10 open connections at once and answers 429 beyond that. At most 6 are open at any moment here,
+// however many parts of the code ask at the same time, and a 429 is retried after a short wait.
+const MAX_OPEN = 6;
+let open = 0;
+const waiting: (() => void)[] = [];
+async function slot<T>(work: () => Promise<T>): Promise<T> {
+  if (open >= MAX_OPEN) await new Promise<void>((resolve) => waiting.push(resolve));
+  open++;
+  try {
+    return await work();
+  } finally {
+    open--;
+    waiting.shift()?.();
+  }
+}
+
 async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<{ ok: boolean; status: number; data: T }> {
+  let last = await slot(() => apiOnce<T>(path, init));
+  for (let attempt = 1; last.status === 429 && attempt <= 4; attempt++) {
+    await new Promise((r) => setTimeout(r, 1500 * attempt));
+    last = await slot(() => apiOnce<T>(path, init));
+  }
+  return last;
+}
+
+async function apiOnce<T = unknown>(path: string, init: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<{ ok: boolean; status: number; data: T }> {
   const c = config();
   let res: Response;
   try {
