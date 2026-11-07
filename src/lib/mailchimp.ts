@@ -66,7 +66,8 @@ async function apiOnce<T = unknown>(path: string, init: { method?: string; body?
       headers: { Authorization: `Basic ${Buffer.from(`any:${c.key}`).toString("base64")}`, "Content-Type": "application/json" },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       // A request that never answers must not hang the page: give up and say so.
-      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
+      // Reading is quick. Adding hundreds of guests in one batch call can take a minute or two, so writes get longer.
+      signal: AbortSignal.timeout(init.timeoutMs ?? (init.method && init.method !== "GET" ? 150_000 : 30_000)),
     });
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");

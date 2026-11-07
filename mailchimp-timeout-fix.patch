@@ -1,0 +1,29 @@
+From 8547483550c4a05be61ff03dd18372fc01e6ab82 Mon Sep 17 00:00:00 2001
+From: Emmanuel <aloziefrompg@gmail.com>
+Date: Sat, 7 Nov 2026 20:58:40 +0100
+Subject: [PATCH] Give Mailchimp writes a longer timeout so large batches are
+ not cut off
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LHbnzt849egZ8yN5Kkk57L
+---
+ src/lib/mailchimp.ts | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib/mailchimp.ts b/src/lib/mailchimp.ts
+index 5f338bf..e609641 100644
+--- a/src/lib/mailchimp.ts
++++ b/src/lib/mailchimp.ts
+@@ -66,7 +66,8 @@ async function apiOnce<T = unknown>(path: string, init: { method?: string; body?
+       headers: { Authorization: `Basic ${Buffer.from(`any:${c.key}`).toString("base64")}`, "Content-Type": "application/json" },
+       body: init.body === undefined ? undefined : JSON.stringify(init.body),
+       // A request that never answers must not hang the page: give up and say so.
+-      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
++      // Reading is quick. Adding hundreds of guests in one batch call can take a minute or two, so writes get longer.
++      signal: AbortSignal.timeout(init.timeoutMs ?? (init.method && init.method !== "GET" ? 150_000 : 30_000)),
+     });
+   } catch (err) {
+     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+-- 
+2.43.0
+
