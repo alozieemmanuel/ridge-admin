@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { SHEET_URL_KEY, getSheetInterval, syncContactSheet } from "@/lib/contactSheet";
 import { SUPABASE_KEY_KEY, syncSupabase } from "@/lib/contactSources";
+import { runAllAutoInvites } from "@/lib/autoInvite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,7 +62,9 @@ async function run(request: NextRequest) {
       results.push({ event: row.event.slug, result: `failed: ${err instanceof Error ? err.message : "unknown error"}` });
     }
   }
-  return NextResponse.json({ ok: true, events: results });
+  // Anyone still waiting for the automatic invitation (a big batch, or a send that failed earlier) gets it now.
+  const invites = await runAllAutoInvites(Math.max(10_000, 285_000 - (Date.now() - started)));
+  return NextResponse.json({ ok: true, events: results, invitations: invites });
 }
 
 export const GET = run;

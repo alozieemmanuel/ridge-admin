@@ -2,6 +2,8 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { EMAIL_RE, buildPeople, suggestMapping, type ParsedCsv, type RowProblem } from "@/lib/csvImport";
 import { saveImportedPeople } from "@/lib/contactSave";
+import { AUTO_INVITE_KEYS } from "@/lib/autoInviteKeys";
+import { inviteNewAfterSync } from "@/lib/autoInvite";
 import { SHEET_INTERVAL_KEY, SHEET_KEYS, getSheetInterval, type LastSync, type SyncResult } from "@/lib/contactSheet";
 
 /**
@@ -24,7 +26,7 @@ export const SUPABASE_LAST_SYNC_KEY = "source_supabase_last_sync";
 export const INTAKE_ORIGINS_KEY = "intake_origins";
 export const SOURCE_KEYS = [SUPABASE_URL_KEY, SUPABASE_TABLE_KEY, SUPABASE_KEY_KEY, SUPABASE_LAST_SYNC_KEY, INTAKE_ORIGINS_KEY];
 /** Settings that are managed by their own screens, kept out of the generic settings form. */
-export const HIDDEN_SETTING_KEYS = [...SHEET_KEYS, ...SOURCE_KEYS];
+export const HIDDEN_SETTING_KEYS = [...SHEET_KEYS, ...SOURCE_KEYS, ...AUTO_INVITE_KEYS];
 
 async function readSetting(eventId: string, key: string): Promise<string | null> {
   return (await prisma.setting.findUnique({ where: { eventId_key: { eventId, key } } }))?.value ?? null;
@@ -171,6 +173,7 @@ export async function syncSupabase(eventId: string, opts: { minGapMs?: number } 
   }
 
   const { people, problems } = buildPeople(parsed, mapping);
+  const readStartedAt = new Date();
   const saved = await saveImportedPeople(eventId, people, "update", { author: "Imported from Supabase", overwriteStatus: false });
   const result: SyncResult = {
     at: new Date().toISOString(),
@@ -185,6 +188,7 @@ export async function syncSupabase(eventId: string, opts: { minGapMs?: number } 
   const { problems: _omit, ...stored } = result;
   void _omit;
   await recordSupabaseResult(eventId, stored);
+  if (saved.added > 0) await inviteNewAfterSync(eventId, readStartedAt);
   return result;
 }
 

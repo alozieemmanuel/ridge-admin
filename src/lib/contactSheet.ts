@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { buildPeople, parseCsvText, suggestMapping, type RowProblem } from "@/lib/csvImport";
 import { saveImportedPeople } from "@/lib/contactSave";
+import { inviteNewAfterSync } from "@/lib/autoInvite";
 
 /**
  * The live sheet: one Google Sheet link per event, kept in that event's settings. "Sync" reads the sheet and adds or updates
@@ -175,6 +176,7 @@ export async function syncContactSheet(eventId: string, opts: { replace?: boolea
 
   if (opts.replace) await prisma.registration.deleteMany({ where: { eventId } });
 
+  const readStartedAt = new Date();
   const saved = await saveImportedPeople(eventId, people, "update", { author: "Imported from sheet", overwriteStatus: false });
   const result: SyncResult = {
     at: new Date().toISOString(),
@@ -189,5 +191,7 @@ export async function syncContactSheet(eventId: string, opts: { replace?: boolea
   const { problems: _omit, ...stored } = result;
   void _omit;
   await writeSetting(eventId, SHEET_LAST_SYNC_KEY, JSON.stringify(stored satisfies LastSync));
+  // New registrants get their "reserve your seat" email now (when the automatic invitation is on).
+  if (saved.added > 0 && !opts.replace) await inviteNewAfterSync(eventId, readStartedAt);
   return result;
 }

@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { inviteNewAfterSync } from "@/lib/autoInvite";
 import { INTAKE_ORIGINS_KEY, addOrUpdateContact, tokenMatches } from "@/lib/contactSources";
 
 export const runtime = "nodejs";
@@ -117,8 +118,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     extra[k.slice(0, 80)] = v.trim().slice(0, 500);
   }
 
+  const receivedAt = new Date();
   const saved = await addOrUpdateContact(event.id, { fullName, email, phone, extra }, "Website form");
   if ("error" in saved) return reply({ error: saved.error }, 400);
+  // A new registration from the website form gets the "reserve your seat" email at once (when the automatic invitation is on).
+  if (saved.result === "added") after(() => inviteNewAfterSync(event.id, receivedAt));
 
   // A normal HTML form can ask to be sent back to a page of the website, but only to an address the owner has allowed.
   const back = fields._redirect;

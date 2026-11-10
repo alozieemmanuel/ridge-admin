@@ -35,6 +35,7 @@ export type AuditAction =
   | "brochure.delete"
   | "campaign.send"
   | "campaign.test"
+  | "settings.auto_invite"
   | "campaign.schedule"
   | "campaign.unschedule"
   | "event.create"

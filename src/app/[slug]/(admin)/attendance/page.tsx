@@ -48,6 +48,35 @@ function AttendanceInner() {
   const [bulk, setBulk] = useState<{ audience: "NOT_INVITED" | "INVITED_NOT_RESERVED"; count: number } | null>(null);
   const [sending, setSending] = useState(false);
   const [extras, setExtras] = useState<{ details: boolean; button: boolean } | null>(null);
+  const [auto, setAuto] = useState<{ on: boolean; since: string | null; waiting: number; last: { at: string; sent: number; failed: number; waiting: number; note?: string } | null } | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+
+  const loadAuto = useCallback(async () => {
+    const res = await fetch("/api/admin/attendance/auto-invite", { cache: "no-store" }).catch(() => null);
+    if (res?.ok) setAuto(await res.json());
+  }, []);
+
+  async function toggleAuto(on: boolean) {
+    setAutoBusy(true);
+    const res = await fetch("/api/admin/attendance/auto-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) }).catch(() => null);
+    const data = await res?.json().catch(() => ({}));
+    if (!res?.ok) setMessage({ text: data?.error || "Could not change that. Try again.", ok: false });
+    await loadAuto();
+    setAutoBusy(false);
+  }
+
+  async function sendAutoNow() {
+    setAutoBusy(true);
+    const res = await fetch("/api/admin/attendance/auto-invite", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sendNow: true }) }).catch(() => null);
+    const data = await res?.json().catch(() => ({}));
+    setMessage(res?.ok ? { text: data.skipped && data.skipped !== "off" ? data.skipped : `Sent ${data.sent} invitation${data.sent === 1 ? "" : "s"}${data.failed ? `, ${data.failed} failed` : ""}.`, ok: !data.failed && !data.skipped } : { text: "Could not send. Try again.", ok: false });
+    await loadAuto();
+    setAutoBusy(false);
+  }
+
+  useEffect(() => {
+    loadAuto();
+  }, [loadAuto]);
 
   useEffect(() => {
     fetch("/api/admin/settings", { cache: "no-store" })
@@ -212,6 +241,35 @@ function AttendanceInner() {
             </label>
           </div>
         )}
+        <div className="mb-5 border border-border rounded-xl p-4">
+          <label className="flex items-start gap-3 text-sm cursor-pointer">
+            <input type="checkbox" className="mt-1" checked={Boolean(auto?.on)} disabled={!auto || autoBusy} onChange={(e) => toggleAuto(e.target.checked)} />
+            <span>
+              <strong>Send the invitation automatically</strong> to new registrations. As soon as someone registers (live sheet, Supabase or website form), they are emailed their reserve link, with nobody pressing a button.
+              <span className="block text-muted mt-1">
+                Only people who register after you switch this on are included. Everyone already on the list stays for the button below, so nobody is emailed by surprise.
+              </span>
+            </span>
+          </label>
+          {auto?.on && (
+            <div className="mt-3 text-sm text-muted">
+              {auto.since && <p>On since {formatDateTime(auto.since)}.</p>}
+              {auto.last && (
+                <p>
+                  Last run {formatDateTime(auto.last.at)}: {auto.last.sent} invited{auto.last.failed ? `, ${auto.last.failed} failed (tried again automatically)` : ""}.{auto.last.note ? ` ${auto.last.note}` : ""}
+                </p>
+              )}
+              {auto.waiting > 0 && (
+                <p className="mt-1">
+                  {auto.waiting} waiting to be sent.{" "}
+                  <button onClick={sendAutoNow} disabled={autoBusy} className="text-goldlight underline disabled:opacity-60">
+                    Send now
+                  </button>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
         {bulk ? (
           <div className="border border-gold/40 rounded-xl p-4">
             <p className="text-sm mb-3">

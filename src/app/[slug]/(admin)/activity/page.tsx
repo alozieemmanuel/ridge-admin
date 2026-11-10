@@ -46,6 +46,7 @@ const ACTION_LABELS: Record<string, string> = {
   "brochure.delete": "Deleted brochure request",
   "campaign.send": "Sent campaign",
   "campaign.test": "Sent a test email",
+  "settings.auto_invite": "Automatic invitation",
   "campaign.schedule": "Scheduled a campaign",
   "campaign.unschedule": "Cancelled a scheduled campaign",
   "event.create": "Created the event",
@@ -107,11 +108,13 @@ function summarize(row: LogRow): string {
       return `Sent to ${d.to ?? "participant"}`;
     }
     case "registration.checkin":
-      return d.checkedIn ? "Marked as arrived" : "Check-in undone";
+      return d.checkedIn ? (d.via === "walk_in" || d.via === "walk_in_new" ? "Marked as arrived on the spot (no seat was reserved)" : "Marked as arrived") : "Check-in undone";
     case "registration.delete":
       return `${d.email ?? ""}${d.amountPaid ? ` · had paid ${d.amountPaid}` : ""}`;
     case "campaign.delete":
       return `${d.audience ?? ""}: had sent ${d.sentCount ?? 0} of ${d.recipientCount ?? 0}`;
+    case "settings.auto_invite":
+      return d.on ? "Switched on" : "Switched off";
     case "campaign.schedule":
     case "campaign.unschedule":
       return `${d.subject ?? ""}${d.runAt ? ` · ${String(d.runAt).slice(0, 16).replace("T", " ")} UTC` : ""}`;

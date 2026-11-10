@@ -1,5 +1,6 @@
 import type { Registration } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { generateTicketCode } from "@/lib/ticket";
 
 /** Door staff can take back a check-in for this long. Owners and admins can always do it from the Attendance page. */
 export const UNDO_WINDOW_MS = 5 * 60_000;
@@ -102,6 +103,28 @@ export async function checkInGuest(eventId: string, id: string, byName: string):
   const guest = toView(row);
   if (won.count === 1) return { state: "checked_in", guest };
   return { state: row.reservedAt ? "already" : "not_reserved", guest };
+}
+
+/**
+ * Checks in a guest who never reserved a seat (for example they did not see the invitation email) at the door. The guest is given a seat
+ * and a ticket code and is marked as arrived in one statement, so two officials cannot do it twice. The seat limit is not applied: the
+ * person is standing at the door, and the official decides. A guest who already has a seat is checked in the normal way.
+ */
+export async function walkInCheckIn(eventId: string, id: string, byName: string): Promise<{ state: CheckinState; guest: GuestView | null; walkIn: boolean }> {
+  const row = await prisma.registration.findFirst({ where: { id, eventId }, select: SELECT });
+  if (!row) return { state: "not_found", guest: null, walkIn: false };
+  if (row.reservedAt) return { ...(await checkInGuest(eventId, id, byName)), walkIn: false };
+
+  let code = generateTicketCode();
+  for (let i = 0; i < 8 && (await prisma.registration.findUnique({ where: { ticketCode: code }, select: { id: true } })); i++) code = generateTicketCode();
+  const now = new Date();
+  const won = await prisma.registration.updateMany({
+    where: { id, eventId, reservedAt: null, checkedInAt: null },
+    data: { reservedAt: now, ticketCode: code, checkedInAt: now, checkedInByName: byName },
+  });
+  if (won.count !== 1) return { ...(await checkInGuest(eventId, id, byName)), walkIn: false };
+  const after = await prisma.registration.findFirst({ where: { id, eventId }, select: SELECT });
+  return { state: "checked_in", guest: after ? toView(after) : null, walkIn: true };
 }
 
 /** Takes a check-in back. Door staff only within the undo window; owners and admins any time. */

@@ -52,7 +52,7 @@ export function describeActivity(row: AuditRow): ActivityItem | null {
       title = "Reservation cancelled";
       break;
     case "registration.checkin":
-      title = d.checkedIn ? "Checked in at the event" : "Check-in undone";
+      title = d.checkedIn ? (d.via === "walk_in" || d.via === "walk_in_new" ? "Checked in on the spot (no seat was reserved)" : "Checked in at the event") : "Check-in undone";
       tone = d.checkedIn ? "good" : "normal";
       break;
     case "participant.update": {

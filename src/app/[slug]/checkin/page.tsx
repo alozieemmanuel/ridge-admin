@@ -8,6 +8,7 @@ import { useEvent } from "@/lib/useEvent";
 import { themeStyle } from "@/lib/eventTheme";
 import { cacheClear } from "@/lib/clientCache";
 import { inputClass } from "@/components/ui";
+import QrScanner from "@/components/QrScanner";
 
 interface Guest {
   id: string;
@@ -26,6 +27,8 @@ interface Outcome {
   state: State;
   guest: Guest | null;
   code?: string;
+  /** Checked in without a reserved seat (the official did it at the door). */
+  walkIn?: boolean;
 }
 
 const timeOf = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
@@ -73,6 +76,9 @@ export default function CheckinPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const scanned = useRef<string | null>(null);
+  const [camera, setCamera] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newPerson, setNewPerson] = useState({ fullName: "", email: "", phone: "" });
 
   const call = useCallback(async (body: object) => {
     const res = await fetch("/api/admin/checkin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -164,6 +170,52 @@ export default function CheckinPage() {
     }
   }
 
+  /** A guest on the list who never reserved: seat them and check them in at once. */
+  async function walkIn(g: Guest) {
+    setBusyId(g.id);
+    setError(null);
+    try {
+      const { ok, data } = await call({ action: "walk_in", id: g.id });
+      if (!ok) {
+        setError(data.error || "Could not check in.");
+        return;
+      }
+      setOutcome({ state: data.state, guest: data.guest, walkIn: Boolean(data.walkIn) });
+      setResults(null);
+      setQ("");
+      setConfirmId(null);
+      loadStats();
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /** Someone who is not on the list at all: add them, seat them and check them in. */
+  async function walkInNew(e: React.FormEvent) {
+    e.preventDefault();
+    setBusyId("new");
+    setError(null);
+    try {
+      const { ok, data } = await call({ action: "walk_in_new", ...newPerson });
+      if (!ok) {
+        setError(data.error || "Could not add this person.");
+        return;
+      }
+      setOutcome({ state: data.state, guest: data.guest, walkIn: Boolean(data.walkIn) });
+      setResults(null);
+      setAdding(false);
+      setNewPerson({ fullName: "", email: "", phone: "" });
+      setQ("");
+      loadStats();
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function undo(g: Guest) {
     setBusyId(g.id);
     setError(null);
@@ -215,6 +267,14 @@ export default function CheckinPage() {
 
         {denied && <p className="text-sm text-red-400 border border-red-500/40 rounded-xl p-3 mb-4">You have not been added to this event. Ask an owner for access.</p>}
 
+        {camera ? (
+          <QrScanner onCode={(text) => scan(text)} onClose={() => setCamera(false)} />
+        ) : (
+          <button onClick={() => setCamera(true)} className="w-full mb-6 text-base px-5 py-4 rounded-2xl bg-gold text-[#141C08] font-semibold">
+            Scan a QR code with the camera
+          </button>
+        )}
+
         {scanning && <p className="text-center text-muted py-10">Checking the ticket…</p>}
 
         {error && <p className="text-sm text-red-400 border border-red-500/40 rounded-xl p-3 mb-4">{error}</p>}
@@ -228,14 +288,25 @@ export default function CheckinPage() {
                 <div className="text-fg">
                   <Details g={outcome.guest} />
                 </div>
-                {outcome.state === "checked_in" && <p className="text-sm text-fg mt-3">Checked in at {timeOf(outcome.guest.checkedInAt)}.</p>}
+                {outcome.state === "checked_in" && (
+                  <p className="text-sm text-fg mt-3">
+                    Checked in at {timeOf(outcome.guest.checkedInAt)}.{outcome.walkIn ? " No seat had been reserved, so one was added on the spot." : ""}
+                  </p>
+                )}
                 {outcome.state === "already" && (
                   <p className="text-sm text-fg mt-3">
                     Was checked in at {timeOf(outcome.guest.checkedInAt)}
                     {outcome.guest.checkedInBy ? ` by ${outcome.guest.checkedInBy}` : ""}. Do not let this ticket in twice.
                   </p>
                 )}
-                {outcome.state === "not_reserved" && <p className="text-sm text-fg mt-3">This person is on the list but has not reserved a seat. Send them to an admin.</p>}
+                {outcome.state === "not_reserved" && (
+                  <div className="mt-3">
+                    <p className="text-sm text-fg">This person is on the list but has not reserved a seat.</p>
+                    <button onClick={() => walkIn(outcome.guest!)} disabled={busyId === outcome.guest.id} className="mt-3 text-sm px-4 py-2 rounded-full bg-gold text-[#141C08] font-semibold disabled:opacity-60">
+                      {busyId === outcome.guest.id ? "Checking in…" : "Check in on the spot"}
+                    </button>
+                  </div>
+                )}
                 {outcome.state === "checked_in" && (outcome.guest.canUndo || !doorStaff) && (
                   <button onClick={() => undo(outcome.guest!)} disabled={busyId === outcome.guest.id} className="mt-4 text-sm px-4 py-2 rounded-full border border-current">
                     Wrong person? Undo
@@ -252,7 +323,7 @@ export default function CheckinPage() {
 
         {!scanning && !outcome && !results && (
           <p className="text-sm text-muted border border-dashed border-border rounded-2xl p-5 mb-6 text-center">
-            Scan a guest&apos;s QR code with the phone camera and tap the link. They are checked in at once.
+            Press the button above to scan a guest&apos;s QR code, or search for them below. They are checked in at once.
           </p>
         )}
 
@@ -275,7 +346,7 @@ export default function CheckinPage() {
 
           {results && (
             <ul className="mt-4 space-y-3">
-              {results.length === 0 && <li className="text-sm text-muted">Nobody found. This guest is not on the list. Send them to an admin.</li>}
+              {results.length === 0 && <li className="text-sm text-muted">Nobody found. This person is not on the list. You can add them below and check them in.</li>}
               {results.map((g) => (
                 <li key={g.id} className="border border-border rounded-xl p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -304,11 +375,53 @@ export default function CheckinPage() {
                       )}
                     </div>
                   )}
-                  {!g.reserved && <p className="text-xs text-muted mt-2">Not reserved, so they cannot be checked in here.</p>}
+                  {!g.reserved && (
+                    <div className="mt-3">
+                      <p className="text-xs text-muted mb-2">No seat reserved yet. They can still be let in: this gives them a seat and checks them in.</p>
+                      {confirmId === `walk:${g.id}` ? (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm">Check in {g.fullName} on the spot?</span>
+                          <button onClick={() => walkIn(g)} disabled={busyId === g.id} className="text-sm px-4 py-2 rounded-full bg-emerald-500 text-black font-semibold disabled:opacity-60">
+                            {busyId === g.id ? "Checking in…" : "Confirm"}
+                          </button>
+                          <button onClick={() => setConfirmId(null)} className="text-sm px-4 py-2 rounded-full border border-border">
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setConfirmId(`walk:${g.id}`)} className="text-sm px-4 py-2 rounded-full bg-gold text-[#141C08] font-semibold">
+                          Check in on the spot
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
           )}
+
+          <div className="mt-4 pt-4 border-t border-border">
+            {!adding ? (
+              <button onClick={() => setAdding(true)} className="text-sm text-goldlight underline">
+                Not on the list? Add them and check them in
+              </button>
+            ) : (
+              <form onSubmit={walkInNew} className="space-y-3">
+                <p className="text-xs uppercase tracking-wider text-muted">Add and check in</p>
+                <input value={newPerson.fullName} onChange={(e) => setNewPerson({ ...newPerson, fullName: e.target.value })} placeholder="Full name" className={inputClass} aria-label="Full name" required autoComplete="off" />
+                <input value={newPerson.email} onChange={(e) => setNewPerson({ ...newPerson, email: e.target.value })} placeholder={event?.emailOptional ? "Email (optional)" : "Email"} type="email" className={inputClass} aria-label="Email" required={!event?.emailOptional} autoComplete="off" />
+                <input value={newPerson.phone} onChange={(e) => setNewPerson({ ...newPerson, phone: e.target.value })} placeholder="Phone (optional)" type="tel" className={inputClass} aria-label="Phone" autoComplete="off" />
+                <div className="flex gap-2">
+                  <button type="submit" disabled={busyId === "new" || !newPerson.fullName.trim()} className="text-sm px-5 py-2.5 rounded-full bg-gold text-[#141C08] font-semibold disabled:opacity-60">
+                    {busyId === "new" ? "Checking in…" : "Add and check in"}
+                  </button>
+                  <button type="button" onClick={() => setAdding(false)} className="text-sm px-5 py-2.5 rounded-full border border-border">
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         </section>
 
         {recent.length > 0 && (
