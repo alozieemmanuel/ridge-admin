@@ -174,6 +174,7 @@ function ctaButton(label?: string, url?: string): string {
 }
 
 function eyebrowPill(text: string): string {
+  if (!text) return "";
   return `<span style="display:inline-block;border:1px solid ${BRAND.red};background:${BRAND.innerFill};color:${BRAND.deep};font-size:11px;font-weight:700;letter-spacing:0.08em;padding:6px 14px;border-radius:999px;font-family:Arial,sans-serif;">${escapeHtml(
     text
   )}</span>`;
@@ -232,7 +233,7 @@ function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
   const inner = `
       <div style="padding:28px 40px 8px;text-align:center;">
         ${eyebrowPill(opts.eyebrow)}
-        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
+        <div style="margin-top:${opts.eyebrow ? 24 : 0}px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
       </div>
       ${summaryHtml}`;
 
@@ -488,6 +489,7 @@ export type EmailKind =
   | "confirmation"
   | "brochure"
   | "seat_invite"
+  | "test_invite"
   | "payment_reminder"
   | "payment_confirmation"
   | "pay_later_ack"

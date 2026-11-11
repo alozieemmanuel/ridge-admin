@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireEvent } from "@/lib/event";
 import { logAdminAction } from "@/lib/audit";
 import { checkInGuest, checkinCounts, findByCode, recentCheckins, searchGuests, undoCheckIn, walkInCheckIn, UNDO_WINDOW_MS } from "@/lib/checkin";
 import { prisma } from "@/lib/prisma";
 import { addOrUpdateContact } from "@/lib/contactSources";
+import { sendTestInviteOnCheckIn } from "@/lib/testInvite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,8 +38,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
 
-  const log = (checkedIn: boolean, id: string, label: string, via: string) =>
-    logAdminAction(session, { action: "registration.checkin", entityType: "registration", entityId: id, entityLabel: label, details: { checkedIn, via, by: session.name } }, request);
+  // Every check-in also sends the guest their welcome and test email, after the answer has gone back to the door screen.
+  const log = (checkedIn: boolean, id: string, label: string, via: string) => {
+    if (checkedIn) after(() => sendTestInviteOnCheckIn(id));
+    return logAdminAction(session, { action: "registration.checkin", entityType: "registration", entityId: id, entityLabel: label, details: { checkedIn, via, by: session.name } }, request);
+  };
 
   switch (b.action) {
     case "scan": {

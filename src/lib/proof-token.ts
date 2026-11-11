@@ -43,3 +43,7 @@ export const verifyProofToken = (token: string) => verify("proof", token, true);
 /** Reserve token: the unique link each invited guest gets by email (/reserve?t=...). */
 export const makeReserveToken = (registrationId: string) => make("reserve", registrationId);
 export const verifyReserveToken = (token: string) => verify("reserve", token);
+
+/** Test token: the unique link each checked-in guest gets by email (/test?t=...). Opens only that guest's test, with nothing to type. */
+export const makeTestToken = (registrationId: string) => make("test", registrationId);
+export const verifyTestToken = (token: string) => verify("test", token);

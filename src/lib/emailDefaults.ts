@@ -38,6 +38,21 @@ Seats are limited and are confirmed in the order reservations come in, so please
 
 If you are no longer able to join us, there is nothing you need to do.`,
   },
+  {
+    key: "test_invite",
+    subject: "Welcome to {{programme_name}}",
+    replyTo: "{{contact_email}}",
+    body: `Welcome to {{programme_name}}, {{first_name}}. You made it.
+
+We are glad you are here. When the team opens the test, use the button below to take it. This link is personal to you. Your details are already filled in, so you do not need to enter anything.
+
+[button]
+
+Once you start, a timer begins and your answers are saved as you go. If the test is not open yet, the page will tell you. Keep this email and come back to the same button.
+
+To your growth,
+Pertinence Team`,
+  },
 ];
 
 /** The templates that are edited from the dashboard (the other keys in the table belong to the switched-off modules). */

@@ -27,6 +27,7 @@ interface Review {
 interface Reply {
   state?: "not_checked_in" | "closed" | "ready" | "running" | "done";
   name?: string;
+  guest?: { fullName: string; email: string; phone: string };
   eventName?: string;
   brand?: Brand;
   minutes?: number;
@@ -40,12 +41,30 @@ interface Reply {
   error?: string;
 }
 
+function Details({ guest }: { guest?: Reply["guest"] }) {
+  if (!guest) return null;
+  const rows: [string, string][] = [["Name", guest.fullName], ["Email", guest.email], ["Phone", guest.phone]];
+  return (
+    <dl className="bg-tint border border-border rounded-xl px-4 py-3 mb-5 text-sm space-y-1.5">
+      {rows.filter(([, v]) => v).map(([k, v]) => (
+        <div key={k} className="flex justify-between gap-4">
+          <dt className="text-muted">{k}</dt>
+          <dd className="font-medium text-right break-all">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 const KEY = (slug: string) => `test-code:${slug}`;
 
 function TestInner() {
   const { slug } = useParams<{ slug: string }>();
   const seed = useEventSeed();
-  const prefill = useSearchParams().get("code") || "";
+  const params = useSearchParams();
+  const prefill = params.get("code") || "";
+  const link = params.get("t") || ""; // the personal link from the check-in email: no code to type
+  const [began, setBegan] = useState(false); // false until the guest has pressed Start or Continue on this visit
   const [code, setCode] = useState(prefill);
   const [signedIn, setSignedIn] = useState<string | null>(null);
   const [data, setData] = useState<Reply | null>(null);
@@ -59,11 +78,11 @@ function TestInner() {
 
   const call = useCallback(
     async (action: string, c: string, extra: Record<string, unknown> = {}) => {
-      const res = await fetch("/api/public/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, slug, code: c, ...extra }) });
+      const res = await fetch("/api/public/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, slug, ...(link ? { t: link } : { code: c }), ...extra }) });
       const json: Reply = await res.json().catch(() => ({ error: "Something went wrong." }));
       return { ok: res.ok, json };
     },
-    [slug],
+    [slug, link],
   );
 
   const apply = useCallback((json: Reply) => {
@@ -85,9 +104,11 @@ function TestInner() {
           if (json.brand) setData((d) => d ?? ({ brand: json.brand } as Reply));
           return;
         }
-        try {
-          sessionStorage.setItem(KEY(slug), c);
-        } catch {}
+        if (!link) {
+          try {
+            sessionStorage.setItem(KEY(slug), c);
+          } catch {}
+        }
         setSignedIn(c);
         apply(json);
       } catch {
@@ -96,16 +117,20 @@ function TestInner() {
         setBusy(false);
       }
     },
-    [call, apply, slug],
+    [call, apply, slug, link],
   );
 
   useEffect(() => {
+    if (link) {
+      enter("link");
+      return;
+    }
     let saved = "";
     try {
       saved = sessionStorage.getItem(KEY(slug)) || "";
     } catch {}
     if (saved) enter(saved);
-  }, [slug, enter]);
+  }, [slug, enter, link]);
 
   async function start() {
     if (!signedIn) return;
@@ -115,6 +140,7 @@ function TestInner() {
     setBusy(false);
     if (!ok) return setError(json.error || "Could not start.");
     setIndex(0);
+    setBegan(true);
     apply(json);
   }
 
@@ -184,14 +210,17 @@ function TestInner() {
       </header>
 
       <main className="max-w-2xl mx-auto px-5 py-8">
-        {!signedIn && (
+        {!signedIn && link && !error && <p className="text-center text-muted text-sm">Loading your test…</p>}
+
+        {!signedIn && (link ? !!error : true) && (
           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
             <h1 className="font-serif text-2xl mb-2 text-center">{seed?.name || "Event"} test</h1>
-            <p className="text-muted text-sm text-center mb-6">Enter the ticket code from your ticket.</p>
+            <p className="text-muted text-sm text-center mb-6">{link ? "Enter the ticket code from your ticket instead." : "Enter the ticket code from your ticket."}</p>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                enter(code);
+                if (link) window.location.href = `?code=${encodeURIComponent(code.trim())}`;
+                else enter(code);
               }}
             >
               <input className={`${inputClass} text-center font-mono text-lg tracking-wider uppercase`} placeholder="Ticket code" value={code} autoCapitalize="characters" autoComplete="off" onChange={(e) => setCode(e.target.value)} />
@@ -210,14 +239,17 @@ function TestInner() {
         {signedIn && data?.state === "not_checked_in" && (
           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
             <h1 className="font-serif text-2xl mb-3">Please check in first</h1>
+            <Details guest={data.guest} />
             <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. Only guests who are checked in at the event can take the test. Please see the team at the entrance, then try again.</p>
             <div className="flex gap-3 justify-center">
               <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
                 Try again
               </button>
-              <button className={ghostButton} onClick={leave}>
-                Use another code
-              </button>
+              {!link && (
+                <button className={ghostButton} onClick={leave}>
+                  Use another code
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -225,7 +257,8 @@ function TestInner() {
         {signedIn && data?.state === "closed" && (
           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
             <h1 className="font-serif text-2xl mb-3">The test is not open yet</h1>
-            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. The test opens after the teaching. Wait for the team to announce it, then tap the button below.</p>
+            <Details guest={data.guest} />
+            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. Wait for the team to open the test, then come back to the button in your email, or tap the button below.</p>
             <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
               Check again
             </button>
@@ -234,7 +267,8 @@ function TestInner() {
 
         {signedIn && data?.state === "ready" && (
           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
-            <h1 className="font-serif text-2xl mb-3 text-center">Hello {data.name}</h1>
+            <h1 className="font-serif text-2xl mb-4 text-center">Hello {data.name}</h1>
+            <Details guest={data.guest} />
             {data.intro && <p className="text-sm text-muted text-center mb-4 whitespace-pre-line">{data.intro}</p>}
             <ul className="text-sm text-muted space-y-2 mb-6 list-disc pl-5">
               <li>{data.count} questions, {data.minutes} minutes.</li>
@@ -253,7 +287,22 @@ function TestInner() {
           </div>
         )}
 
-        {signedIn && data?.state === "running" && q && (
+        {signedIn && data?.state === "running" && q && !began && (
+          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
+            <h1 className="font-serif text-2xl mb-4 text-center">Welcome back, {data.name}</h1>
+            <Details guest={data.guest} />
+            <ul className="text-sm text-muted space-y-2 mb-6 list-disc pl-5">
+              <li>Your test is already running and the timer has not stopped.</li>
+              <li>{answered} of {total} answered so far. Your answers were saved.</li>
+              <li>If time runs out, your test is submitted for you.</li>
+            </ul>
+            <button className={`${primaryButton} w-full`} onClick={() => setBegan(true)}>
+              Continue the test
+            </button>
+          </div>
+        )}
+
+        {signedIn && data?.state === "running" && q && began && (
           <div>
             <div className="flex justify-between text-xs text-muted mb-2">
               <span>
@@ -316,7 +365,8 @@ function TestInner() {
         {signedIn && data?.state === "done" && data.result && (
           <div>
             <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center mb-6">
-              <h1 className="font-serif text-2xl mb-2">Test submitted</h1>
+              <h1 className="font-serif text-2xl mb-4">Test submitted</h1>
+              <Details guest={data.guest} />
               {data.result.review ? (
                 <>
                   <p className="font-serif text-5xl my-4">
@@ -327,9 +377,11 @@ function TestInner() {
               ) : (
                 <p className="text-muted text-sm mt-3">Thank you, {data.name}. Results will be announced by the team.</p>
               )}
-              <button className={`${ghostButton} mt-5`} onClick={leave}>
-                Done
-              </button>
+              {!link && (
+                <button className={`${ghostButton} mt-5`} onClick={leave}>
+                  Done
+                </button>
+              )}
             </div>
             {data.result.review && (
               <ol className="space-y-4">

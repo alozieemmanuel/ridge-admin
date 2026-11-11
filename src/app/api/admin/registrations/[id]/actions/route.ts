@@ -6,6 +6,7 @@ import { requireEvent } from "@/lib/event";
 import { logAdminAction, type AuditAction } from "@/lib/audit";
 import { missingEventDetails, sendInvitation, sendTicket } from "@/lib/notifications";
 import { releaseReservation, reserveSeat } from "@/lib/reservations";
+import { sendTestInviteOnCheckIn } from "@/lib/testInvite";
 
 export const runtime = "nodejs";
 
@@ -146,6 +147,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
         const updated = await prisma.registration.update({ where: { id }, data: { checkedInAt: checkingIn ? new Date() : null, checkedInByName: checkingIn ? session.name : null } });
         await log("registration.checkin", { checkedIn: checkingIn });
+        if (checkingIn) after(() => sendTestInviteOnCheckIn(id));
         return NextResponse.json({ result: "success", checkedInAt: updated.checkedInAt?.toISOString() ?? null });
       }
 

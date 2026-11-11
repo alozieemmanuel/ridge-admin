@@ -1,0 +1,669 @@
+From 5c2317eec355477025c9f933c759774934697576 Mon Sep 17 00:00:00 2001
+From: Emmanuel <aloziefrompg@gmail.com>
+Date: Wed, 11 Nov 2026 07:07:59 +0100
+Subject: [PATCH] Welcome and test email at check-in, personal test link
+
+Every guest who is checked in (door scan, search, walk-in, Attendance page) gets the welcome and test email once, with a personal Take the test button. It goes out even when the test is not open yet.
+The test page opens from that link with no code: details first, then instructions, Start or Continue, the questions with the timer, then details and results.
+Tests page shows how many have the email and can send it to those who do not.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LHbnzt849egZ8yN5Kkk57L
+---
+ src/app/[slug]/(admin)/tests/page.tsx         | 26 ++++-
+ src/app/[slug]/test/page.tsx                  | 94 ++++++++++++++-----
+ src/app/api/admin/checkin/route.ts            | 10 +-
+ .../admin/registrations/[id]/actions/route.ts |  2 +
+ src/app/api/admin/tests/invite/route.ts       | 40 ++++++++
+ src/app/api/public/test/route.ts              | 32 ++++---
+ src/components/TemplatesPanel.tsx             |  2 +
+ src/lib/email.ts                              |  4 +-
+ src/lib/emailDefaults.ts                      | 15 +++
+ src/lib/notifications.ts                      | 48 +++++++++-
+ src/lib/proof-token.ts                        |  4 +
+ src/lib/testInvite.ts                         | 33 +++++++
+ 12 files changed, 270 insertions(+), 40 deletions(-)
+ create mode 100644 src/app/api/admin/tests/invite/route.ts
+ create mode 100644 src/lib/testInvite.ts
+
+diff --git a/src/app/[slug]/(admin)/tests/page.tsx b/src/app/[slug]/(admin)/tests/page.tsx
+index 180d105..ac4ef31 100644
+--- a/src/app/[slug]/(admin)/tests/page.tsx
++++ b/src/app/[slug]/(admin)/tests/page.tsx
+@@ -56,6 +56,7 @@ function TestsInner() {
+   const [draft, setDraft] = useState<Question | null>(null);
+   const [bulk, setBulk] = useState<string | null>(null);
+   const [busy, setBusy] = useState(false);
++  const [invites, setInvites] = useState<{ checkedIn: number; emailed: number; waiting: number } | null>(null);
+   const [entry, setEntry] = useState<{ config: { on: boolean; count: number; pass: number; attempts: number }; available: number; scores: { id: string; name: string; email: string; score: number | null; total: number | null; attempts: number; at: string | null; reserved: boolean }[] } | null>(null);
+   const [results, setResults] = useState<{ results: Result[]; started: number; finished: number } | null>(null);
+ 
+@@ -75,6 +76,19 @@ function TestsInner() {
+       setCheckedIn(j.checkedIn);
+     }
+   }, []);
++  const loadInvites = useCallback(async () => {
++    const r = await fetch("/api/admin/tests/invite", { cache: "no-store" });
++    if (r.ok) setInvites(await r.json());
++  }, []);
++  async function sendInvites() {
++    setBusy(true);
++    const r = await call("/api/admin/tests/invite", "POST");
++    setBusy(false);
++    if (!r.ok) return say(r.json.error || "Could not send.", false);
++    const { sent, failed, left } = r.json;
++    say(`Sent ${sent}.${failed ? ` ${failed} failed, check the activity log.` : ""}${left ? ` ${left} left. Press the button again.` : ""}`, !failed);
++    loadInvites();
++  }
+   const loadResults = useCallback(async () => {
+     const r = await fetch("/api/admin/tests/results", { cache: "no-store" });
+     if (r.ok) setResults(await r.json());
+@@ -83,7 +97,8 @@ function TestsInner() {
+   useEffect(() => {
+     loadQuestions();
+     loadSettings();
+-  }, [loadQuestions, loadSettings]);
++    loadInvites();
++  }, [loadQuestions, loadSettings, loadInvites]);
+   useEffect(() => {
+     if (tab === "entry") loadEntry();
+   }, [tab, loadEntry]);
+@@ -359,7 +374,14 @@ function TestsInner() {
+                 {cfg.open ? "Close the test" : "Open the test"}
+               </button>
+             </div>
+-            <p className="text-xs text-muted mt-4 mb-1">Link for guests</p>
++            <p className="text-xs text-muted mt-4 mb-1">Welcome and test email</p>
++            <p className="text-sm text-muted mb-2">Every guest gets it automatically when checked in, with their own button. {invites ? `${invites.emailed} of ${invites.checkedIn} checked-in guests have it.` : ""}</p>
++            {invites && invites.waiting > 0 && (
++              <button className={ghostButton} disabled={busy} onClick={sendInvites}>
++                {busy ? "Sending…" : `Send to the ${invites.waiting} who do not have it yet`}
++              </button>
++            )}
++            <p className="text-xs text-muted mt-4 mb-1">Link for guests (ticket code needed)</p>
+             <div className="flex gap-2 items-center flex-wrap">
+               <code className="text-sm break-all">{link}</code>
+               <button className="text-xs text-goldlight" onClick={() => navigator.clipboard?.writeText(link).then(() => say("Link copied."))}>
+diff --git a/src/app/[slug]/test/page.tsx b/src/app/[slug]/test/page.tsx
+index 282992a..420f928 100644
+--- a/src/app/[slug]/test/page.tsx
++++ b/src/app/[slug]/test/page.tsx
+@@ -27,6 +27,7 @@ interface Review {
+ interface Reply {
+   state?: "not_checked_in" | "closed" | "ready" | "running" | "done";
+   name?: string;
++  guest?: { fullName: string; email: string; phone: string };
+   eventName?: string;
+   brand?: Brand;
+   minutes?: number;
+@@ -40,12 +41,30 @@ interface Reply {
+   error?: string;
+ }
+ 
++function Details({ guest }: { guest?: Reply["guest"] }) {
++  if (!guest) return null;
++  const rows: [string, string][] = [["Name", guest.fullName], ["Email", guest.email], ["Phone", guest.phone]];
++  return (
++    <dl className="bg-tint border border-border rounded-xl px-4 py-3 mb-5 text-sm space-y-1.5">
++      {rows.filter(([, v]) => v).map(([k, v]) => (
++        <div key={k} className="flex justify-between gap-4">
++          <dt className="text-muted">{k}</dt>
++          <dd className="font-medium text-right break-all">{v}</dd>
++        </div>
++      ))}
++    </dl>
++  );
++}
++
+ const KEY = (slug: string) => `test-code:${slug}`;
+ 
+ function TestInner() {
+   const { slug } = useParams<{ slug: string }>();
+   const seed = useEventSeed();
+-  const prefill = useSearchParams().get("code") || "";
++  const params = useSearchParams();
++  const prefill = params.get("code") || "";
++  const link = params.get("t") || ""; // the personal link from the check-in email: no code to type
++  const [began, setBegan] = useState(false); // false until the guest has pressed Start or Continue on this visit
+   const [code, setCode] = useState(prefill);
+   const [signedIn, setSignedIn] = useState<string | null>(null);
+   const [data, setData] = useState<Reply | null>(null);
+@@ -59,11 +78,11 @@ function TestInner() {
+ 
+   const call = useCallback(
+     async (action: string, c: string, extra: Record<string, unknown> = {}) => {
+-      const res = await fetch("/api/public/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, slug, code: c, ...extra }) });
++      const res = await fetch("/api/public/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, slug, ...(link ? { t: link } : { code: c }), ...extra }) });
+       const json: Reply = await res.json().catch(() => ({ error: "Something went wrong." }));
+       return { ok: res.ok, json };
+     },
+-    [slug],
++    [slug, link],
+   );
+ 
+   const apply = useCallback((json: Reply) => {
+@@ -85,9 +104,11 @@ function TestInner() {
+           if (json.brand) setData((d) => d ?? ({ brand: json.brand } as Reply));
+           return;
+         }
+-        try {
+-          sessionStorage.setItem(KEY(slug), c);
+-        } catch {}
++        if (!link) {
++          try {
++            sessionStorage.setItem(KEY(slug), c);
++          } catch {}
++        }
+         setSignedIn(c);
+         apply(json);
+       } catch {
+@@ -96,16 +117,20 @@ function TestInner() {
+         setBusy(false);
+       }
+     },
+-    [call, apply, slug],
++    [call, apply, slug, link],
+   );
+ 
+   useEffect(() => {
++    if (link) {
++      enter("link");
++      return;
++    }
+     let saved = "";
+     try {
+       saved = sessionStorage.getItem(KEY(slug)) || "";
+     } catch {}
+     if (saved) enter(saved);
+-  }, [slug, enter]);
++  }, [slug, enter, link]);
+ 
+   async function start() {
+     if (!signedIn) return;
+@@ -115,6 +140,7 @@ function TestInner() {
+     setBusy(false);
+     if (!ok) return setError(json.error || "Could not start.");
+     setIndex(0);
++    setBegan(true);
+     apply(json);
+   }
+ 
+@@ -184,14 +210,17 @@ function TestInner() {
+       </header>
+ 
+       <main className="max-w-2xl mx-auto px-5 py-8">
+-        {!signedIn && (
++        {!signedIn && link && !error && <p className="text-center text-muted text-sm">Loading your test…</p>}
++
++        {!signedIn && (link ? !!error : true) && (
+           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
+             <h1 className="font-serif text-2xl mb-2 text-center">{seed?.name || "Event"} test</h1>
+-            <p className="text-muted text-sm text-center mb-6">Enter the ticket code from your ticket.</p>
++            <p className="text-muted text-sm text-center mb-6">{link ? "Enter the ticket code from your ticket instead." : "Enter the ticket code from your ticket."}</p>
+             <form
+               onSubmit={(e) => {
+                 e.preventDefault();
+-                enter(code);
++                if (link) window.location.href = `?code=${encodeURIComponent(code.trim())}`;
++                else enter(code);
+               }}
+             >
+               <input className={`${inputClass} text-center font-mono text-lg tracking-wider uppercase`} placeholder="Ticket code" value={code} autoCapitalize="characters" autoComplete="off" onChange={(e) => setCode(e.target.value)} />
+@@ -210,14 +239,17 @@ function TestInner() {
+         {signedIn && data?.state === "not_checked_in" && (
+           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
+             <h1 className="font-serif text-2xl mb-3">Please check in first</h1>
++            <Details guest={data.guest} />
+             <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. Only guests who are checked in at the event can take the test. Please see the team at the entrance, then try again.</p>
+             <div className="flex gap-3 justify-center">
+               <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
+                 Try again
+               </button>
+-              <button className={ghostButton} onClick={leave}>
+-                Use another code
+-              </button>
++              {!link && (
++                <button className={ghostButton} onClick={leave}>
++                  Use another code
++                </button>
++              )}
+             </div>
+           </div>
+         )}
+@@ -225,7 +257,8 @@ function TestInner() {
+         {signedIn && data?.state === "closed" && (
+           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center">
+             <h1 className="font-serif text-2xl mb-3">The test is not open yet</h1>
+-            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. The test opens after the teaching. Wait for the team to announce it, then tap the button below.</p>
++            <Details guest={data.guest} />
++            <p className="text-muted text-sm leading-relaxed mb-6">Hello {data.name}. Wait for the team to open the test, then come back to the button in your email, or tap the button below.</p>
+             <button className={primaryButton} onClick={() => enter(signedIn)} disabled={busy}>
+               Check again
+             </button>
+@@ -234,7 +267,8 @@ function TestInner() {
+ 
+         {signedIn && data?.state === "ready" && (
+           <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
+-            <h1 className="font-serif text-2xl mb-3 text-center">Hello {data.name}</h1>
++            <h1 className="font-serif text-2xl mb-4 text-center">Hello {data.name}</h1>
++            <Details guest={data.guest} />
+             {data.intro && <p className="text-sm text-muted text-center mb-4 whitespace-pre-line">{data.intro}</p>}
+             <ul className="text-sm text-muted space-y-2 mb-6 list-disc pl-5">
+               <li>{data.count} questions, {data.minutes} minutes.</li>
+@@ -253,7 +287,22 @@ function TestInner() {
+           </div>
+         )}
+ 
+-        {signedIn && data?.state === "running" && q && (
++        {signedIn && data?.state === "running" && q && !began && (
++          <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8">
++            <h1 className="font-serif text-2xl mb-4 text-center">Welcome back, {data.name}</h1>
++            <Details guest={data.guest} />
++            <ul className="text-sm text-muted space-y-2 mb-6 list-disc pl-5">
++              <li>Your test is already running and the timer has not stopped.</li>
++              <li>{answered} of {total} answered so far. Your answers were saved.</li>
++              <li>If time runs out, your test is submitted for you.</li>
++            </ul>
++            <button className={`${primaryButton} w-full`} onClick={() => setBegan(true)}>
++              Continue the test
++            </button>
++          </div>
++        )}
++
++        {signedIn && data?.state === "running" && q && began && (
+           <div>
+             <div className="flex justify-between text-xs text-muted mb-2">
+               <span>
+@@ -316,7 +365,8 @@ function TestInner() {
+         {signedIn && data?.state === "done" && data.result && (
+           <div>
+             <div className="bg-pagebg border border-border rounded-2xl p-6 sm:p-8 text-center mb-6">
+-              <h1 className="font-serif text-2xl mb-2">Test submitted</h1>
++              <h1 className="font-serif text-2xl mb-4">Test submitted</h1>
++              <Details guest={data.guest} />
+               {data.result.review ? (
+                 <>
+                   <p className="font-serif text-5xl my-4">
+@@ -327,9 +377,11 @@ function TestInner() {
+               ) : (
+                 <p className="text-muted text-sm mt-3">Thank you, {data.name}. Results will be announced by the team.</p>
+               )}
+-              <button className={`${ghostButton} mt-5`} onClick={leave}>
+-                Done
+-              </button>
++              {!link && (
++                <button className={`${ghostButton} mt-5`} onClick={leave}>
++                  Done
++                </button>
++              )}
+             </div>
+             {data.result.review && (
+               <ol className="space-y-4">
+diff --git a/src/app/api/admin/checkin/route.ts b/src/app/api/admin/checkin/route.ts
+index 2a71404..4fb43a6 100644
+--- a/src/app/api/admin/checkin/route.ts
++++ b/src/app/api/admin/checkin/route.ts
+@@ -1,9 +1,10 @@
+-import { NextRequest, NextResponse } from "next/server";
++import { NextRequest, NextResponse, after } from "next/server";
+ import { requireEvent } from "@/lib/event";
+ import { logAdminAction } from "@/lib/audit";
+ import { checkInGuest, checkinCounts, findByCode, recentCheckins, searchGuests, undoCheckIn, walkInCheckIn, UNDO_WINDOW_MS } from "@/lib/checkin";
+ import { prisma } from "@/lib/prisma";
+ import { addOrUpdateContact } from "@/lib/contactSources";
++import { sendTestInviteOnCheckIn } from "@/lib/testInvite";
+ 
+ export const runtime = "nodejs";
+ export const dynamic = "force-dynamic";
+@@ -37,8 +38,11 @@ export async function POST(request: NextRequest) {
+     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+   }
+ 
+-  const log = (checkedIn: boolean, id: string, label: string, via: string) =>
+-    logAdminAction(session, { action: "registration.checkin", entityType: "registration", entityId: id, entityLabel: label, details: { checkedIn, via, by: session.name } }, request);
++  // Every check-in also sends the guest their welcome and test email, after the answer has gone back to the door screen.
++  const log = (checkedIn: boolean, id: string, label: string, via: string) => {
++    if (checkedIn) after(() => sendTestInviteOnCheckIn(id));
++    return logAdminAction(session, { action: "registration.checkin", entityType: "registration", entityId: id, entityLabel: label, details: { checkedIn, via, by: session.name } }, request);
++  };
+ 
+   switch (b.action) {
+     case "scan": {
+diff --git a/src/app/api/admin/registrations/[id]/actions/route.ts b/src/app/api/admin/registrations/[id]/actions/route.ts
+index 0e2adea..8db4877 100644
+--- a/src/app/api/admin/registrations/[id]/actions/route.ts
++++ b/src/app/api/admin/registrations/[id]/actions/route.ts
+@@ -6,6 +6,7 @@ import { requireEvent } from "@/lib/event";
+ import { logAdminAction, type AuditAction } from "@/lib/audit";
+ import { missingEventDetails, sendInvitation, sendTicket } from "@/lib/notifications";
+ import { releaseReservation, reserveSeat } from "@/lib/reservations";
++import { sendTestInviteOnCheckIn } from "@/lib/testInvite";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -146,6 +147,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
+         }
+         const updated = await prisma.registration.update({ where: { id }, data: { checkedInAt: checkingIn ? new Date() : null, checkedInByName: checkingIn ? session.name : null } });
+         await log("registration.checkin", { checkedIn: checkingIn });
++        if (checkingIn) after(() => sendTestInviteOnCheckIn(id));
+         return NextResponse.json({ result: "success", checkedInAt: updated.checkedInAt?.toISOString() ?? null });
+       }
+ 
+diff --git a/src/app/api/admin/tests/invite/route.ts b/src/app/api/admin/tests/invite/route.ts
+new file mode 100644
+index 0000000..908283d
+--- /dev/null
++++ b/src/app/api/admin/tests/invite/route.ts
+@@ -0,0 +1,40 @@
++import { NextRequest, NextResponse } from "next/server";
++import { requireEvent } from "@/lib/event";
++import { logAdminAction } from "@/lib/audit";
++import { checkedInWithoutTestEmail, sendTestInviteOnCheckIn } from "@/lib/testInvite";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++const BUDGET_MS = 45_000;
++const PARALLEL = 4;
++
++/** Counts: how many checked-in guests have the welcome and test email, and how many still do not. */
++export async function GET(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const r = await checkedInWithoutTestEmail(ctx.event.id);
++  return NextResponse.json({ checkedIn: r.checkedIn, emailed: r.emailed, waiting: r.ids.length });
++}
++
++/** Sends the welcome and test email to checked-in guests who have not had it. Works in a time budget, so press again if some are left. */
++export async function POST(request: NextRequest) {
++  const ctx = await requireEvent(request, { module: "tests" });
++  if (!ctx.ok) return ctx.response;
++  const { ids } = await checkedInWithoutTestEmail(ctx.event.id);
++  const started = Date.now();
++  let sent = 0;
++  let failed = 0;
++  let next = 0;
++  const worker = async () => {
++    while (next < ids.length && Date.now() - started < BUDGET_MS) {
++      const id = ids[next++];
++      const r = await sendTestInviteOnCheckIn(id);
++      if (r === "sent") sent++;
++      else if (r === "failed") failed++;
++    }
++  };
++  await Promise.all(Array.from({ length: PARALLEL }, worker));
++  await logAdminAction(ctx.session, { action: "test.settings", entityType: "test", details: { invites: "sent", sent, failed } as never }, request);
++  return NextResponse.json({ sent, failed, left: Math.max(0, ids.length - next) });
++}
+diff --git a/src/app/api/public/test/route.ts b/src/app/api/public/test/route.ts
+index fc8d32e..b8a35f0 100644
+--- a/src/app/api/public/test/route.ts
++++ b/src/app/api/public/test/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
+ import { prisma } from "@/lib/prisma";
+ import { buildPaper, finishAttempt, getTestConfig, normaliseCode, rewardFor, type PaperQuestion } from "@/lib/tests";
+ import { termsOf } from "@/lib/eventTheme";
++import { verifyTestToken } from "@/lib/proof-token";
+ 
+ export const runtime = "nodejs";
+ export const dynamic = "force-dynamic";
+@@ -12,25 +13,32 @@ export const dynamic = "force-dynamic";
+  *   start   draws this guest's own paper (once) and returns it
+  *   answer  saves one answer
+  *   submit  finishes and grades
+- * The ticket code is the only credential, and every call checks it again together with the check-in.
++ * The credential is the guest's personal link (the "t" token in the email they get at check-in) or, as a fallback, their ticket code.
++ * Every call checks it again together with the check-in.
+  * The correct answers are only ever sent after the test is finished (and only if the event allows it).
+  */
+ const err = (error: string, status = 400, extra: Record<string, unknown> = {}) => NextResponse.json({ error, ...extra }, { status });
+ 
+-async function load(slug: string, codeRaw: unknown) {
++async function load(slug: string, codeRaw: unknown, tokenRaw?: unknown) {
+   const event = await prisma.event.findUnique({
+     where: { slug: String(slug || "").toLowerCase() },
+     select: { id: true, name: true, status: true, modules: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true },
+   });
+   if (!event || event.status === "DRAFT" || !event.modules.includes("tests")) return { fail: err("This test is not available.", 404) };
+-  const code = normaliseCode(codeRaw);
+   const brand = { name: event.brandName || event.name, color: event.color, logoUrl: event.logoUrl, logoDarkUrl: event.logoDarkUrl };
+-  if (!code) return { fail: err("Enter your ticket code.", 400, { brand }) };
+-  const reg = await prisma.registration.findFirst({
+-    where: { eventId: event.id, ticketCode: code },
+-    select: { id: true, fullName: true, checkedInAt: true, ticketCode: true },
+-  });
+-  if (!reg) return { fail: err("We could not find that ticket code. Check it and try again.", 404, { code: "NOT_FOUND" }) };
++  const select = { id: true, fullName: true, email: true, phone: true, checkedInAt: true, ticketCode: true } as const;
++  let reg;
++  if (typeof tokenRaw === "string" && tokenRaw) {
++    // The personal link: it stands in for the guest, so nothing has to be typed.
++    const id = verifyTestToken(tokenRaw);
++    reg = id ? await prisma.registration.findFirst({ where: { id, eventId: event.id }, select }) : null;
++    if (!reg) return { fail: err("This link is not valid. Use the button in your email, or enter your ticket code.", 404, { code: "BAD_LINK", brand }) };
++  } else {
++    const code = normaliseCode(codeRaw);
++    if (!code) return { fail: err("Enter your ticket code.", 400, { brand }) };
++    reg = await prisma.registration.findFirst({ where: { eventId: event.id, ticketCode: code }, select });
++    if (!reg) return { fail: err("We could not find that ticket code. Check it and try again.", 404, { code: "NOT_FOUND" }) };
++  }
+   return { event, reg, brand, config: await getTestConfig(event.id) };
+ }
+ 
+@@ -55,16 +63,16 @@ function resultView(a: NonNullable<Awaited<ReturnType<typeof finishAttempt>>>, c
+ }
+ 
+ export async function POST(request: NextRequest) {
+-  let body: { action?: string; slug?: string; code?: string; qid?: string; choice?: number };
++  let body: { action?: string; slug?: string; code?: string; t?: string; qid?: string; choice?: number };
+   try {
+     body = await request.json();
+   } catch {
+     return err("Bad request.");
+   }
+-  const ctx = await load(body.slug || "", body.code);
++  const ctx = await load(body.slug || "", body.code, body.t);
+   if ("fail" in ctx && ctx.fail) return ctx.fail;
+   const { event, reg, brand, config } = ctx as Exclude<typeof ctx, { fail: NextResponse }>;
+-  const head = { brand, terms: termsOf(event.terms), eventName: event.name, name: firstName(reg.fullName) };
++  const head = { brand, terms: termsOf(event.terms), eventName: event.name, name: firstName(reg.fullName), guest: { fullName: reg.fullName, email: reg.email, phone: reg.phone } };
+ 
+   let attempt = await prisma.testAttempt.findUnique({ where: { registrationId: reg.id } });
+   // A test that ran out of time is marked at the next call.
+diff --git a/src/components/TemplatesPanel.tsx b/src/components/TemplatesPanel.tsx
+index 07cbe5d..a00c1f0 100644
+--- a/src/components/TemplatesPanel.tsx
++++ b/src/components/TemplatesPanel.tsx
+@@ -12,12 +12,14 @@ interface Template {
+ const LABELS: Record<string, string> = {
+   invitation: "Invitation email",
+   reservation_reminder: "Reservation reminder email",
++  test_invite: "Welcome and test email",
+ };
+ 
+ // Where each email is sent from, so admins know where to find the send button.
+ const WHEN_SENT: Record<string, string> = {
+   invitation: "Sent from Attendance (to everyone not yet invited) or from a guest's page in Contacts. The Reserve My Seat button is added for you.",
+   reservation_reminder: "Sent from Attendance (to guests who haven't reserved yet) or from a guest's page. The Reserve My Seat button is added for you.",
++  test_invite: "Sent automatically when a guest is checked in, with their personal Take the test button. The button goes where you put a [button] line.",
+ };
+ 
+ function TemplateEditor({ template, onSaved }: { template: Template; onSaved: () => void }) {
+diff --git a/src/lib/email.ts b/src/lib/email.ts
+index fd50ea4..1b40d45 100644
+--- a/src/lib/email.ts
++++ b/src/lib/email.ts
+@@ -174,6 +174,7 @@ function ctaButton(label?: string, url?: string): string {
+ }
+ 
+ function eyebrowPill(text: string): string {
++  if (!text) return "";
+   return `<span style="display:inline-block;border:1px solid ${BRAND.red};background:${BRAND.innerFill};color:${BRAND.deep};font-size:11px;font-weight:700;letter-spacing:0.08em;padding:6px 14px;border-radius:999px;font-family:Arial,sans-serif;">${escapeHtml(
+     text
+   )}</span>`;
+@@ -232,7 +233,7 @@ function renderBrandedEmailInner(opts: BrandedEmailOptions): string {
+   const inner = `
+       <div style="padding:28px 40px 8px;text-align:center;">
+         ${eyebrowPill(opts.eyebrow)}
+-        <div style="margin-top:24px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
++        <div style="margin-top:${opts.eyebrow ? 24 : 0}px;text-align:left;">${paragraphsFromPlainText(withoutSubject(opts.bodyText, opts.heading), true, button)}</div>
+       </div>
+       ${summaryHtml}`;
+ 
+@@ -488,6 +489,7 @@ export type EmailKind =
+   | "confirmation"
+   | "brochure"
+   | "seat_invite"
++  | "test_invite"
+   | "payment_reminder"
+   | "payment_confirmation"
+   | "pay_later_ack"
+diff --git a/src/lib/emailDefaults.ts b/src/lib/emailDefaults.ts
+index 646b50a..27c2dbe 100644
+--- a/src/lib/emailDefaults.ts
++++ b/src/lib/emailDefaults.ts
+@@ -38,6 +38,21 @@ Seats are limited and are confirmed in the order reservations come in, so please
+ 
+ If you are no longer able to join us, there is nothing you need to do.`,
+   },
++  {
++    key: "test_invite",
++    subject: "Welcome to {{programme_name}}",
++    replyTo: "{{contact_email}}",
++    body: `Welcome to {{programme_name}}, {{first_name}}. You made it.
++
++We are glad you are here. When the team opens the test, use the button below to take it. This link is personal to you. Your details are already filled in, so you do not need to enter anything.
++
++[button]
++
++Once you start, a timer begins and your answers are saved as you go. If the test is not open yet, the page will tell you. Keep this email and come back to the same button.
++
++To your growth,
++Pertinence Team`,
++  },
+ ];
+ 
+ /** The templates that are edited from the dashboard (the other keys in the table belong to the switched-off modules). */
+diff --git a/src/lib/notifications.ts b/src/lib/notifications.ts
+index 1e257fc..6eda38c 100644
+--- a/src/lib/notifications.ts
++++ b/src/lib/notifications.ts
+@@ -4,7 +4,7 @@ import { BASE_PATH } from "@/lib/basePath";
+ import { firstEventId } from "@/lib/event";
+ import { after } from "next/server";
+ import { renderBrandedEmail, emailBrand, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
+-import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
++import { makeProofToken, makeReserveToken, makeTestToken } from "@/lib/proof-token";
+ import { defaultTemplate } from "@/lib/emailDefaults";
+ import { ticketQrPng } from "@/lib/ticket";
+ import type { GmailAttachment } from "@/lib/gmail";
+@@ -716,6 +716,11 @@ export function reserveLink(registration: Pick<Registration, "id">, eventSlug: s
+   return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/reserve?t=${encodeURIComponent(makeReserveToken(registration.id))}`;
+ }
+ 
++/** The unique link a checked-in guest uses to take their test: their details are already filled in, so there is nothing to type. */
++export function testLink(registration: Pick<Registration, "id">, eventSlug: string): string {
++  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/test?t=${encodeURIComponent(makeTestToken(registration.id))}`;
++}
++
+ /** The event details that must be filled in (Settings) before any invitation goes out. */
+ export function missingEventDetails(settings: Settings): string[] {
+   const missing: string[] = [];
+@@ -854,3 +859,44 @@ export async function sendTicket(registration: Registration, knownSettings?: Set
+     data: { ticketSentAt: new Date() },
+   });
+ }
++
++// ---------------------------------------------------------------------------
++// Welcome and test email (sent when a guest is checked in)
++// ---------------------------------------------------------------------------
++
++async function buildTestInvite(registration: Registration, settings: Settings): Promise<BuiltEmail> {
++  const link = testLink(registration, settings.event_slug);
++  const vars = { ...registrationVars(registration, settings), test_link: link };
++  const template = await getTemplate(registration.eventId, "test_invite");
++  const subject = mergeTemplate(template.subject, vars);
++  const html = renderBrandedEmail({
++    brand: emailBrand(settings),
++    eyebrow: "",
++    heading: subject,
++    bodyText: mergeTemplate(template.body, vars),
++    ctaLabel: "Take the test",
++    ctaUrl: link,
++  });
++  return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
++}
++
++/** Emails the guest their welcome and their personal Take the test button. Throws when the email could not be sent. */
++export async function sendTestInvite(registration: Registration, knownSettings?: Settings): Promise<void> {
++  const settings = knownSettings ?? (await getSettingsMap(registration.eventId));
++  throwIfFailed(
++    await deliverAttendeeEmail({
++      source: "REGISTRATION",
++      kind: "test_invite",
++      id: registration.id,
++      to: registration.email,
++      build: () => buildTestInvite(registration, settings),
++    })
++  );
++}
++
++/** The welcome and test email as it looks, for the preview on the Tests page. */
++export async function previewTestInvite(opts: { eventId: string; sampleName: string; sampleEmail: string }): Promise<BuiltEmail> {
++  const settings = await getSettingsMap(opts.eventId);
++  const sample = { id: "preview", eventId: opts.eventId, fullName: opts.sampleName, email: opts.sampleEmail, phone: "", country: "", notes: null, regType: "EARLY" } as unknown as Registration;
++  return buildTestInvite(sample, settings);
++}
+diff --git a/src/lib/proof-token.ts b/src/lib/proof-token.ts
+index a0669f7..326e059 100644
+--- a/src/lib/proof-token.ts
++++ b/src/lib/proof-token.ts
+@@ -43,3 +43,7 @@ export const verifyProofToken = (token: string) => verify("proof", token, true);
+ /** Reserve token: the unique link each invited guest gets by email (/reserve?t=...). */
+ export const makeReserveToken = (registrationId: string) => make("reserve", registrationId);
+ export const verifyReserveToken = (token: string) => verify("reserve", token);
++
++/** Test token: the unique link each checked-in guest gets by email (/test?t=...). Opens only that guest's test, with nothing to type. */
++export const makeTestToken = (registrationId: string) => make("test", registrationId);
++export const verifyTestToken = (token: string) => verify("test", token);
+diff --git a/src/lib/testInvite.ts b/src/lib/testInvite.ts
+new file mode 100644
+index 0000000..e731c49
+--- /dev/null
++++ b/src/lib/testInvite.ts
+@@ -0,0 +1,33 @@
++import { prisma } from "@/lib/prisma";
++import { sendTestInvite } from "@/lib/notifications";
++
++/**
++ * The welcome and test email, sent when a guest is checked in (door scan, search, walk-in or the Attendance page). It goes out even when the
++ * test is not open yet: the guest's personal page tells them it is not open and the button keeps working once the team opens it.
++ * It is sent once per guest: checking in again after an undo does not send it again. Never throws, so a failed email cannot hold up the door.
++ */
++export async function sendTestInviteOnCheckIn(registrationId: string): Promise<"sent" | "skipped" | "failed"> {
++  try {
++    const person = await prisma.registration.findUnique({ where: { id: registrationId }, include: { event: { select: { modules: true } } } });
++    if (!person || !person.checkedInAt || !person.email || !person.event.modules.includes("tests")) return "skipped";
++    const already = await prisma.emailEvent.count({ where: { registrationId, kind: "test_invite", type: "SENT" } });
++    if (already > 0) return "skipped";
++    await sendTestInvite(person);
++    return "sent";
++  } catch (err) {
++    console.error("[test-invite] failed for", registrationId, err instanceof Error ? err.message : err);
++    return "failed";
++  }
++}
++
++/** Guests who are checked in, have an email and have not been sent the welcome and test email yet (for the "send to the rest" button). */
++export async function checkedInWithoutTestEmail(eventId: string): Promise<{ ids: string[]; checkedIn: number; emailed: number }> {
++  const checked = await prisma.registration.findMany({ where: { eventId, checkedInAt: { not: null }, email: { not: "" } }, select: { id: true } });
++  const sent = await prisma.emailEvent.findMany({
++    where: { kind: "test_invite", type: "SENT", registrationId: { in: checked.map((c: { id: string }) => c.id) } },
++    select: { registrationId: true },
++    distinct: ["registrationId"],
++  });
++  const done = new Set(sent.map((s: { registrationId: string | null }) => s.registrationId));
++  return { ids: checked.map((c: { id: string }) => c.id).filter((id: string) => !done.has(id)), checkedIn: checked.length, emailed: done.size };
++}
+-- 
+2.43.0
+

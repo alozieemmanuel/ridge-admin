@@ -56,6 +56,7 @@ function TestsInner() {
   const [draft, setDraft] = useState<Question | null>(null);
   const [bulk, setBulk] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [invites, setInvites] = useState<{ checkedIn: number; emailed: number; waiting: number } | null>(null);
   const [entry, setEntry] = useState<{ config: { on: boolean; count: number; pass: number; attempts: number }; available: number; scores: { id: string; name: string; email: string; score: number | null; total: number | null; attempts: number; at: string | null; reserved: boolean }[] } | null>(null);
   const [results, setResults] = useState<{ results: Result[]; started: number; finished: number } | null>(null);
 
@@ -75,6 +76,19 @@ function TestsInner() {
       setCheckedIn(j.checkedIn);
     }
   }, []);
+  const loadInvites = useCallback(async () => {
+    const r = await fetch("/api/admin/tests/invite", { cache: "no-store" });
+    if (r.ok) setInvites(await r.json());
+  }, []);
+  async function sendInvites() {
+    setBusy(true);
+    const r = await call("/api/admin/tests/invite", "POST");
+    setBusy(false);
+    if (!r.ok) return say(r.json.error || "Could not send.", false);
+    const { sent, failed, left } = r.json;
+    say(`Sent ${sent}.${failed ? ` ${failed} failed, check the activity log.` : ""}${left ? ` ${left} left. Press the button again.` : ""}`, !failed);
+    loadInvites();
+  }
   const loadResults = useCallback(async () => {
     const r = await fetch("/api/admin/tests/results", { cache: "no-store" });
     if (r.ok) setResults(await r.json());
@@ -83,7 +97,8 @@ function TestsInner() {
   useEffect(() => {
     loadQuestions();
     loadSettings();
-  }, [loadQuestions, loadSettings]);
+    loadInvites();
+  }, [loadQuestions, loadSettings, loadInvites]);
   useEffect(() => {
     if (tab === "entry") loadEntry();
   }, [tab, loadEntry]);
@@ -359,7 +374,14 @@ function TestsInner() {
                 {cfg.open ? "Close the test" : "Open the test"}
               </button>
             </div>
-            <p className="text-xs text-muted mt-4 mb-1">Link for guests</p>
+            <p className="text-xs text-muted mt-4 mb-1">Welcome and test email</p>
+            <p className="text-sm text-muted mb-2">Every guest gets it automatically when checked in, with their own button. {invites ? `${invites.emailed} of ${invites.checkedIn} checked-in guests have it.` : ""}</p>
+            {invites && invites.waiting > 0 && (
+              <button className={ghostButton} disabled={busy} onClick={sendInvites}>
+                {busy ? "Sending…" : `Send to the ${invites.waiting} who do not have it yet`}
+              </button>
+            )}
+            <p className="text-xs text-muted mt-4 mb-1">Link for guests (ticket code needed)</p>
             <div className="flex gap-2 items-center flex-wrap">
               <code className="text-sm break-all">{link}</code>
               <button className="text-xs text-goldlight" onClick={() => navigator.clipboard?.writeText(link).then(() => say("Link copied."))}>

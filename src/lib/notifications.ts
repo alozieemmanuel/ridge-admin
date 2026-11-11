@@ -4,7 +4,7 @@ import { BASE_PATH } from "@/lib/basePath";
 import { firstEventId } from "@/lib/event";
 import { after } from "next/server";
 import { renderBrandedEmail, emailBrand, renderReceiptEmail, renderTicketEmail, sendEmail, escapeHtml, isValidEmailAddress, appBaseUrl } from "@/lib/email";
-import { makeProofToken, makeReserveToken } from "@/lib/proof-token";
+import { makeProofToken, makeReserveToken, makeTestToken } from "@/lib/proof-token";
 import { defaultTemplate } from "@/lib/emailDefaults";
 import { ticketQrPng } from "@/lib/ticket";
 import type { GmailAttachment } from "@/lib/gmail";
@@ -716,6 +716,11 @@ export function reserveLink(registration: Pick<Registration, "id">, eventSlug: s
   return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/reserve?t=${encodeURIComponent(makeReserveToken(registration.id))}`;
 }
 
+/** The unique link a checked-in guest uses to take their test: their details are already filled in, so there is nothing to type. */
+export function testLink(registration: Pick<Registration, "id">, eventSlug: string): string {
+  return `${appBaseUrl()}${BASE_PATH}/${eventSlug}/test?t=${encodeURIComponent(makeTestToken(registration.id))}`;
+}
+
 /** The event details that must be filled in (Settings) before any invitation goes out. */
 export function missingEventDetails(settings: Settings): string[] {
   const missing: string[] = [];
@@ -853,4 +858,45 @@ export async function sendTicket(registration: Registration, knownSettings?: Set
     where: { id: registration.id },
     data: { ticketSentAt: new Date() },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Welcome and test email (sent when a guest is checked in)
+// ---------------------------------------------------------------------------
+
+async function buildTestInvite(registration: Registration, settings: Settings): Promise<BuiltEmail> {
+  const link = testLink(registration, settings.event_slug);
+  const vars = { ...registrationVars(registration, settings), test_link: link };
+  const template = await getTemplate(registration.eventId, "test_invite");
+  const subject = mergeTemplate(template.subject, vars);
+  const html = renderBrandedEmail({
+    brand: emailBrand(settings),
+    eyebrow: "",
+    heading: subject,
+    bodyText: mergeTemplate(template.body, vars),
+    ctaLabel: "Take the test",
+    ctaUrl: link,
+  });
+  return { subject, html, replyTo: resolveReplyTo(template.replyTo, vars) };
+}
+
+/** Emails the guest their welcome and their personal Take the test button. Throws when the email could not be sent. */
+export async function sendTestInvite(registration: Registration, knownSettings?: Settings): Promise<void> {
+  const settings = knownSettings ?? (await getSettingsMap(registration.eventId));
+  throwIfFailed(
+    await deliverAttendeeEmail({
+      source: "REGISTRATION",
+      kind: "test_invite",
+      id: registration.id,
+      to: registration.email,
+      build: () => buildTestInvite(registration, settings),
+    })
+  );
+}
+
+/** The welcome and test email as it looks, for the preview on the Tests page. */
+export async function previewTestInvite(opts: { eventId: string; sampleName: string; sampleEmail: string }): Promise<BuiltEmail> {
+  const settings = await getSettingsMap(opts.eventId);
+  const sample = { id: "preview", eventId: opts.eventId, fullName: opts.sampleName, email: opts.sampleEmail, phone: "", country: "", notes: null, regType: "EARLY" } as unknown as Registration;
+  return buildTestInvite(sample, settings);
 }

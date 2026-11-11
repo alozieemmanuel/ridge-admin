@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { buildPaper, finishAttempt, getTestConfig, normaliseCode, rewardFor, type PaperQuestion } from "@/lib/tests";
 import { termsOf } from "@/lib/eventTheme";
+import { verifyTestToken } from "@/lib/proof-token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,25 +13,32 @@ export const dynamic = "force-dynamic";
  *   start   draws this guest's own paper (once) and returns it
  *   answer  saves one answer
  *   submit  finishes and grades
- * The ticket code is the only credential, and every call checks it again together with the check-in.
+ * The credential is the guest's personal link (the "t" token in the email they get at check-in) or, as a fallback, their ticket code.
+ * Every call checks it again together with the check-in.
  * The correct answers are only ever sent after the test is finished (and only if the event allows it).
  */
 const err = (error: string, status = 400, extra: Record<string, unknown> = {}) => NextResponse.json({ error, ...extra }, { status });
 
-async function load(slug: string, codeRaw: unknown) {
+async function load(slug: string, codeRaw: unknown, tokenRaw?: unknown) {
   const event = await prisma.event.findUnique({
     where: { slug: String(slug || "").toLowerCase() },
     select: { id: true, name: true, status: true, modules: true, brandName: true, color: true, logoUrl: true, logoDarkUrl: true, terms: true },
   });
   if (!event || event.status === "DRAFT" || !event.modules.includes("tests")) return { fail: err("This test is not available.", 404) };
-  const code = normaliseCode(codeRaw);
   const brand = { name: event.brandName || event.name, color: event.color, logoUrl: event.logoUrl, logoDarkUrl: event.logoDarkUrl };
-  if (!code) return { fail: err("Enter your ticket code.", 400, { brand }) };
-  const reg = await prisma.registration.findFirst({
-    where: { eventId: event.id, ticketCode: code },
-    select: { id: true, fullName: true, checkedInAt: true, ticketCode: true },
-  });
-  if (!reg) return { fail: err("We could not find that ticket code. Check it and try again.", 404, { code: "NOT_FOUND" }) };
+  const select = { id: true, fullName: true, email: true, phone: true, checkedInAt: true, ticketCode: true } as const;
+  let reg;
+  if (typeof tokenRaw === "string" && tokenRaw) {
+    // The personal link: it stands in for the guest, so nothing has to be typed.
+    const id = verifyTestToken(tokenRaw);
+    reg = id ? await prisma.registration.findFirst({ where: { id, eventId: event.id }, select }) : null;
+    if (!reg) return { fail: err("This link is not valid. Use the button in your email, or enter your ticket code.", 404, { code: "BAD_LINK", brand }) };
+  } else {
+    const code = normaliseCode(codeRaw);
+    if (!code) return { fail: err("Enter your ticket code.", 400, { brand }) };
+    reg = await prisma.registration.findFirst({ where: { eventId: event.id, ticketCode: code }, select });
+    if (!reg) return { fail: err("We could not find that ticket code. Check it and try again.", 404, { code: "NOT_FOUND" }) };
+  }
   return { event, reg, brand, config: await getTestConfig(event.id) };
 }
 
@@ -55,16 +63,16 @@ function resultView(a: NonNullable<Awaited<ReturnType<typeof finishAttempt>>>, c
 }
 
 export async function POST(request: NextRequest) {
-  let body: { action?: string; slug?: string; code?: string; qid?: string; choice?: number };
+  let body: { action?: string; slug?: string; code?: string; t?: string; qid?: string; choice?: number };
   try {
     body = await request.json();
   } catch {
     return err("Bad request.");
   }
-  const ctx = await load(body.slug || "", body.code);
+  const ctx = await load(body.slug || "", body.code, body.t);
   if ("fail" in ctx && ctx.fail) return ctx.fail;
   const { event, reg, brand, config } = ctx as Exclude<typeof ctx, { fail: NextResponse }>;
-  const head = { brand, terms: termsOf(event.terms), eventName: event.name, name: firstName(reg.fullName) };
+  const head = { brand, terms: termsOf(event.terms), eventName: event.name, name: firstName(reg.fullName), guest: { fullName: reg.fullName, email: reg.email, phone: reg.phone } };
 
   let attempt = await prisma.testAttempt.findUnique({ where: { registrationId: reg.id } });
   // A test that ran out of time is marked at the next call.
